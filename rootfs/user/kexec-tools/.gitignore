@@ -1,0 +1,9 @@
+*.[ad]
+/Makefile
+/bin
+/build
+/config.status
+/config.log
+/kexec/purgatory.c
+/purgatory/purgatory.ro
+/include/config.h

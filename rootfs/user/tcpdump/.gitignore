@@ -1,0 +1,10 @@
+#
+# Configure generated files
+#
+Makefile
+config.h
+config.log
+config.status
+libpcap
+tcpdump
+version.c

@@ -1,0 +1,44 @@
+.TH "cpufreq-aperf" "1" "0.1" "Mattia Dongili" ""
+.SH "NAME"
+.LP
+cpufreq\-aperf \- Calculates the average frequency over a time period
+.SH "SYNTAX"
+.LP
+cpufreq\-aperf [\fIoptions\fP]
+.SH "DESCRIPTION"
+.LP
+On latest processors exist two MSR registers refered to as:
+  - MPERF increasing with maxium (P0) frequency in C0
+  - APERF increasing with current/actual frequency in C0
+
+From this information the average frequency over a time period can be
+calculated and this is what this tool does.
+
+A nice falloff feature beside the average frequency is the time
+a processor core remained in C0 (working state) or any CX (sleep state)
+processor sleep state during the measured time period. This information
+can be determined from the fact that MPERF only increases in C0 state.
+.SH "OPTIONS"
+.LP
+.TP
+\fB\-c\fR \fB\-\-cpu\fR <\fICPU\fP>
+ The <\fICPU\fP> core to measure - default all cores.
+.TP
+\fB\-i\fR \fB\-\-interval\fR <\fIseconds\fP>
+Refresh rate - default 1 second.
+.TP
+\fB\-o\fR \fB\-\-once\fR
+Exit after one interval.
+.TP
+\fB\-h\fR \fB\-\-help\fR
+Prints the available options.
+.SH "REMARKS"
+.LP
+The msr driver must be loaded for this command to work.
+.SH "AUTHORS"
+.nf
+Thomas Renninger <trenn@suse.de>
+.fi
+.SH "SEE ALSO"
+.LP
+cpufreq\-set(1), cpufreq\-info(1)

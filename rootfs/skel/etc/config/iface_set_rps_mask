@@ -1,0 +1,22 @@
+#!/bin/sh
+iface=$1
+
+# Check that this device exists, supports multiqueue and RPS is enabled
+[ -z $iface ] || \
+	[ ! -d /sys/class/net/$iface ] || \
+	[ ! -d /sys/class/net/$iface/queues ] || \
+	[ ! -f /sys/class/net/$iface/queues/rx-0/rps_cpus ] && exit 0
+
+# Get the number of online CPUs
+online=$(cat /sys/devices/system/cpu/online)
+
+# Get the first and last, then deduce total
+first=$(echo $online | cut -d- -f1)
+last=$(echo $online | cut -d- -f2)
+total=$((($last - $first) + 1))
+
+# Get an hexadecimal CPU mask out of this
+cpu_mask=$(printf %x $(((1 << $total) -1)))
+
+# Now set this CPU mask
+echo $cpu_mask > /sys/class/net/$iface/queues/rx-0/rps_cpus

@@ -1,0 +1,9 @@
+addFilter("E: invalid-license")
+addFilter("W: version-control-internal-file")
+addFilter("W: no-binary")
+addFilter("E: files-duplicated-waste")
+addFilter("W: files-duplicate")
+
+setBadness("wrong-script-interpreter", 0)
+setBadness("spurious-executable-perm", 0)
+setBadness("arch-independent-package-contains-binary-or-object", 0)

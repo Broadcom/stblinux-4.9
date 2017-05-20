@@ -1,0 +1,15 @@
+How to release pciutils
+~~~~~~~~~~~~~~~~~~~~~~~
+(a couple of hints for the forgetful maintainer)
+
+Check version numbers in Makefile and lib/pci.h.
+
+maint/tag-release vX.Y.Z
+git push --tags
+
+maint/release
+
+# Upload to kernel.org
+gzip -d <pciutils-3.1.10.tar.gz >pciutils-3.1.10.tar
+gpg --armor --detach-sign -o pciutils-3.1.10.tar.sig pciutils-3.1.10.tar
+~/tree/kup/kup put pciutils-3.1.10.tar.gz pciutils-3.1.10.tar.sig /pub/software/utils/pciutils/pciutils-3.1.10.tar.gz

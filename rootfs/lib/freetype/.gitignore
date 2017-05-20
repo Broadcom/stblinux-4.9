@@ -1,0 +1,13 @@
+*.lo
+*.la
+builds/unix/config.status
+builds/unix/freetype-config
+builds/unix/ftconfig.h
+builds/unix/libtool
+builds/unix/unix-cc.mk
+builds/unix/unix-def.mk
+config.cache
+config.log
+config.mk
+config.status
+objs/.libs/

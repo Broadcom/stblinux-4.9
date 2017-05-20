@@ -1,0 +1,17 @@
+*.a
+*.la
+*.lo
+config.h
+config.status
+config.log
+config.cache
+intl/config.intl
+stamp-*
+Makefile
+.deps
+.libs
+*.tmp
+libtool
+*POTFILES
+*/po/Makefile.in
+.gdbinit

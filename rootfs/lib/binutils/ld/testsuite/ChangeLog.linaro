@@ -1,0 +1,147 @@
+2014-09-16  Terry Guo  <terry.guo@arm.com>
+
+	* ld-arm/attr-merge-arch-2.d: New test case.
+	* ld-arm/attr-merge-arch-2a.s: New test case source file.
+	* ld-arm/attr-merge-arch-2b.s: Likewise.
+	* ld-arm/arm-elf.exp: Run new test case.
+
+2014-08-26  Jiong Wang  <jiong.wang@arm.com>
+
+	* ld-aarch64/copy-relocs-so.s: New test file.
+	* ld-aarch64/copy-relocs-exe.s: Likewise.
+	* ld-aarch64/copy-relocs.d: New expectation file.
+	* ld-aarch64/emit-relocs-264-bad.d: New test file.
+	* ld-aarch64/emit-relocs-266-bad.d: Likewise.
+	* ld-aarch64/emit-relocs-268-bad.d: Likewise.
+	* ld-aarch64/emit-relocs-269-bad.d: Likewise.
+	* ld-aarch64/aarch64-elf.exp: Run new added test.
+
+2014-08-26  Nick Clifton  <nickc@redhat.com>
+
+	* ld-aarch64/eh-frame-foo.s: Use 8-byte offset for X30.
+	* ld-aarch64/eh-frame-bar.s: Likewise.
+	* ld-aarch64/eh-frame.d: Updated to match current readelf output.
+	* ld-elf/eh5.d: Allow any register names.
+
+2014-08-21  Tony Wang  <tony.wang@arm.com>
+
+	* ld-arm/jump-reloc-veneers-cond.s: New test.
+	* ld-arm/farcall-cond-thumb-arm.s: Ditto.
+	* ld-arm/jump-reloc-veneers-cond-short.d: Expected output
+	for target without a veneer generation.
+	* ld-arm/jump-reloc-veneers-cond-long.d: Expected output
+	for target with a veneer generation.
+	* ld-arm/farcall-cond-thumb-arm.d: Expected output for
+	inter working veneer generation.
+	* ld-arm/arm-elf.exp: Add tests for conditional branch veneer.
+
+2014-07-15  Jiong Wang  <jiong.wang@arm.com>
+
+	* ld-aarch64/emit-relocs-local-addend.d: Use target linker script.
+
+2014-07-08  Jiong Wang  <jiong.wang@arm.com>
+
+	* ld-aarch64/emit-relocs-local-addend-bar.s: New source file.
+	* ld-aarch64/emit-relocs-local-addend-foo.s: Likewise.
+	* ld-aarch64/emit-relocs-local-addend.d: New testcase.
+	* ld-aarch64/local-addend-r.d: Likewise.
+
+2014-07-08  Will Newton  <will.newton@linaro.org>
+
+	* ld-arm/arm-lib.ld: Increase MAXPAGESIZE value to
+	match bfd.
+	* ld-arm/cortex-a8-fix-bl-rel-plt.d: Update offsets to
+	take into account increased segment alignment.
+	* ld-arm/ifunc-gdesc.r: Likewise.
+	* ld-arm/tls-lib.d: Likewise.
+
+2014-06-25  Kyle McMartin  <kyle@redhat.com>
+
+	* ld-arm/tls-gdierelax2.d: Fix expected offsets.
+
+2014-06-16  Will Newton  <will.newton@linaro.org>
+
+	* ld-arm/arm-elf.exp: Add ifunc-gdesc test.
+	* ld-arm/ifunc-gdesc.r: New file.
+	* ld-arm/ifunc-gdesc.s: Likewise.
+	* ld-arm/ifunc-gdesc.ver: Likewise.
+
+2014-03-25  Will Newton  <will.newton@linaro.org>
+
+	 * ld-aarch64/aarch64-elf.exp: Add relasz dump test.
+	 * ld-aarch64/relasz.d: New file.
+	 * ld-aarch64/relasz.s: Likewise.
+
+2014-03-20  Will Newton  <will.newton@linaro.org>
+
+	* ld-arm/ifunc-14.rd: Update symbol values.
+
+2013-07-03  Marcus Shawcroft  <marcus.shawcroft@arm.com>
+
+	* ld-aarch64/emit-relocs-309.s: Replace got_prel19 with got.
+	* ld-aarch64/gc-relocs-309.s: Likewise.
+
+2013-04-03   Venkataramanan Kumar  <venkataramanan.kumar@linaro.org>
+
+        * ld-aarch64/gc-relocs-tlsle.s: New gc section test.
+        * ld-aarch64/gc-relocs-tlsle.s: Likewise
+        * ld-aarch64/gc-relocs-tlsgd.s: Likewise
+        * ld-aarch64/gc-relocs-tlsdesc.s: Likewise
+        * ld-aarch64/gc-relocs-312.s: Likewise
+        * ld-aarch64/gc-relocs-311.s: Likewise
+        * ld-aarch64/gc-relocs-309.s: Likewise
+        * ld-aarch64/gc-start.s: Likewise
+        * ld-aarch64/gc-got-relocs.d: Update expected objdump
+        * ld-aarch64/gc-tls-relocs.d: Likewise
+        * ld-aarch64/aarch64-elf.exp: add test
+
+2013-03-08  Venkataramanan Kumar  <venkataramanan.kumar@linaro.org>
+
+        * lib/ld-lib.exp (check_gc_sections_available): Remove aarch64
+	from list of targets that don't support gc-section.
+
+2013-07-02  Marcus Shawcroft  <marcus.shawcroft@arm.com>
+
+	* ld-aarch64/emit-relocs-309-low.d: Adjust .text address.
+	* ld-aarch64/emit-relocs-309-up.d: Adjust .got address.
+
+2012-09-19  Chris Schlumberger-Socha  <chris.schlumberger-socha@arm.com>
+
+	* ld-aarch64/emit-relocs-309-low.d: Replace symbol with regexp.
+	* ld-aarch64/emit-relocs-309-up.d: Likewise.
+
+2012-09-12  Chris Schlumberger-Socha  <chris.schlumberger-socha@arm.com>
+
+	* ld-aarch64/aarch64-elf.exp: New reloc tests.
+	* ld-aarch64/emit-relocs-309-low-bad.d: New file. Expected asm for test
+	failure (lower bound overflow).
+	* ld-aarch64/emit-relocs-309-low.d: New file. Expected asm for test
+	success (lower bound).
+	* ld-aarch64/emit-relocs-309-up-bad.d: New file. Expected asm for test
+	failure (upper bound overflow).
+	* ld-aarch64/emit-relocs-309-up.d: New file. Expected asm for test
+	success (upper bound).
+	* ld-aarch64/emit-relocs-309.s: New file. Asm for new reloc tests.
+
+2013-07-02  Marcus Shawcroft  <marcus.shawcroft@arm.com>
+
+	* ld-aarch64/gc-plt-relocs.d: Adjust expected .got offsets.
+	* ld-aarch64/tls-desc-ie.d: Likewise.
+	* ld-aarch64/emit-relocs-311.d: Adjust expected	symbol.
+	* ld-aarch64/tls-relax-all.d: Likewise.
+	* ld-aarch64/tls-relax-gd-ie.d: Likewise.
+	* ld-aarch64/tls-relax-gdesc-ie.d: Likewise.
+	* ld-aarch64/tls-relax-gdesc-ie-2.d: Likewise.
+
+2013-07-02  Marcus Shawcroft  <marcus.shawcroft@arm.com>
+
+	* ld-aarch64/emit-relocs-309-low.d: Adjust .text address.
+	* ld-aarch64/emit-relocs-309-up.d: Adjust .got address.
+	* ld-aarch64/emit-relocs-312.d: Adjust offsets into .got.
+	* ld-aarch64/tls-relax-all.d: Likewise.
+	* ld-aarch64/gc-got-relocs.d: Adjust expected .got content.
+	* ld-aarch64/gc-tls-relocs.d: Likewise.
+	* ld-aarch64/tls-relax-gd-ie.d: Likewise.
+	* ld-aarch64/tls-relax-gdesc-ie-2.d: Likewise.
+	* ld-aarch64/tls-relax-gdesc-ie.d: Likewise.
+

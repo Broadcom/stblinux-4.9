@@ -1,0 +1,17 @@
+2014-09-03  Jiong Wang  <jiong.wang@arm.com>
+
+	* aarch64.h (AARCH64_FEATURE_LSE): New feature added.
+	(aarch64_opnd): Add AARCH64_OPND_PAIRREG.
+	(aarch64_insn_class): Add lse_atomic.
+	(F_LSE_SZ): New field added.
+	(opcode_has_special_coder): Recognize F_LSE_SZ.
+
+2013-03-11  Kyrylo Tkachov  <kyrylo.tkachov@arm.com>
+
+	* arm.h (CRC_EXT_ARMV8): New constant.
+	(ARCH_CRC_ARMV8): New macro.
+
+2013-02-28  Yufeng Zhang  <yufeng.zhang@arm.com>
+
+	* aarch64.h (AARCH64_FEATURE_CRC): New macro.
+

@@ -1,0 +1,91 @@
+2014-06-11  Will Newton  <will.newton@linaro.org>
+
+	Linaro gdb 7.7.1-2014.06-1 released.
+
+	* version.in: Update version.
+
+2014-06-05  Will Newton  <will.newton@linaro.org>
+
+	* version.in: Bump version.
+
+2014-06-05  Will Newton  <will.newton@linaro.org>
+
+	Linaro gdb 7.7.1-2014.06 released.
+
+	* version.in: Update version.
+
+2014-05-16  Taimoor Mirza  <tmirza@codesourcery.com>
+
+        * arm-tdep.c (thumb_analyze_prologue): Fix offset calculation for
+	ldr.w and ldrd instructions.
+
+2014-05-22  Ramana Radhakrishnan  <ramana.radhakrishnan@arm.com>
+
+	* aarch64-linux-nat.c (asm/ptrace.h): Include.
+
+2014-05-20  Hui Zhu  <hui@codesourcery.com>
+	    Yao Qi  <yao@codesourcery.com>
+
+	PR backtrace/16558
+	* aarch64-linux-tdep.c (aarch64_linux_sigframe_init): Update comments
+	and change address of sp and pc.
+
+2014-05-07  Kyle McMartin  <kyle@redhat.com>
+
+	Pushed by Joel Brobecker  <brobecker@adacore.com>.
+	* aarch64-tdep.c (aarch64_software_single_step): New function.
+	(aarch64_gdbarch_init): Handle single stepping of atomic sequences
+	with aarch64_software_single_step.
+
+2014-04-30  Will Newton  <will.newton@linaro.org>
+
+	Linaro gdb 7.7-2014.05 released.
+
+	* version.h: Update version.
+
+2014-02-10  Will Newton  <will.newton@linaro.org>
+
+	* elfread.c (elf_rel_plt_read): Look for a .got section if
+	looking up .got.plt fails.
+	(elf_gnu_ifunc_resolve_by_got): Call gdbarch_addr_bits_remove
+	on address passed to elf_gnu_ifunc_record_cache.
+	(elf_gnu_ifunc_resolve_addr): Likewise.
+	(elf_gnu_ifunc_resolver_return_stop): Likewise.
+
+2014-03-12  Omair Javaid  <omair.javaid@linaro.org>
+
+	* arm-linux-nat.c (arm_linux_get_hwbp_cap): Updated.
+	(MAX_BPTS): Define.
+	(MAX_WPTS): Define.
+	(struct arm_linux_thread_points): Removed.
+	(struct arm_linux_process_info): New.
+	(DEF_VEC_P (arm_linux_thread_points_p)): Removed.
+	(VEC(arm_linux_thread_points_p) *arm_threads): Removed.
+	(arm_linux_find_breakpoints_by_tid): Removed.
+	(struct arch_lwp_info): New.
+	(arm_linux_find_process_pid): New functions.
+	(arm_linux_add_process): New functions.
+	(arm_linux_process_info_get): New functions.
+	(arm_linux_forget_process): New function.
+	(arm_linux_get_debug_reg_state): New function.
+	(struct update_registers_data): New.
+	(update_registers_callback): New function.
+	(arm_linux_insert_hw_breakpoint1): Updated.
+	(arm_linux_remove_hw_breakpoint1): Updated.
+	(arm_linux_insert_hw_breakpoint): Updated.
+	(arm_linux_remove_hw_breakpoint): Updated.
+	(arm_linux_insert_watchpoint): Updated.
+	(arm_linux_remove_watchpoint): Updated.
+	(arm_linux_new_thread): Updated.
+	(arm_linux_prepare_to_resume): New function.
+	(arm_linux_new_fork): New function.
+	(_initialize_arm_linux_nat): Updated.
+
+2014-04-30  Will Newton  <will.newton@linaro.org>
+
+	* configure.ac: Add Linaro branding.
+	* configure: Regenerate.
+
+2014-04-30  Will Newton  <will.newton@linaro.org>
+
+	Linaro gdb 7.7 branch created.

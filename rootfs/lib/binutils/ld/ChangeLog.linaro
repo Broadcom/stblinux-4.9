@@ -1,0 +1,14 @@
+2014-08-20  Will Newton  <will.newton@linaro.org>
+
+	* configure.tgt: Default armeb-*-eabi* to big endian.
+
+2014-07-08  Will Newton  <will.newton@linaro.org>
+
+	* emulparams/armelf_linux.sh (TEXT_START_ADDR): Increase
+	alignment to 64kB boundary.
+
+2014-02-01  Hans-Peter Nilsson  <hp@bitrange.com>
+
+	* emultempl/mmix-elfnmmo.em (mmix_after_allocation): Fix typo in
+	call to bfd_set_section_vma exposed by recent bfd_set_section_vma
+	change.

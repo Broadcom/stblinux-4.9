@@ -1,0 +1,247 @@
+#!/bin/bash
+
+set -e
+
+# Only do this for the 3.14 MIPS kernel
+[ "$(uname -m)" = "mips" -a "$(uname -r | cut -d'.' -f1,2)" = "3.14" ] && {
+	pml.mips $@
+	exit $?
+}
+
+function find_waketimer {
+	for i in /sys/bus/platform/drivers/brcm-waketimer/*
+	do
+		[ -d $i ] && echo $i && return 0
+	done
+	echo "Error: no wake-timer found" >&2
+	exit 1
+}
+
+waketimer=`find_waketimer`
+power_sysfs=/sys/power/state
+cpu_sysfs=/sys/devices/system/cpu
+
+# set defaults
+loops=1
+mode=none
+tp_all=1
+cycle_tp=
+delay_sec=
+command=
+pm_mode=standby
+wakeup_time=1
+
+function usage
+{
+	echo "pml: power management script version 1.0"
+	echo "Usage: pml [-lN] [-mMODE] [-tchdp] [-sN] [-wN]"
+	echo "where:"
+	echo "    -lN    - number of loops (decimal:1); negative value - infinite loop"
+	echo "    -mMODE - system suspend debug mode (none, core, platform, devices, freezer:none)"
+	echo "    -d     - deep standby (s3)"
+	echo "    -p     - cold standby (S5); shut down gracefully"
+	echo "    -t     - turn secondary CPUs off before test (no)"
+	echo "    -c     - hotplug-cycle secondary CPUs after each iteration (no)"
+	echo "    -sN    - seconds to sleep between iterations (decimal:0)"
+	echo "    -wN    - seconds to wait before waking up (decimal:3)"
+	echo "    -xCMD  - execute command after each iteration"
+	echo "    -XCMD  - execute command after each iteration, quit if the command fails"
+	echo "    -h     - show this message"
+}
+
+function failure
+{
+	echo "Command \"$command\" failed"
+	exit
+}
+
+function supported_pmmodes {
+	local modes=`cat $power_sysfs`
+	echo -n $modes
+
+	# Hack in a 'poweroff' mode
+	if which poweroff > /dev/null 2>&1
+	then
+		[ "$modes" != "" ] && echo -n " "
+		echo -n "poweroff"
+	fi
+}
+
+function supports_pmmode {
+	state=$1
+	for s in `supported_pmmodes`
+	do
+		[ $s = $state ] && return 0
+	done
+	return 1
+}
+
+function set_sleep_timeout {
+	timeout=$1
+	[ $timeout -lt 0 ] && echo "Invalid timeout: $timeout" && return 1
+	echo enabled > $waketimer/power/wakeup
+	echo $timeout > $waketimer/timeout
+}
+
+#
+# Expand patterns like this:
+#   1-3,7,12
+# into lists like this:
+#   1 2 3 7 12
+# Used for interpreting sysfs files like:
+#   /sys/devices/system/cpu/{possible,present,online}
+#
+function expand_pattern {
+	[ "$1" = "" ] && echo && return
+
+	chars=`echo $1 | grep -o .`
+	nums=""
+
+	curr=0 # Current number being processed
+	prev=-1 # Lower bound of a range
+	for char in $chars
+	do
+		case $char in
+		[0-9])
+			curr=$((10*curr + char));;
+		-)
+			prev=$curr; curr=0;;
+		,)
+			# Comma terminates a singleton or range
+			if [ $prev -ge 0 ]; then # range
+				nums="$nums `seq $prev $curr`"
+			else # singleton
+				nums="$nums $curr"
+			fi
+			prev=-1; curr=0;;
+		*)
+			echo "Error in input" && return 1;;
+		esac
+	done
+
+	# Pattern ended in...
+	if [ $prev -ge 0 ]; then # range
+		nums="$nums `seq $prev $curr`"
+	else
+		nums="$nums $curr"
+	fi
+
+	echo $nums
+}
+
+function set_cpus_power {
+	online=$1
+	possible=$(expand_pattern $(cat $cpu_sysfs/possible))
+	present=$(expand_pattern $(cat $cpu_sysfs/present))
+	for cpu in $cpu_sysfs/cpu[1-9]*
+	do
+		cpuX=`basename $cpu`
+		cpuX=${cpuX#cpu}
+		if ! [[ $possible =~ $cpuX ]]; then continue; fi
+		if ! [[ $present =~ $cpuX ]]; then continue; fi
+		if [ `cat $cpu/online` -eq $online ]; then continue; fi
+		if [ $online -eq 0 ]; then
+			echo "Power down `basename $cpu`"
+		else
+			echo "Power up `basename $cpu`"
+		fi
+		echo $online > $cpu/online
+	done
+}
+
+quit_on_failure=false
+while getopts "hl:m:tcs:w:x:X:dp" option
+do
+	case $option in
+	d)
+		pm_mode=mem ;;
+	p)
+		pm_mode=poweroff ;;
+	x)
+		command=$OPTARG ;;
+	X)
+		quit_on_failure=true
+		command=$OPTARG ;;
+	i)
+		interval=$OPTARG ;;
+	l)
+		loops=$OPTARG ;;
+	m)
+		mode=$OPTARG ;;
+	t)
+		tp_all=0 ;;
+	c)
+		cycle_tp=1 ;;
+	s)
+		delay_sec=$OPTARG ;;
+	w)
+		wakeup_time=$OPTARG ;;
+	h|*)
+	usage
+	exit ;;
+	esac
+done
+
+if ! supports_pmmode "$pm_mode"; then
+	echo "Power state \"$pm_mode\" not supported (supported: `supported_pmmodes`)"
+	exit 1
+fi
+
+if [ ! -f /sys/power/pm_test ] ; then
+	if [ "$mode" != "none" ]; then
+		echo "Debug PM is not enabled. To enable partial suspend, rebuild kernel with CONFIG_PM_DEBUG"
+	fi
+else
+	echo $mode > /sys/power/pm_test
+	if [ -f /sys/module/suspend/parameters/pm_test_delay ]; then
+		echo $wakeup_time > /sys/module/suspend/parameters/pm_test_delay
+	else
+		echo "configurable PM test delay is not supported in your kernel"
+	fi
+fi
+
+[ "$tp_all" -eq 0 ] && set_cpus_power $tp_all
+
+set_sleep_timeout $wakeup_time
+
+# S5 ==> poweroff
+if [ "$pm_mode" = "poweroff" ]; then
+	echo "Entering S5 soft off state, wakeup_time=$wakeup_time"
+	poweroff
+	exit $?
+fi
+
+function one_pass
+{
+	passnum=$1
+	totalnum=$2
+	echo "Pass $passnum$totalnum, mode=$mode, tp_all=$tp_all, cycle_tp=$cycle_tp, sleep=$delay_sec, wakeup_time=$wakeup_time"
+	echo $pm_mode > $power_sysfs
+	if [ ! -z "$cycle_tp" ] ; then
+		set_cpus_power 0
+		set_cpus_power 1
+		set_cpus_power $tp_all
+	fi
+	if [ ! -z "$command" ] ; then
+		eval $command
+		[ $? -ne 0 ] && [ "$quit_on_failure" == "true" ] && failure
+	fi
+	if [ ! -z "$delay_sec" ] ; then
+		sleep $delay_sec
+	fi
+	echo "------------------------------"
+}
+
+curloop=0
+if [ "$loops" -lt "0" ] ; then
+        while :
+        do
+                 (( curloop++ ))
+                one_pass $curloop "" 
+        done
+else
+        for curloop in `seq 1 $loops`; do
+                one_pass $curloop " out of $loops"
+        done
+fi
+

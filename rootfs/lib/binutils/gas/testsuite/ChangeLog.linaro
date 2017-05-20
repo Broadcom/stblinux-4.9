@@ -1,0 +1,96 @@
+2014-09-03  Jiong Wang  <jiong.wang@arm.com>
+
+	* gas/aarch64/illegal.s: Update testcase.
+	* gas/aarch64/illegal.d: Likewise.
+	* gas/aarch64/sysreg-1.s: Likewise.
+	* gas/aarch64/sysreg-1.d: Likewise.
+
+	* gas/aarch64/lse-atomic.d: New.
+	* gas/aarch64/lse-atomic.s: Likewise.
+	* gas/aarch64/illegal-lse.d: Likewise.
+	* gas/aarch64/illegal-lse.l: Likewise.
+	* gas/aarch64/illegal-lse.s: Likewise.
+	* gas/aarch64/diagnostic.s: Check processor feature detect for lse
+	instruction.
+	* gas/aarch64/diagnostic.l: Likewise.
+
+2014-08-20  Kyrylo Tkachov  <kyrylo.tkachov@arm.com>
+
+	* gas/arm/ual-vcmp.s: New file.
+	* gas/arm/ual-vcmp.d: Likewise.
+	* gas/arm/vcmp-zero-bad.s: Likewise.
+	* gas/arm/vcmp-zero-bad.d: Likewise.
+	* gas/arm/vcmp-zero-bad.l: Likewise.
+
+2014-07-08  Jiong Wang  <jiong.wang@arm.com>
+
+	* gas/arm/ldconst.s: Add test cases for symbol literal.
+	* gas/arm/ldconst.d: Likewise.
+	* gas/arm/vldconst.s: Add test cases for vldr.
+	* gas/arm/thumb2_vpool.s: Likewise.
+	* gas/arm/vldconst.d: New pattern for little-endian.
+	* gas/arm/thumb2_vpool.d: Likewise.
+	* gas/arm/vldconst_be.d: New pattern for big-endian.
+	* gas/arm/thumb2_vpool_be.d: Likewise.
+
+	* gas/arm/armv8-a+crypto.d: Skip for non-ELF targets.
+	* gas/arm/armv8-a+fp.d: Likewise.
+	* gas/arm/armv8-a+simd.d: Likewise.
+	* gas/arm/armv8-a-barrier-thumb.d: Likewise.
+	* gas/arm/bl-local-2.d: Likewise.
+	* gas/arm/ldgesb-bad.d: Likewise.
+	* gas/arm/ldgesh-bad.d: Likewise.
+	* gas/arm/thumb2_pool.d: Likewise.
+	* gas/arm/thumb2_pool.s: Likewise.
+
+2014-06-17  Jiong Wang  <jiong.wang@arm.com>
+
+	* gas/arm/armv8-a-it-bad.s: New check for deprecated sp_inc/dec within
+	IT block for ARMv8.
+	* gas/arm/armv8-a-it-bad.l: Likewise.
+
+2014-06-16  Jiong Wang  <jiong.wang@arm.com>
+
+	* gas/aarch64/diagnostic.s: Add new test patterns.
+	* gas/aarch64/diagnostic.l: Update expected diagnostic output.
+
+2014-03-12  Nick Clifton  <nickc@redhat.com>
+
+	PR gas/16688
+	* gas/aarch64/litpool.s: New test case.
+	* gas/aarch64/litpool.d: Expected disassembly.
+
+2014-04-23  Will Newton  <will.newton@linaro.org>
+
+	* gas/arm/mapmisc.d: Check literal pool mapping with
+	a trailing .align statement.
+	* gas/arm/mapmisc.s: Likewise.
+
+2014-01-17  Will Newton  <will.newton@linaro.org>
+
+	* gas/arm/armv8-a+fp.d: Correct encoding of vcvta.s32.f64.
+
+2013-03-11  Kyrylo Tkachov  <kyrylo.tkachov@arm.com>
+
+	* gas/arm/crc32-bad.d: New file.
+	* gas/arm/crc32-bad.l: Likewise.
+	* gas/arm/crc32-bad.s: Likewise.
+	* gas/arm/crc32.d: Likewise.
+	* gas/arm/crc32.s: Likewise.
+
+2013-02-28  Yufeng Zhang  <yufeng.zhang@arm.com>
+
+	* gas/aarch64/crc32.s: New test.
+	* gas/aarch64/crc32.d: Ditto.
+
+2013-07-03  Marcus Shawcroft  <marcus.shawcroft@arm.com>
+
+	* gas/aarch64/reloc-insn.s (func): Replace :got_prel19: with :got:.
+
+2012-09-12  Chris Schlumberger-Socha  <chris.schlumberger-socha@arm.com>
+
+	* gas/aarch64/reloc-insn.d
+	(BFD_RELOC_AARCH64_GOT_LD_PREL19): Add expected asm for new reloc test.
+	* gas/aarch64/reloc-insn.s
+	(BFD_RELOC_AARCH64_GOT_LD_PREL19): Add test for reloc.
+

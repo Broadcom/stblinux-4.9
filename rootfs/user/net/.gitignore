@@ -1,0 +1,14 @@
+#
+# net-tools executables
+#
+arp
+hostname
+ifconfig
+mii-tool
+nameif
+netstat
+plipconfig
+rarp
+route
+slattach
+*.a

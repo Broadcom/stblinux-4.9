@@ -1,0 +1,370 @@
+#!/bin/bash
+#
+# Read and write BOLT NVRAM partition
+#
+
+VERSION=0.4
+MTD_SYSFS=/sys/class/mtd
+
+# 8-bit length can only handle 255-byte name/value pairs
+MAX_VARLEN=255
+
+version() {
+	echo "nvram utility - version $VERSION"
+}
+
+powercut_disclaimer() {
+	echo '****************  WARNING  *****************'
+	echo ' This tool is not power-cut safe. If it is'
+	echo ' interrupted while writing, all NVRAM data'
+	echo ' will be lost.'
+	echo '********************************************'
+}
+
+__usage() {
+	version
+	echo
+	echo "Usage: nvram [OPTIONS] [COMMAND] [COMMAND OPTIONS]"
+	echo "Reads or writes BOLT nvram variables"
+	echo
+	echo "Options:"
+	echo " -h          Display this help and exit"
+	echo " -i FILE     Use FILE as NVRAM device"
+	echo " -f          Force modification of read-only variable (write or unset)"
+	echo " -r          Write variable read-only (write)"
+	echo " -v          Print version and exit"
+	echo
+	echo "Commands:"
+	echo " read, write, unset, cat, update"
+	echo
+	echo " nvram read                : read all variables"
+	echo " nvram read VARNAME        : read one variable"
+	echo " nvram write VARNAME VALUE : write a variable"
+	echo " nvram unset VARNAME       : unset a variable"
+	echo " nvram cat                 : dump raw NVRAM data"
+	echo " nvram update FILE         : replace NVRAM with raw data"
+	echo
+	powercut_disclaimer
+}
+
+usage() {
+	if [ $1 -ne 0 ]; then
+		__usage 1>&2
+	else
+		__usage
+	fi
+	exit $1
+}
+
+err_msg() {
+	echo "nvram: error: $@" 1>&2
+}
+
+err_msg_die() {
+	err_msg $@
+	exit 1
+}
+
+find_emmc() {
+	DEVS=$(ls /dev/mmcblk* 2> /dev/null | grep 'mmcblk[0-9][0-9]*$') || return 1
+	for dev in $DEVS; do
+		LINE=$(sgdisk -p $dev 2> /dev/null | grep nvram) || continue
+		[ "$(echo $LINE | cut -d' ' -f7)" != "nvram" ] && continue
+		printf "${dev}p%s" "$(echo $LINE | cut -d' ' -f1)"
+		return 0
+	done
+	return 1
+}
+
+find_mtd() {
+	ls ${MTD_SYSFS}/mtd*/name > /dev/null 2>&1 || return 1
+	for name in ${MTD_SYSFS}/mtd*/name
+	do
+		if [ "$(cat $name)" = "flash0.nvram" ]
+		then
+			echo /dev/$(basename $(dirname $name))
+			return 0
+		fi
+	done
+	return 1
+}
+
+find_nvram() {
+	find_emmc || find_mtd
+}
+
+is_mtd() {
+	[ -c $1 ]
+}
+
+is_nand() {
+	dev=$1
+	is_mtd $dev || return 1
+	mtdx=$(echo $dev | grep -o '[0-9]*$')
+	type=$(cat $MTD_SYSFS/mtd${mtdx}/type 2> /dev/null) || return 1
+	[ "$type" = "nand" ] || [ "$type" = "mlc-nand" ]
+}
+
+read_nvram() {
+	in="$1"
+	out="$2"
+	if is_nand $in; then
+		nanddump $in -f $out -q
+	else
+		dd if="$in" of="$out" 2> /dev/null
+	fi
+}
+
+write_nvram() {
+	in="$1"
+	out="$2"
+
+	# Reprogram entire partition
+	# TODO: incremental erase?
+	is_mtd $out && flash_erase -q $out 0 0
+
+	if is_nand $out; then
+		nandwrite $out $in -p -q
+	else
+		dd if=$in of=$out 2> /dev/null
+	fi
+}
+
+get_nvram_bytes() {
+	start=$1
+	bytes=$2
+	dd if=$TMP_NVRAM bs=1 skip=$start count=$bytes 2> /dev/null
+}
+
+get_nvram_hex_byte() {
+	start=$1
+	printf '0x'
+	get_nvram_bytes $start 1 | hexdump -vC | cut -d' ' -f 3 | head -1
+}
+
+BYTE=0
+__process_env() {
+	TYPE="$(get_nvram_hex_byte $BYTE)"
+	let BYTE++
+
+	# END
+	([ $TYPE = 0x00 ] || [ $TYPE = 0xff ]) && return 1
+	# 8-bit == 0x01
+	[ $TYPE != 0x01 ] && echo "Unexpected var type: $TYPE" 1>&2 && return 1
+
+	LEN=$(get_nvram_hex_byte $BYTE)
+	let BYTE++
+
+	FLAGS+=($(get_nvram_hex_byte $BYTE))
+	let BYTE++
+
+	LINE="$(get_nvram_bytes $BYTE $((LEN - 1)))"
+	let BYTE+=$((LEN - 1))
+
+	let NVRAM_COUNT++
+	NAMES+=("$(echo "$LINE" | cut -d'=' -f1)")
+	VALUES+=("$(echo "$LINE" | cut -d'=' -f2-)")
+
+	true
+}
+
+process_env() {
+	while :
+	do
+		__process_env || break
+	done
+}
+
+print_env() {
+	echo "NVRAM device: $NVRAM_DEV"
+	echo "Num variables: $NVRAM_COUNT"
+	echo
+	printf '%-20s %s\n' " Variable Name" "Value"
+	printf -- '--------------------'
+	printf -- '--------------------\n'
+	for i in $(seq 0 $((NVRAM_COUNT - 1)))
+	do
+		printf '%20s ' "${NAMES[$i]}"
+		printf '%s\n' "${VALUES[$i]}"
+	done
+}
+
+find_index() {
+	name="$1"
+	for i in $(seq 0 $((NVRAM_COUNT - 1)))
+	do
+		[ "$name" != "${NAMES[$i]}" ] && continue
+		echo $i
+		return 0
+	done
+	return 1
+}
+
+dump_one() {
+	name="$1"
+	idx=$(find_index "$name") || err_msg_die "variable '$name' not set"
+	printf '%s' "${VALUES[$idx]}"
+
+	# Add trailing newline if stdout is a tty
+	test -t 1 && echo
+}
+
+is_readonly() {
+	idx=$1
+	let "ro=${FLAGS[$idx]} & 0x02"
+	[ $ro -ne 0 ] && [ $FORCE -eq 0 ]
+}
+
+# Length of <flags> + NAME + "=" + VALUE
+get_tlv_len() {
+	idx=$1
+	echo $((${#NAMES[$idx]} + ${#VALUES[$idx]} + 2))
+}
+
+set_env() {
+	name="$1"
+	val="$2"
+	if idx=$(find_index "$name")
+	then
+		is_readonly $idx && err_msg "'$name' is read-only" && return 1
+		# Overwrite variable
+		VALUES[$idx]="$val"
+	else
+		# Create new variable
+		idx=$NVRAM_COUNT
+		let NVRAM_COUNT++
+		VALUES[$idx]="$val"
+		NAMES[$idx]="$name"
+		FLAGS[$idx]=${WR_FLAGS}
+	fi
+
+	if [ $(get_tlv_len $idx) -gt $MAX_VARLEN ]; then
+		err_msg "value too large for NVRAM storage"
+		return 1
+	fi
+}
+
+unset_env() {
+	name="$1"
+	if idx=$(find_index "$name")
+	then
+		is_readonly $idx && err_msg "'$name' is read-only" && return 1
+		let NVRAM_COUNT--
+		NAMES=("${NAMES[@]:0:$idx}" "${NAMES[@]:$idx+1}")
+		VALUES=("${VALUES[@]:0:$idx}" "${VALUES[@]:$idx+1}")
+		FLAGS=("${FLAGS[@]:0:$idx}" "${FLAGS[@]:$idx+1}")
+	else
+		err_msg_die "'$name' is not set"
+	fi
+}
+
+pack_var() {
+	idx=$1
+
+	printf '\x01' # 8-bit length
+	printf "\\x$(printf '%x' $(get_tlv_len $idx))"
+	printf "\\x$(printf '%x' ${FLAGS[$idx]})"
+	printf '%s=%s' "${NAMES[$idx]}" "${VALUES[$idx]}"
+}
+
+pack_terminate() {
+	printf '\x0'
+}
+
+reconstruct() {
+	for i in $(seq 0 $((NVRAM_COUNT - 1)))
+	do
+		pack_var $i
+	done
+	pack_terminate
+}
+
+write_out() {
+	OUT=$(mktemp)
+
+	reconstruct > $OUT
+	write_nvram $OUT $NVRAM_DEV
+	rm $OUT
+}
+
+read_in() {
+	dev="$1"
+
+	TMP_NVRAM=$(mktemp)
+	read_nvram "$dev" "$TMP_NVRAM"
+	process_env
+	rm $TMP_NVRAM
+}
+
+## Main
+
+FORCE=0
+WR_FLAGS=0
+NVRAM_DEV=
+while getopts "i:hfrv" OPTION; do
+	case $OPTION in
+		h ) usage 0 ;;
+		v ) version; exit 0 ;;
+		i ) NVRAM_DEV=$OPTARG ;;
+		f ) FORCE=1 ;;
+		r ) WR_FLAGS=0x02 ;;
+		* ) err_msg "unknown option $OPTION" ; usage 1 ;;
+	esac
+done
+shift $((OPTIND - 1))
+[ $# -eq 0 ] && usage 1
+
+if [ "$NVRAM_DEV" = "" ]; then
+	NVRAM_DEV=$(find_nvram)
+fi
+! [ -e "${NVRAM_DEV}" ] && err_msg_die "couldn't find NVRAM device"
+
+NAMES=()
+VALUES=()
+FLAGS=()
+NVRAM_COUNT=0
+
+case "$1" in
+"read" )
+	shift
+	[ $# -gt 1 ] && err_msg "too many arguments" && usage 1 && exit 1
+
+	read_in "${NVRAM_DEV}"
+	if [ $# -eq 0 ]; then
+		print_env
+	else
+		dump_one "$1"
+	fi
+	;;
+"write" )
+	shift
+	[ $# -ne 2 ] && err_msg "incorrect number of arguments" && usage 1 && exit 1
+	powercut_disclaimer 1>&2
+	read_in "${NVRAM_DEV}"
+	set_env "$1" "$2" || err_msg_die "failed to set variable"
+	write_out
+	;;
+"unset" )
+	shift
+	[ $# -ne 1 ] && err_msg "incorrect number of arguments" && usage 1 && exit 1
+	powercut_disclaimer 1>&2
+	read_in "${NVRAM_DEV}"
+	unset_env "$1" || err_msg_die "failed to unset variable"
+	write_out
+	;;
+"cat" )
+	read_in "${NVRAM_DEV}"
+	reconstruct
+	;;
+"update" )
+	shift
+	[ $# -ne 1 ] && err_msg "incorrect number of arguments" && usage 1 && exit 1
+	! [ -e "$1" ] && err_msg "file '$1' does not exist" && usage 1 && exit 1
+	powercut_disclaimer 1>&2
+	read_in "$1"
+	write_out
+	;;
+* )
+	err_msg_die "unknown command: $1"
+	;;
+esac

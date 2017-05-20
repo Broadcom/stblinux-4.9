@@ -1,0 +1,5 @@
+2014-05-07  Kyle McMartin  <kyle@redhat.com>
+
+	Pushed by Joel Brobecker  <brobecker@adacore.com>.
+	* gdb.arch/aarch64-atomic-inst.c: New file.
+	* gdb.arch/aarch64-atomic-inst.exp: New file.

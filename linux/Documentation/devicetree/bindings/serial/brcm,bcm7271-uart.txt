@@ -1,0 +1,28 @@
+* Broadcom ns16550a UART with optional Baud Rate Mux
+
+Required properties:
+- compatible	  : "brcm,bcm7271-uart", "ns16550a"
+- reg		  : offset and length of the register set for the device
+- interrupts	  : should contain UART interrupt line
+- clock-frequency : the input clock frequency for the UART in Hz
+	 or
+- clocks	  : Phandle to a mux clock controlling the input clock
+		    to the base baud divisor
+- clock-names	  : "sw_baud" - required if clocks is specified
+
+Properties in 8250.txt also apply
+
+Example:
+serial@f040d000 {
+	compatible = "brcm,bcm7271-uart", "ns16550a";
+	reg-io-width = <0x4>;
+	reg-shift = <0x2>;
+	reg = <0xf040d000 0x20>;
+	reg-names = "uart";
+	interrupts = <0x0 0x47 0x4>;
+	interrupt-names = "uart";
+	fifo-size = <0x20>;
+	auto-flow-control;
+	clocks = <0xc>;
+	clock-names = "sw_baud";
+};

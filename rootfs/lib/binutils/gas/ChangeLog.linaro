@@ -1,0 +1,156 @@
+2014-03-13  Richard Earnshaw  <rearnsha@arm.com>
+	    Jiong Wang  <Jiong.Wang@arm.com>
+
+	* doc/c-aarch64.texi: Clean up some formatting issues.
+	(AArch64 Options): Document -mcpu and -march.
+	(AArch64 Extensions): New node.
+
+2014-10-21  Jan Beulich  <jbeulich@suse.com>
+
+	* config/tc-aarch64.c (output_operand_error_record): Move down
+	assertion of idx being non-negative. Use local variables when
+	available.
+
+2014-09-03  Jiong Wang  <jiong.wang@arm.com>
+
+	* config/tc-aarch64.c (parse_sys_reg): Remove the restriction on op0
+	field.
+
+	* config/tc-aarch64.c (parse_operands): Recognize PAIRREG.
+	(aarch64_features): Add entry for lse extension.
+
+2014-09-17  Tristan Gingold  <gingold@adacore.com>
+
+	* config/tc-arm.c (move_or_literal_pool, add_to_lit_pool): Use
+	bfd_int64_t instead of int64_t.
+
+2014-09-09  Kyrylo Tkachov  <kyrylo.tkachov@arm.com>
+
+	* config/tc-arm.c (arm_cpus): Add cortex-a17.
+
+2014-08-22  Richard Henderson  <rth@redhat.com>
+
+	* config/tc-aarch64.c (tc_aarch64_regname_to_dw2regnum): Fix
+	register number for vector register types.
+	* config/tc-aarch64.h (DWARF2_LINE_MIN_INSN_LENGTH): Set to 4.
+	(DWARF2_CIE_DATA_ALIGNMENT): Set to -8.
+
+	* config/tc-aarch64.c (tc_aarch64_regname_to_dw2regnum): Fix
+	register number for vector register types.
+
+2014-08-20  Kyrylo Tkachov  <kyrylo.tkachov@arm.com>
+
+	* config/tc-arm.c (parse_ifimm_zero): New function.
+	(enum operand_parse_code): Add OP_RSVD_FI0 value.
+	(parse_operands): Handle OP_RSVD_FI0.
+	(asm_opcode_insns): Use RSVD_FI0 for second operand of vcmp, vcmpe.
+
+2014-07-15  Jiong Wang  <jiong.wang@arm.com>
+
+	* config/tc-arm.c (add_to_lit_pool): Use "inst.operands[1].imm" for
+	sign extension.  Casting the type of imm1 and imm2 to offsetT.  Fix
+	one logic error when checking X_op.
+
+2014-07-08  Jiong Wang  <jiong.wang@arm.com>
+
+	* config/tc-arm.c (literal_pool): New field "alignment".
+	(find_or_make_literal_pool): Initialize "alignment" to 2.
+	(s_ltorg): Align the pool using value of "alignment"
+	(parse_big_immediate): New parameter "in_exp". Return
+	parsed expression if "in_exp" is not null.
+	(parse_address_main): Invoke "parse_big_immediate" for
+	constant parameter.
+	(add_to_lit_pool): Add one parameter 'nbytes'.
+	Split 8 byte entry into two 4 byte entry.
+	Add padding to align 8 byte entry to 8 byte boundary.
+	(encode_arm_cp_address): Generate literal pool entry if possible.
+	(move_or_literal_pool): Generate entry for vldr case.
+	(enum lit_type): New enum type.
+	(do_ldst): Use new enum type.
+	(do_ldstv4): Likewise.
+	(do_t_ldst): Likewise.
+	(neon_write_immbits): Support Thumb-2 mode.
+
+2014-06-17 Jiong Wang <jiong.wang@arm.com>
+
+	* config/tc-arm.c (depr_it_insns): New check for inc/dec sp.
+
+2014-06-16  Nick Clifton  <nickc@redhat.com>
+
+	* config/tc-aarch64.c (md_apply_fix): Ignore unused relocs.
+
+2014-06-16  Jiong Wang  <jiong.wang@arm.com>
+
+	* config/tc-aarch64.c (END_OF_INSN): New macro.
+	(parse_operands): Handle operand given and in wrong format when
+	operand is optional.
+
+2014-03-12  Nick Clifton  <nickc@redhat.com>
+
+	PR gas/16688
+	* config/tc-aarch64.c (literal_expression): New structure.
+	(literal_pool): Replace exp array with literal_expression array.
+	(add_to_lit_pool): When adding a bignum cache the big value.
+	(s_ltorg): When emitting a bignum initialise the global bignum
+	array from the cached value.
+
+2014-01-07  Philipp Tomsich  <philipp.tomsich@theobroma-systems.com>
+
+	* config/tc-aarch64.c (aarch64_cpus): Add entry for "xgene-1"
+
+2014-04-24  Nick Clifton  <nickc@redhat.com>
+
+	* config/tc-arm.c (s_ltorg): Only create a mapping symbol for ELF
+	based targets.
+
+2014-04-23  Will Newton  <will.newton@linaro.org>
+
+	* config/tc-arm.c (s_ltorg): Call make_mapping_symbol
+	directly instead of mapping_state.
+
+2014-01-17  Will Newton  <will.newton@linaro.org>
+
+	* config/tc-arm.c (do_vfp_nsyn_cvt_fpv8): Set OP to 1
+	for the s32.f64 flavours of VCVT.
+
+2013-03-11  Kyrylo Tkachov  <kyrylo.tkachov@arm.com>
+
+	* config/tc-arm.c (crc_ext_armv8): New feature set.
+	(UNPRED_REG): New macro.
+	(do_crc32_1): New function.
+	(do_crc32b, do_crc32h, do_crc32w, do_crc32cb,
+	do_crc32ch, do_crc32cw): Likewise.
+	(TUEc): New macro.
+	(insns): Add entries for crc32 mnemonics.
+	(arm_extensions): Add entry for crc.
+
+2013-02-28  Yufeng Zhang  <yufeng.zhang@arm.com>
+
+	* config/tc-aarch64.c (aarch64_features): Add the 'crc' option.
+
+2013-06-19  Greta Yorsh  <Greta.Yorsh@arm.com>
+
+	* config/tc-arm.c (arm_cpus): Add support for Cortex-A12.
+
+2013-03-28  Ramana Radhakrishnan  <ramana.radhakrishnan@arm.com>
+
+	* config/tc-arm.c (arm_cpus): Add support for Cortex-A53 and
+	Cortex-A57.
+
+2013-01-02  Yufeng Zhang  <yufeng.zhang@arm.com>
+
+	* config/tc-aarch64.c (aarch64_cpus): Add entries for "cortex-a53"
+	and "cortex57".
+
+2013-07-03  Marcus Shawcroft  <marcus.shawcroft@arm.com>
+
+	* config/tc-aarch64.c (reloc_table): Merge got_prel19 into got.
+
+2012-09-12  Chris Schlumberger-Socha  <chris.schlumberger-socha@arm.com>
+
+	* config/tc-aarch64.c
+	(reloc_table): Add reloc to table entry.
+	(parse_address_main): Add support for #:<reloc_op>:<symbol>.
+	(parse_operands): Check for unused reloc.
+	(md_apply_fix): New case for reloc.
+	(aarch64_force_relocation): Likewise.

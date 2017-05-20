@@ -1,0 +1,12 @@
+2014-09-16  Nick Clifton  <nickc@redhat.com>
+
+	* readelf.c (display_arm_attribute): Use unsigned int type for
+	tag, val and type variables.
+
+2014-08-22  Richard Henderson  <rth@redhat.com>
+
+	* dwarf.h (init_dwarf_regnames_aarch64): Declare.
+	* dwarf.c (dwarf_regnames_aarch64): New.
+	(init_dwarf_regnames_aarch64): New.
+	(init_dwarf_regnames): Call it.
+	* objdump.c (dump_dwarf): Likewise.

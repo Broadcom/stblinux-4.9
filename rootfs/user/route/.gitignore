@@ -1,0 +1,7 @@
+*.o
+arp
+ifconfig
+lib/libroute.a
+mii-tool
+netstat
+route

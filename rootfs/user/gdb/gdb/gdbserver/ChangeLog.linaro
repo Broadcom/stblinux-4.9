@@ -1,0 +1,8 @@
+2014-05-23  Ramana Radhakrishnan  <ramana.radhakrishnan@arm.com>
+
+	* linux-aarch64-low.c (asm/ptrace.h): Include.
+
+2014-04-30  Will Newton  <will.newton@linaro.org>
+
+	* configure.ac: Add Linaro branding.
+	* configure: Regenerate.
