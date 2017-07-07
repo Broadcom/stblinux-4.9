@@ -105,6 +105,9 @@ enum pageflags {
 	PG_young,
 	PG_idle,
 #endif
+#ifdef CONFIG_PAGE_AUTOMAP
+	PG_automap,
+#endif
 	__NR_PAGEFLAGS,
 
 	/* Filesystems */
@@ -612,6 +615,12 @@ TESTPAGEFLAG_FALSE(TransTail)
 PAGEFLAG_FALSE(DoubleMap)
 	TESTSETFLAG_FALSE(DoubleMap)
 	TESTCLEARFLAG_FALSE(DoubleMap)
+#endif
+
+#ifdef CONFIG_PAGE_AUTOMAP
+PAGEFLAG(AutoMap, automap, PF_ANY)
+#else
+TESTPAGEFLAG_FALSE(AutoMap)
 #endif
 
 /*

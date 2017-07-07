@@ -33,6 +33,10 @@ ROMFSDIR	:= $(ROOTDIR)/romfs
 ROMFSINST	:= $(ROOTDIR)/bin/romfs-inst.sh
 TEMP_MOD_DIR	:= $(ROOTDIR)/kobj_tmp
 
+VERSION		:= $(shell bin/linuxver.sh $(LINUXDIR))
+DOTVERSION	:= $(patsubst 26%,2.6.%,$(patsubst 3%,3.%,$(patsubst 4%,4.%,$(VERSION))))
+MAJOR_VERSION	:= $(shell echo $(VERSION) | cut -d- -f1)
+
 CFG		:= perl -w bin/config.pl
 CHKPATH		:= perl -w bin/checkpath.pl
 ifneq ($(shell which rsync),)
@@ -42,9 +46,9 @@ COPY_HELPER	:= cp -f
 endif
 
 SHELL		:= /bin/bash
-PATH		:= $(shell $(CHKPATH) -a)
+PATH		:= $(shell $(CHKPATH) -a $(DOTVERSION))
 export ROOTDIR LINUXDIR LINUX_CONFIG CONFIG_CONFIG ARCH_CONFIG ROMFSDIR \
-	ROMFSINST SHELL PATH
+	ROMFSINST SHELL PATH MAJOR_VERSION
 
 # hostname of TFTP server (defaults to the build machine)
 TFTPHOST	:= $(shell hostname)
@@ -62,12 +66,6 @@ TFTPPATH	:= $(subst $(TFTPBOOT)/,,$(TFTPDIR))
 
 PLAT		= $(shell cat .target)
 ARCH		= $(shell cat .arch)
-
-VERSION		:= $(shell bin/linuxver.sh $(LINUXDIR))
-DOTVERSION	:= $(patsubst 26%,2.6.%,$(patsubst 3%,3.%,$(patsubst 4%,4.%,$(VERSION))))
-MAJOR_VERSION	:= $(shell echo $(VERSION) | cut -d- -f1)
-
-export MAJOR_VERSION
 
 ifeq ($(ARCH),arm64)
 LINUX_IMAGE:=Image
@@ -299,7 +297,7 @@ release:
 
 .PHONY: chkpath
 chkpath:
-	+@$(CHKPATH)
+	+@$(CHKPATH) $(DOTVERSION)
 
 #############################################################################
 # BUILD CONFIGURATION

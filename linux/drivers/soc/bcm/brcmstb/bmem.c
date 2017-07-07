@@ -162,6 +162,13 @@ void __init bmem_reserve(void)
 			pr_err("memblock_reserve(%pa, %pa) failed: %d\n",
 					&bmem_regions[i].addr,
 					&bmem_regions[i].size, ret);
+#ifdef CONFIG_BRCMSTB_AUTOMAP_BMEM
+		} else if (memblock_mark_automap(bmem_regions[i].addr,
+						 bmem_regions[i].size)) {
+			pr_err("memblock_mark_automap(%pa, %pa) failed\n",
+			       &bmem_regions[i].addr,
+			       &bmem_regions[i].size);
+#endif
 		} else {
 			bmem_regions[i].valid = true;
 			pr_info("Reserved %lu MiB at %pa\n",

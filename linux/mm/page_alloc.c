@@ -1168,6 +1168,10 @@ static void __meminit __init_single_page(struct page *page, unsigned long pfn,
 	init_page_count(page);
 	page_mapcount_reset(page);
 	page_cpupid_reset_last(page);
+#ifdef CONFIG_PAGE_AUTOMAP
+	if (memblock_is_automap_memory(pfn << PAGE_SHIFT))
+		SetPageAutoMap(page);
+#endif
 
 	INIT_LIST_HEAD(&page->lru);
 #ifdef WANT_PAGE_VIRTUAL

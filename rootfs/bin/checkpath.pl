@@ -8,16 +8,33 @@
 # bin/checkpath.pl
 #
 
+use strict;
+use warnings;
+
 my @searchpath = ( "/opt/toolchains", "/projects/stbtc",
 	"/projects/stbopt_p/toolchains_303" );
 
-if(defined($ARGV[0]) && ($ARGV[0] eq "-a")) {
-	$add = 1;
-} else {
-	$add = 0;
+my ($add, $kern_ver) = (0, 0);
+while (@ARGV) {
+	my $arg = shift @ARGV;
+	if ($arg eq "-a") {
+		$add = 1;
+	} elsif ($arg =~ m/^([0-9].[0-9]+)(-\S+)?$/) {
+		$kern_ver = $1;
+	} else {
+		print STDERR "Unknown parameter: $arg\n";
+		exit 1;
+	}
 }
 
-open(F, "<toolchain") or die "can't open toolchain file";
+my $file = "<toolchain";
+if ($kern_ver >= 4.9) {
+	$file = "<toolchain_63";
+} else {
+	$file = "<toolchain";
+}
+
+open(F, $file) or die "can't open toolchain file";
 my $toolchain = <F>;
 close(F);
 

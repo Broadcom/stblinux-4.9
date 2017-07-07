@@ -252,12 +252,19 @@ static struct cma_root_dev *cma_root_dev;
 
 static int cma_dev_open(struct inode *inode, struct file *filp)
 {
+	struct cdev *cdev = inode->i_cdev;
+	struct cma_root_dev *cma_root_dev;
+
+	cma_root_dev = container_of(cdev, struct cma_root_dev, cdev);
+	filp->private_data = cma_root_dev;
+
 	dev_dbg(cma_root_dev->dev, "opened cma root device\n");
 	return 0;
 }
 
 static int cma_dev_release(struct inode *inode, struct file *filp)
 {
+	filp->private_data = NULL;
 	return 0;
 }
 
@@ -278,8 +285,51 @@ static struct vm_operations_struct cma_dev_vm_ops = {
 	.close = cma_dev_vma_close,
 };
 
+static inline int cma_dev_pfn_range_ok(struct cma_dev *cma_dev,
+				       unsigned long pfn, size_t size)
+{
+	u64 from = ((u64)pfn) << PAGE_SHIFT;
+	u64 to = from + size;
+
+	if (from >= cma_dev->range.base &&
+	    to <= (cma_dev->range.base + cma_dev->range.size))
+		return 1;
+
+	return 0;
+}
+
+static int cma_dev_range_allowed(struct cma_root_dev *cma_root_dev,
+				 unsigned long pfn, size_t size)
+{
+	struct list_head *pos;
+	unsigned long flags;
+	int ret = 0;
+
+	if (!cma_root_dev)
+		return 0;
+
+	spin_lock_irqsave(&cma_dev_lock, flags);
+	list_for_each(pos, &cma_root_dev->cma_devs.list) {
+		struct cma_dev *curr_cma_dev;
+		curr_cma_dev = list_entry(pos, struct cma_dev, list);
+		BUG_ON(curr_cma_dev == NULL);
+		ret = cma_dev_pfn_range_ok(curr_cma_dev, pfn, size);
+		if (ret)
+			break;
+	}
+
+	spin_unlock_irqrestore(&cma_dev_lock, flags);
+	return ret;
+}
+
 static int cma_dev_mmap(struct file *filp, struct vm_area_struct *vma)
 {
+	size_t size = vma->vm_end - vma->vm_start;
+	struct cma_root_dev *cma_root_dev = filp->private_data;
+
+	if (!cma_dev_range_allowed(cma_root_dev, vma->vm_pgoff, size))
+		return -EINVAL;
+
 	switch (cma_root_dev->mmap_type) {
 	case MMAP_TYPE_NORMAL:
 		break;
@@ -310,64 +360,6 @@ static int cma_dev_mmap(struct file *filp, struct vm_area_struct *vma)
 	}
 
 	return 0;
-}
-
-#define NUM_BUS_RANGES 10
-#define BUS_RANGE_ULIMIT_SHIFT 4
-#define BUS_RANGE_LLIMIT_SHIFT 4
-#define BUS_RANGE_PA_SHIFT 12
-
-enum {
-	BUSNUM_MCP0 = 0x4,
-	BUSNUM_MCP1 = 0x5,
-	BUSNUM_MCP2 = 0x6,
-};
-
-/*
- * If the DT nodes are handy, determine which MEMC holds the specified
- * physical address.
- */
-static int phys_addr_to_memc(phys_addr_t pa)
-{
-	int memc = -1;
-	int i;
-	struct device_node *np;
-	void __iomem *cpubiuctrl = NULL;
-	void __iomem *curr;
-
-	np = of_find_compatible_node(NULL, NULL, "brcm,brcmstb-cpu-biu-ctrl");
-	if (!np)
-		goto cleanup;
-
-	cpubiuctrl = of_iomap(np, 0);
-	if (!cpubiuctrl)
-		goto cleanup;
-
-	for (i = 0, curr = cpubiuctrl; i < NUM_BUS_RANGES; i++, curr += 8) {
-		const u64 ulimit_raw = readl(curr);
-		const u64 llimit_raw = readl(curr + 4);
-		const u64 ulimit =
-			((ulimit_raw >> BUS_RANGE_ULIMIT_SHIFT)
-			 << BUS_RANGE_PA_SHIFT) | 0xfff;
-		const u64 llimit = (llimit_raw >> BUS_RANGE_LLIMIT_SHIFT)
-				   << BUS_RANGE_PA_SHIFT;
-		const u32 busnum = (u32)(ulimit_raw & 0xf);
-
-		if (pa >= llimit && pa <= ulimit) {
-			if (busnum >= BUSNUM_MCP0 && busnum <= BUSNUM_MCP2) {
-				memc = busnum - BUSNUM_MCP0;
-				break;
-			}
-		}
-	}
-
-cleanup:
-	if (cpubiuctrl)
-		iounmap(cpubiuctrl);
-
-	of_node_put(np);
-
-	return memc;
 }
 
 /**
@@ -776,7 +768,7 @@ static int __init cma_drvr_config_platdev(struct platform_device *pdev,
 	cma_dev->range.base = data->start;
 	cma_dev->range.size = data->size;
 	cma_dev->cma_dev_index = pdev->id;
-	cma_dev->memc = phys_addr_to_memc(data->start);
+	cma_dev->memc = brcmstb_memory_phys_addr_to_memc(data->start);
 
 	if (!data->cma_area) {
 		pr_err("null cma area\n");
@@ -924,11 +916,6 @@ free_cma_dev:
 
 done:
 	return ret;
-}
-
-int cma_drvr_is_ready(void)
-{
-	return cma_root_dev != NULL;
 }
 
 static struct platform_driver cma_driver = {

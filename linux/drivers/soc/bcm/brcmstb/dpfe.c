@@ -41,7 +41,7 @@
 #define DRAM_INFO_INTERVAL	0x0
 #define DRAM_INFO_MR4		0x4
 #define DRAM_INFO_ERROR		0x8
-#define DRAM_INFO_MASK		0xff
+#define DRAM_INFO_MR4_MASK	0xff
 
 /* DRAM MR4 Offsets & Masks */
 #define DRAM_MR4_REFRESH	0x0	/* Refresh rate */
@@ -392,7 +392,7 @@ static int __write_firmware(u32 __iomem *mem, const u32 *fw,
 	return 0;
 }
 
-static int brcmstb_dpfe_download_firwmare(struct platform_device *pdev,
+static int brcmstb_dpfe_download_firmware(struct platform_device *pdev,
 					  struct init_data *init)
 {
 	const struct dpfe_firmware_header *header;
@@ -503,7 +503,7 @@ static ssize_t show_refresh(struct device *dev,
 	offset = response[MSG_ARG0];
 	info = priv->dmem + offset;
 
-	mr4 = readl_relaxed(info + DRAM_INFO_MR4) & DRAM_INFO_MASK;
+	mr4 = readl_relaxed(info + DRAM_INFO_MR4) & DRAM_INFO_MR4_MASK;
 
 	refresh = (mr4 >> DRAM_MR4_REFRESH) & DRAM_MR4_REFRESH_MASK;
 	sr_abort = (mr4 >> DRAM_MR4_SR_ABORT) & DRAM_MR4_SR_ABORT_MASK;
@@ -537,8 +537,8 @@ static ssize_t store_refresh(struct device *dev, struct device_attribute *attr,
 		return ret;
 
 	offset = response[MSG_ARG0];
-	info = priv->dmem + offset + DRAM_MR4_REFRESH;
-	writel_relaxed(val, info);
+	info = priv->dmem + offset;
+	writel_relaxed(val, info + DRAM_INFO_INTERVAL);
 
 	return count;
 }
@@ -566,6 +566,13 @@ static ssize_t show_vendor(struct device *dev, struct device_attribute *devattr,
 		       readl_relaxed(info + DRAM_VENDOR_MR7) & DRAM_VENDOR_MASK,
 		       readl_relaxed(info + DRAM_VENDOR_MR8) & DRAM_VENDOR_MASK,
 		       readl_relaxed(info + DRAM_VENDOR_ERROR));
+}
+
+static int brcmstb_dpfe_resume(struct platform_device *pdev)
+{
+	struct init_data init;
+
+	return brcmstb_dpfe_download_firmware(pdev, &init);
 }
 
 static DEVICE_ATTR(dpfe_info, 0444, show_info, NULL);
@@ -622,7 +629,7 @@ static int brcmstb_dpfe_probe(struct platform_device *pdev)
 		return -ENOENT;
 	}
 
-	ret = brcmstb_dpfe_download_firwmare(pdev, &init);
+	ret = brcmstb_dpfe_download_firmware(pdev, &init);
 	if (ret)
 		goto err;
 
@@ -667,6 +674,7 @@ static struct platform_driver brcmstb_dpfe_driver = {
 		.of_match_table = brcmstb_dpfe_of_match,
 	},
 	.probe = brcmstb_dpfe_probe,
+	.resume = brcmstb_dpfe_resume,
 };
 
 module_platform_driver(brcmstb_dpfe_driver);

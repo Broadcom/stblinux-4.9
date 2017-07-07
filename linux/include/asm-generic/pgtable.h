@@ -586,7 +586,9 @@ static inline void untrack_pfn(struct vm_area_struct *vma,
 /*
  * untrack_pfn_moved is called while mremapping a pfnmap for a new region.
  */
-static inline void untrack_pfn_moved(struct vm_area_struct *vma)
+static inline void untrack_pfn_moved(struct vm_area_struct *vma,
+				     unsigned long pfn,
+				     unsigned long size)
 {
 }
 #else
@@ -598,7 +600,8 @@ extern int track_pfn_insert(struct vm_area_struct *vma, pgprot_t *prot,
 extern int track_pfn_copy(struct vm_area_struct *vma);
 extern void untrack_pfn(struct vm_area_struct *vma, unsigned long pfn,
 			unsigned long size);
-extern void untrack_pfn_moved(struct vm_area_struct *vma);
+extern void untrack_pfn_moved(struct vm_area_struct *vma, unsigned long pfn,
+			      unsigned long size);
 #endif
 
 #ifdef __HAVE_COLOR_ZERO_PAGE

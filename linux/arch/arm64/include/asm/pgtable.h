@@ -52,7 +52,7 @@ extern void __pgd_error(const char *file, int line, unsigned long val);
  * for zero-mapped memory areas etc..
  */
 extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
-#define ZERO_PAGE(vaddr)	pfn_to_page(PHYS_PFN(__pa(empty_zero_page)))
+#define ZERO_PAGE(vaddr)	phys_to_page(__pa_symbol(empty_zero_page))
 
 #define pte_ERROR(pte)		__pte_error(__FILE__, __LINE__, pte_val(pte))
 
@@ -672,6 +672,10 @@ static inline void pmdp_set_wrprotect(struct mm_struct *mm,
 }
 #endif
 #endif	/* CONFIG_ARM64_HW_AFDBM */
+
+#ifdef CONFIG_PAGE_AUTOMAP
+#define __HAVE_PFNMAP_TRACKING
+#endif
 
 extern pgd_t swapper_pg_dir[PTRS_PER_PGD];
 extern pgd_t idmap_pg_dir[PTRS_PER_PGD];

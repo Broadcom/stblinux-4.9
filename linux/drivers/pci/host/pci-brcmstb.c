@@ -451,10 +451,10 @@ static inline void brcm_pcie_bridge_sw_init_set(struct brcm_pcie *pcie,
 {
 	unsigned int offset = 0;
 
-	if (pcie->type != BCM7278)
+	if (pcie->type != BCM7278) {
 		wr_fld_rb(PCIE_RGR1_SW_INIT_1(pcie), 0x2, 1, val);
-	else {
-		/* The two PCIE instance on 7278 are not even consistent with
+	} else if (of_machine_is_compatible("brcm,bcm7278a0")) {
+		/* The two PCIE instance on 7278a0 are not even consistent with
 		 * respect to each other for internal offsets, here we offset
 		 * by 0x14000 + RGR1_SW_INIT_1's relative offset to account for
 		 * that.
@@ -462,6 +462,8 @@ static inline void brcm_pcie_bridge_sw_init_set(struct brcm_pcie *pcie,
 		offset = pcie->num ? 0x14010
 		    : pcie->reg_offsets[RGR1_SW_INIT_1];
 		wr_fld_rb(pcie->base + offset, 0x1, 0, val);
+	} else {
+		wr_fld_rb(PCIE_RGR1_SW_INIT_1(pcie), 0x1, 0, val);
 	}
 }
 

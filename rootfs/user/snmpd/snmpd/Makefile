@@ -1,7 +1,7 @@
 EXEC = snmpd
 OBJS = snmpd.o
 
-CFLAGS += -I../snmplib -I../modules
+CFLAGS += -I../snmplib -I../modules -include $(ROOTDIR)/config/autoconf.h
 
 # Need a bigger stack than the default
 FLTFLAGS += -s 8000

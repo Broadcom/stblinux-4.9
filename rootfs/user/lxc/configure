@@ -5045,6 +5045,7 @@ $as_echo_n "checking for linux SRCARCH... " >&6; }
 	powerpc*-*) LINUX_SRCARCH=powerpc;;
 	s390*-*) LINUX_SRCARCH=s390;;
 	arm*-*) LINUX_SRCARCH=arm;;
+	aarch64*-*) LINUX_SRCARCH=arm64;;
 	mips*-*) LINUX_SRCARCH=mips;;
 	*) as_fn_error $? "architecture ${host} not supported" "$LINENO" 5 ;;
 	esac

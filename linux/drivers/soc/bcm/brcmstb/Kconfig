@@ -49,6 +49,19 @@ config BRCMSTB_MEMORY_API
 
 	  If you are planning to use Broadcom middleware, choose Y here.
 
+config BRCMSTB_AUTOMAP_BMEM
+	bool "Enable Auto Mapping of BMEM regions"
+	default y
+	depends on ARM64 && BRCMSTB_BMEM
+	select PAGE_AUTOMAP
+	help
+	  If BMEM is direct mapped by the kernel the ARM64 may speculatively
+	  fetch into secured regions.  This option allows BMEM regions to
+	  remain unmapped unless a user space process maps pages from a BMEM
+	  region, in which case those pages will be automatically direct
+	  mapped into the kernel to allow O_DIRECT to be used with those
+	  pages.
+
 config BRCMSTB_PM
 	bool "Support suspend/resume for STB platforms"
 	default y

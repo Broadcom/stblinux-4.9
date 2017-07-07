@@ -32,6 +32,8 @@
 #include <linux/brcmstb/bmem.h>
 #include <linux/brcmstb/cma_driver.h>
 #include <linux/brcmstb/memory_api.h>
+#include <asm/tlbflush.h>
+#include <linux/pfn_t.h>
 
 /* -------------------- Constants -------------------- */
 
@@ -75,6 +77,10 @@ const enum brcmstb_reserve_type brcmstb_default_reserve = BRCMSTB_RESERVE_BMEM;
 bool brcmstb_memory_override_defaults = false;
 
 static struct brcmstb_reserved_memory reserved_init;
+
+#ifdef CONFIG_PAGE_AUTOMAP
+static spinlock_t automap_lock = __SPIN_LOCK_UNLOCKED(automap_lock);
+#endif
 
 /* -------------------- Functions -------------------- */
 
@@ -956,6 +962,166 @@ int brcmstb_memory_get(struct brcmstb_memory *mem)
 }
 EXPORT_SYMBOL(brcmstb_memory_get);
 
+#ifdef CONFIG_PAGE_AUTOMAP
+static void map(phys_addr_t start, phys_addr_t size)
+{
+	unsigned long va_start = (unsigned long)__va(start);
+	unsigned long va_end = va_start + size;
+	struct page *page = phys_to_page(start);
+
+	pr_debug("AutoMap kernel pages 0x%llx size = 0x%llx\n", start, size);
+
+	while (va_start != va_end) {
+		map_kernel_range_noflush(va_start, PAGE_SIZE,
+					 PAGE_KERNEL, &page);
+		va_start += PAGE_SIZE;
+		page++;
+	}
+
+	flush_tlb_kernel_range(va_start, va_start + (unsigned long)size);
+}
+
+static void unmap(phys_addr_t start, phys_addr_t size)
+{
+	unsigned long va_start = (unsigned long)__va(start);
+
+	pr_debug("AutoUnmap kernel pages 0x%llx size = 0x%llx\n", start, size);
+	unmap_kernel_range_noflush(va_start, (unsigned long)size);
+	flush_tlb_kernel_range(va_start, va_start + (unsigned long)size);
+}
+
+static void inc_automap_pages(struct page *page, int nr)
+{
+	phys_addr_t end, start = 0;
+	int count;
+
+	spin_lock(&automap_lock);
+	while (nr--) {
+		if (unlikely(PageAutoMap(page))) {
+			count = page_ref_inc_return(page);
+			if (count == 2) {
+				/* Needs to be mapped */
+				if (!start)
+					start = page_to_phys(page);
+				end = page_to_phys(page);
+			} else if (start) {
+				map(start, end + PAGE_SIZE - start);
+				start = 0;
+			}
+		} else if (start) {
+			map(start, end + PAGE_SIZE - start);
+			start = 0;
+		}
+		page++;
+	}
+	if (start)
+		map(start, end + PAGE_SIZE - start);
+	spin_unlock(&automap_lock);
+}
+
+static void dec_automap_pages(struct page *page, int nr)
+{
+	phys_addr_t end, start = 0;
+	int count;
+
+	spin_lock(&automap_lock);
+	while (nr--) {
+		if (unlikely(PageAutoMap(page))) {
+			count = page_ref_dec_return(page);
+			if (count == 1) {
+				/* Needs to be unmapped */
+				if (!start)
+					start = page_to_phys(page);
+				end = page_to_phys(page);
+			} else if (start) {
+				unmap(start, end + PAGE_SIZE - start);
+				start = 0;
+			}
+		} else if (start) {
+			unmap(start, end + PAGE_SIZE - start);
+			start = 0;
+		}
+		page++;
+	}
+	if (start)
+		unmap(start, end + PAGE_SIZE - start);
+	spin_unlock(&automap_lock);
+}
+
+int track_pfn_remap(struct vm_area_struct *vma, pgprot_t *prot,
+		    unsigned long pfn, unsigned long addr,
+		    unsigned long size)
+{
+	if (pfn_valid(pfn))
+		inc_automap_pages(pfn_to_page(pfn), size >> PAGE_SHIFT);
+	return 0;
+}
+
+int track_pfn_insert(struct vm_area_struct *vma, pgprot_t *prot, pfn_t pfn)
+{
+	struct page *page = pfn_t_to_page(pfn);
+
+	if (unlikely(!page))
+		return 0;
+
+	inc_automap_pages(page, 1);
+	return 0;
+}
+
+int track_pfn_copy(struct vm_area_struct *vma)
+{
+	unsigned long pfn;
+
+	if (follow_pfn(vma, vma->vm_start, &pfn)) {
+		WARN_ON_ONCE(1);
+		return 0;
+	}
+
+	if (pfn_valid(pfn))
+		inc_automap_pages(pfn_to_page(pfn),
+				  (vma->vm_end - vma->vm_start) >> PAGE_SHIFT);
+	return 0;
+}
+
+void untrack_pfn(struct vm_area_struct *vma, unsigned long pfn,
+		 unsigned long size)
+{
+	if (!pfn && !size) {
+		if (!vma) {
+			WARN_ON_ONCE(1);
+			return;
+		}
+
+		if (follow_pfn(vma, vma->vm_start, &pfn))
+			WARN_ON_ONCE(1);
+
+		size = vma->vm_end - vma->vm_start;
+	}
+
+	if (pfn_valid(pfn))
+		dec_automap_pages(pfn_to_page(pfn), size >> PAGE_SHIFT);
+}
+
+void untrack_pfn_moved(struct vm_area_struct *vma, unsigned long pfn,
+		       unsigned long size)
+{
+	if (!pfn && !size) {
+		if (!vma) {
+			WARN_ON_ONCE(1);
+			return;
+		}
+
+		if (follow_pfn(vma, vma->vm_start, &pfn))
+			WARN_ON_ONCE(1);
+
+		size = vma->vm_end - vma->vm_start;
+	}
+
+	if (pfn_valid(pfn))
+		inc_automap_pages(pfn_to_page(pfn), size >> PAGE_SHIFT);
+}
+#endif /* CONFIG_PAGE_AUTOMAP */
+
 static int pte_callback(pte_t *pte, unsigned long x, unsigned long y,
 			struct mm_walk *walk)
 {
@@ -982,11 +1148,11 @@ static void *page_to_virt_contig(const struct page *page, unsigned int pg_cnt,
 	pfn_start = page_to_pfn(page);
 	pfn_end = pfn_start + pg_cnt;
 	for (pfn = pfn_start; pfn < pfn_end; pfn++) {
-		const struct page *cur_pg = pfn_to_page(pfn);
+		struct page *cur_pg = pfn_to_page(pfn);
 		phys_addr_t pa;
 
-		/* Verify range is in low memory only */
-		if (PageHighMem(cur_pg))
+		/* Verify range is in mapped low memory only */
+		if (PageHighMem(cur_pg) || PageAutoMap(cur_pg))
 			return NULL;
 
 		/* Must be mapped */

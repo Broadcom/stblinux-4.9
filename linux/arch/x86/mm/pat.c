@@ -1036,7 +1036,8 @@ void untrack_pfn(struct vm_area_struct *vma, unsigned long pfn,
  * with the old vma after its pfnmap page table has been removed.  The new
  * vma has a new pfnmap to the same pfn & cache type with VM_PAT set.
  */
-void untrack_pfn_moved(struct vm_area_struct *vma)
+void untrack_pfn_moved(struct vm_area_struct *vma, unsigned long pfn,
+		       unsigned long size)
 {
 	vma->vm_flags &= ~VM_PAT;
 }

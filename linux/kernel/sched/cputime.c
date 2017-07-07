@@ -236,6 +236,7 @@ void account_steal_time(cputime_t cputime)
 
 	cpustat[CPUTIME_STEAL] += (__force u64) cputime;
 }
+EXPORT_SYMBOL_GPL(account_steal_time);
 
 /*
  * Account for idle time.

@@ -348,14 +348,16 @@ static int bcm_sf2_port_setup(struct dsa_switch *ds, int port,
 	if (priv->port_sts[port].eee.eee_enabled)
 		bcm_sf2_eee_enable_set(ds, port, true);
 
-	/* Set per-queue pause threshold to 32 */
-	core_writel(priv, 32, CORE_TXQ_THD_PAUSE_QN_PORT(port));
+	if (priv->type == BCM7445_DEVICE_ID) {
+		/* Set per-queue pause threshold to 32 */
+		core_writel(priv, 32, CORE_TXQ_THD_PAUSE_QN_PORT(port));
 
-	/* Set ACB threshold to 24 */
-	reg = acb_readl(priv, ACB_QUEUE_CFG(port * 8));
-	reg &= ~XOFF_THRESHOLD_MASK;
-	reg |= 24;
-	acb_writel(priv, reg, ACB_QUEUE_CFG(port * 8));
+		/* Set ACB threshold to 24 */
+		reg = acb_readl(priv, ACB_QUEUE_CFG(port * 8));
+		reg &= ~XOFF_THRESHOLD_MASK;
+		reg |= 24;
+		acb_writel(priv, reg, ACB_QUEUE_CFG(port * 8));
+	}
 
 	return 0;
 }
@@ -835,10 +837,12 @@ static void bcm_sf2_enable_acb(struct dsa_switch *ds)
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
 	u32 reg;
 
-	/* Enable ACB globally */
-	reg = acb_readl(priv, ACB_CONTROL);
-	reg |= ACB_EN | ACB_ALGORITHM;
-	acb_writel(priv, reg, ACB_CONTROL);
+	if (priv->type == BCM7445_DEVICE_ID) {
+		/* Enable ACB globally */
+		reg = acb_readl(priv, ACB_CONTROL);
+		reg |= ACB_EN | ACB_ALGORITHM;
+		acb_writel(priv, reg, ACB_CONTROL);
+	}
 }
 
 static int bcm_sf2_sw_suspend(struct dsa_switch *ds)

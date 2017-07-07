@@ -29,6 +29,7 @@
 struct brcmuart_priv {
 	int			line;
 	struct clk		*baud_mux_clk;
+	unsigned long		default_mux_rate;
 };
 
 
@@ -152,6 +153,7 @@ static int brcmuart_probe(struct platform_device *pdev)
 			return ret;
 		priv->baud_mux_clk = baud_mux_clk;
 		clk_rate = clk_get_rate(baud_mux_clk);
+		priv->default_mux_rate = clk_rate;
 		dev_dbg(&pdev->dev, "Default BAUD MUX Clock rate is %u\n",
 			clk_rate);
 	}
@@ -200,6 +202,40 @@ static int brcmuart_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static int brcmuart_suspend(struct device *dev)
+{
+	struct brcmuart_priv *priv = dev_get_drvdata(dev);
+
+	serial8250_suspend_port(priv->line);
+	clk_disable_unprepare(priv->baud_mux_clk);
+
+	return 0;
+}
+
+static int brcmuart_resume(struct device *dev)
+{
+	struct brcmuart_priv *priv = dev_get_drvdata(dev);
+	int ret;
+
+	ret = clk_prepare_enable(priv->baud_mux_clk);
+	if (ret)
+		dev_err(dev, "Error enabling BAUD MUX clock\n");
+
+	/*
+	 * The hardware goes back to it's default after suspend
+	 * so get the "clk" back in sync.
+	 */
+	ret = clk_set_rate(priv->baud_mux_clk, priv->default_mux_rate);
+	if (ret)
+		dev_err(dev, "Error restoring default BAUD MUX clock\n");
+	serial8250_resume_port(priv->line);
+	return 0;
+}
+
+static const struct dev_pm_ops brcmuart_dev_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(brcmuart_suspend, brcmuart_resume)
+};
+
 static const struct of_device_id brcmuart_dt_ids[] = {
 	{ .compatible = "brcm,bcm7271-uart" },
 	{},
@@ -209,6 +245,7 @@ MODULE_DEVICE_TABLE(of, brcmuart_dt_ids);
 static struct platform_driver brcmuart_platform_driver = {
 	.driver = {
 		.name	= "bcm7271-uart",
+		.pm		= &brcmuart_dev_pm_ops,
 		.of_match_table = brcmuart_dt_ids,
 	},
 	.probe		= brcmuart_probe,
