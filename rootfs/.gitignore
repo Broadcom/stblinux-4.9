@@ -1,7 +1,9 @@
+*~
 *.o
 .dirty
 .target
 .arch
+autom4te.cache
 config.arch
 config.arch.32
 config/.config*

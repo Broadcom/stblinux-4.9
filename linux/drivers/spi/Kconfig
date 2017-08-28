@@ -164,6 +164,13 @@ config SPI_BCM_QSPI
 	  based platforms. This driver works for both SPI master for spi-nor
 	  flash device as well as MSPI device.
 
+config SPI_BRCMSTB_MSPI
+	tristate "Broadcom MSPI master support for STB chips"
+	depends on (ARCH_BRCMSTB && SPI_BCM_QSPI) || COMPILE_TEST
+	default n
+	help
+	  Enables support for the Broadcom MSPI controller.
+
 config SPI_BITBANG
 	tristate "Utilities for Bitbanging SPI masters"
 	help

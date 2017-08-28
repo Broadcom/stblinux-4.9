@@ -11,14 +11,14 @@
  * GNU General Public License for more details.
  *
  */
-#include <linux/pci.h>
-#include <linux/kernel.h>
-#include <linux/init.h>
-#include <linux/of_address.h>
-#include <linux/io.h>
-#include <linux/smp.h>
 #include <linux/dma-mapping.h>
+#include <linux/init.h>
+#include <linux/io.h>
+#include <linux/kernel.h>
+#include <linux/of_address.h>
+#include <linux/pci.h>
 #include <linux/platform_device.h>
+#include <linux/smp.h>
 
 #include "pci-brcmstb.h"
 
@@ -101,8 +101,7 @@ static void brcm_dma_sync_single_for_device(struct device *dev,
 
 static int brcm_mapping_error(struct device *dev, dma_addr_t dma_addr)
 {
-	dma_addr = brcm_to_cpu(dma_addr);
-	return GEN_DMA_OPS->mapping_error(dev, dma_addr);
+	return dma_addr == BRCMSTB_ERROR_CODE;
 }
 
 /* we would like this var to be const but set_dma_ops() disallows it */

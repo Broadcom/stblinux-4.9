@@ -62,3 +62,4 @@ obj-$(CONFIG_XILLYBUS)		+= xillybus/
 obj-$(CONFIG_POWERNV_OP_PANEL)	+= powernv-op-panel.o
 
 obj-$(CONFIG_BRCM_MOCA)		+= bmoca.o
+obj-$(CONFIG_BRCM_BCM6802)	+= bcm6802.o

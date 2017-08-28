@@ -69,6 +69,9 @@
 
 #define MOCA_DEVICE_ID_UNREGISTERED  (-1)
 
+/* Flag used in MOCA_IOCTL_READMEM/MOCA_IOCTL_WRITE_MEM */
+#define MOCA_ABSOLUTE_ADDR_FLAG 0x80000000
+
 /* this must match MoCAOS_IFNAMSIZE */
 #define MOCA_IFNAMSIZ		16
 
@@ -134,6 +137,35 @@ struct moca_start {
 	__u32			boot_flags;
 };
 
+struct moca_regs {
+	unsigned int		data_mem_offset;
+	unsigned int		data_mem_size;
+	unsigned int		cntl_mem_size;
+	unsigned int		cntl_mem_offset;
+	unsigned int		gp0_offset;
+	unsigned int		gp1_offset;
+	unsigned int		ringbell_offset;
+	unsigned int		l2_status_offset;
+	unsigned int		l2_clear_offset;
+	unsigned int		l2_mask_set_offset;
+	unsigned int		l2_mask_clear_offset;
+	unsigned int		sw_reset_offset;
+	unsigned int		led_ctrl_offset;
+	unsigned int		m2m_src_offset;
+	unsigned int		m2m_dst_offset;
+	unsigned int		m2m_cmd_offset;
+	unsigned int		m2m_status_offset;
+	unsigned int		m2m_src_high_offset;
+	unsigned int		m2m_dst_high_offset;
+	unsigned int		moca2host_mmp_inbox_0_offset;
+	unsigned int		moca2host_mmp_inbox_1_offset;
+	unsigned int		moca2host_mmp_inbox_2_offset;
+	unsigned int		extras_mmp_outbox_3_offset;
+	unsigned int		h2m_resp_bit[2]; /* indexed by cpu */
+	unsigned int		h2m_req_bit[2]; /* indexed by cpu */
+	unsigned int		sideband_gmii_fc_offset;
+};
+
 /* MoCA PM states */
 enum moca_pm_states {
 	MOCA_ACTIVE,
@@ -178,10 +210,9 @@ struct moca_platform_data {
 	u32			hw_rev;  /* this is the chip_id */
 	u32			rf_band;
 
-	int			use_dma;
-	int			use_spi;
-
 	u32			chip_id;
+
+	int			minor;
 };
 
 enum {
@@ -199,6 +230,45 @@ enum {
 #define MOCA_PROTVER_11		0x1100
 #define MOCA_PROTVER_20		0x2000
 #define MOCA_PROTVER_MASK	0xff00
+
+
+#define MOCA_ENABLE		1
+#define MOCA_DISABLE		0
+
+/* HW specific functions */
+typedef unsigned int (*read32)(void *hw_priv, uintptr_t addr);
+typedef void (*write32)(void *hw_priv, uintptr_t addr, u32 data);
+typedef void (*hw_reset)(void *hw_priv);
+typedef void (*hw_init)(void *hw_priv, int action, int *enabled,
+			int bonded_mode);
+typedef void (*write_mem)(void *hw_priv, uintptr_t dst, void *src,
+			  unsigned int len);
+typedef void (*read_mem)(void *hw_priv, void *dst, uintptr_t src,
+			 unsigned int len);
+typedef void (*write_sg)(void *hw_priv, dma_addr_t dst_offset,
+			 struct scatterlist *sg, int nents);
+typedef void (*hw_enable_irq)(void *hw_priv);
+typedef void (*hw_disable_irq)(void *hw_priv);
+
+struct moca_ops {
+	read32			read32;
+	write32			write32;
+	hw_reset		hw_reset;
+	hw_init			hw_init;
+	write_mem		write_mem;
+	read_mem		read_mem;
+	write_sg		write_sg;
+	hw_enable_irq		hw_enable_irq;
+	hw_disable_irq		hw_disable_irq;
+
+	int			dma;
+};
+
+int moca_initialize(struct device *dev, struct moca_ops *moca_ops,
+		    void *hw_priv, void __iomem *base, u32 chip_id,
+		    int range_check_flag, int irq, int wol_irq,
+		    const u8 *macaddr, unsigned int enet_ph,
+		    const struct moca_regs *regs);
 
 #endif /* __KERNEL__ */
 

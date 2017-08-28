@@ -25,6 +25,7 @@
 #include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/soc/brcmstb/brcmstb.h>
+#include <dt-bindings/phy/phy.h>
 
 #include "phy-brcm-usb-init.h"
 
@@ -134,10 +135,25 @@ static struct phy *brcm_usb_phy_xlate(struct device *dev,
 {
 	struct brcm_usb_phy_data *data = dev_get_drvdata(dev);
 
-	if (args->args[0] >= BRCM_USB_PHY_ID_MAX)
-		return ERR_PTR(-ENODEV);
-
-	return data->phys[args->args[0]].phy;
+	/*
+	 * values 0 and 1 are for backward compatibility with
+	 * device tree nodes from older bootloaders.
+	 */
+	switch (args->args[0]) {
+	case 0:
+	case PHY_TYPE_USB2:
+		if (data->phys[BRCM_USB_PHY_2_0].phy)
+			return data->phys[BRCM_USB_PHY_2_0].phy;
+		dev_info(dev, "2.0 Phy not found\n");
+		break;
+	case 1:
+	case PHY_TYPE_USB3:
+		if (data->phys[BRCM_USB_PHY_3_0].phy)
+			return data->phys[BRCM_USB_PHY_3_0].phy;
+		dev_info(dev, "3.0 Phy not found\n");
+		break;
+	}
+	return ERR_PTR(-ENODEV);
 }
 
 /*

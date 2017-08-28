@@ -34,7 +34,7 @@ obj-$(CONFIG_PCIE_ARTPEC6) += pcie-artpec6.o
 obj-$(CONFIG_PCIE_ROCKCHIP) += pcie-rockchip.o
 obj-$(CONFIG_VMD) += vmd.o
 obj-$(CONFIG_PCIE_BRCMSTB) += pci_brcmstb.o
-pci_brcmstb-objs += pci-brcmstb.o pci-dma-brcmstb.o
+pci_brcmstb-objs += pci-brcmstb.o pci-brcmstb-dma.o
 ifdef CONFIG_PCI_MSI
-	pci_brcmstb-objs += pci-msi-brcmstb.o
+	pci_brcmstb-objs += pci-brcmstb-msi.o
 endif

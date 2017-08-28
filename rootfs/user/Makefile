@@ -334,8 +334,6 @@ dir_$(CONFIG_USER_ZEBRA_RIPD_RIPD)          += zebra
 dir_$(CONFIG_USER_ZEBRA_ZEBRA_ZEBRA)        += zebra
 dir_$(CONFIG_USER_LTT_TRACEDAEMON)          += LTTDaemon
 dir_$(CONFIG_USER_ETHCTL)                   += ethctl
-dir_$(CONFIG_USER_PERF)                     += $(ROOTDIR)/$(LINUXDIR)/tools/perf
-dir_$(CONFIG_USER_TMON)			    += $(ROOTDIR)/$(LINUXDIR)/tools/thermal/tmon
 
 # dir_y += games
 
@@ -347,6 +345,77 @@ ifneq ($(shell echo $(filter user%,$(INITRD_SUBDIR))|sed -e 's/user[\/]/user/'),
 # dir_v:=$(subst vendors,$(VEND),$(findstring vendors/$(CONFIG_VENDOR)/$(CONFIG_PRODUCT),$(INITRD_SUBDIR)))
 dir_y:=$(patsubst user/%,%,$(filter user/%,$(INITRD_SUBDIR)))
 endif
+endif
+
+# tmon and perf are a special case. In order to use the Makefile provided with
+# the kernel, we use explicit build rules. tmon's Makefile is also really buggy.
+
+ifeq ($(CONFIG_USER_TMON), y)
+PKG_CONFIG=$(ROOTDIR)/bin/tmon-pkg-config
+
+# We need to set the CFLAGS here. 3.14 doesn't use pkg-config yet, and 4.1
+# and 4.9 have bug in the tmon Makefile. They are using pkg-config rather
+# than $(PKG_CONFIG) preventing us from passing our own pkg-config.
+
+# We set LDFLAGS for 3.14, which isn't using pkg-config yet. We can't set
+# LDFLAGS or LDLIBS for 4.1 or 4.9 here, due to tmon's Makefile design in
+# those releases. Their Makefile is using TMON_LIBS to pass the required
+# libraries, but TMON_LIBS can't be set from the outside. The only way to
+# influence its contents is via PKG_CONFIG.
+
+TMON_MAKEVARS += \
+	CFLAGS="$(shell $(PKG_CONFIG) --cflags panel ncurses)" \
+	LDFLAGS="$(shell $(PKG_CONFIG) --libs panel ncurses)"
+
+tmon:
+	$(TMON_MAKEVARS) $(MAKE) -C $(ROOTDIR)/$(LINUXDIR)/tools tmon
+	$(MAKE) -C $(ROOTDIR)/$(LINUXDIR)/tools tmon_install \
+		INSTALL_ROOT=$(ROMFSDIR) BINDIR=bin
+
+tmon-clean:
+	$(MAKE) -C $(ROOTDIR)/$(LINUXDIR)/tools/ tmon_clean
+
+else
+tmon:
+	@echo "Building tmon is disabled."
+
+tmon-clean:
+endif
+
+ifeq ($(CONFIG_USER_PERF), y)
+
+PERF_MAKEARGS = \
+	LDFLAGS+="-L$(ROOTDIR)/lib/elfutils/libelf -lelf" \
+	EXTRA_CFLAGS+="-I$(ROOTDIR)/lib/elfutils/libelf" \
+
+PERF_MAKEARGS += WERROR=0 NO_LIBPYTHON=1 \
+		  NO_GTK2=1 NO_LIBAUDIT=1 NO_NEWT=1 NO_LIBPERL=1 \
+		  NO_LIBPYTHON=1 NO_DEMANGLE=1
+
+LIBDW_DIR = $(ROOTDIR)/lib/elfutils/install-tmp
+LIBUNWIND_DIR = $(ROOTDIR)/lib/libunwind/install-tmp
+perf:
+	$(MAKE) -C $(ROOTDIR)/$(LINUXDIR)/tools/perf \
+		$(PERF_MAKEARGS) \
+		O=$(ROOTDIR)/$(LINUXDIR)/tools/perf
+	# Install binaries only.
+	$(MAKE) -C $(ROOTDIR)/$(LINUXDIR)/tools/perf \
+		$(PERF_MAKEARGS) \
+		O=$(ROOTDIR)/$(LINUXDIR)/tools/perf \
+		DESTDIR=$(ROMFSDIR) \
+		install-bin
+
+perf-clean:
+	$(MAKE) -C $(ROOTDIR)/$(LINUXDIR)/tools/perf \
+		$(PERF_MAKEARGS) \
+		O=$(ROOTDIR)/$(LINUXDIR)/tools/perf \
+		clean
+
+else
+perf:
+	@echo "Building perf is disabled."
+
+perf-clean:
 endif
 
 all:
@@ -361,12 +430,12 @@ romfs:
 		$(MAKE) -C $$i romfs || exit $$?; \
 	done
 
-clean:
+clean: perf-clean tmon-clean
 	-for i in $(dir_v) $(sort $(dir_y) $(dir_n) $(dir_) $(dir_clean) ); do \
 		[ ! -d $$i ] || $(MAKE) -C $$i clean; \
 	done
 
-distclean:
+distclean: perf-clean tmon-clean
 	-for i in $(dir_v) $(sort $(dir_y) $(dir_n) $(dir_)); do \
 		[ ! -d $$i ] || $(MAKE) -C $$i distclean; \
 	done

@@ -142,6 +142,8 @@ rootfs: .target chkpath
 		fi ; \
 		$(MAKE) -C lib all \
 			INITRD_SUBDIR="$(SUBDIRS)" || exit 1 ; \
+		$(MAKE) -C user tmon || exit 1; \
+		$(MAKE) -C user perf || exit 1; \
 		$(MAKE) -C user all \
 			INITRD_SUBDIR="$(SUBDIRS)" || exit 1 ; \
 		$(MAKE) -j1 -C lib romfs \

@@ -1,0 +1,27 @@
+#!/bin/sh
+
+# Incredibly hacky script to get tmon to compile without touching the Linux
+# sources.
+#
+# This script pretends to be "pkg-config", so tmon's Makefile will pick up
+# the right compiler and linker flags for ncurses.
+
+prg=`basename $0`
+
+# We don't support the wide-char versions of panel and ncurses.
+echo "$@" | egrep '(panelw|ncursesw)' >/dev/null
+if [ $? = 0 ]; then
+	exit 1
+fi
+
+# We don't even look at the arguments after --cflags or --libs...
+if [ "$1" = "--cflags" ]; then
+	echo "-I$ROOTDIR/lib/ncurses/include"
+elif [ "$1" = "--libs" ]; then
+	echo "-L$ROOTDIR/lib/ncurses/lib -lpanel -lncurses"
+else
+	echo "usage: $prg --cflags|--libs" 1>&2
+	exit 1
+fi
+
+exit 0

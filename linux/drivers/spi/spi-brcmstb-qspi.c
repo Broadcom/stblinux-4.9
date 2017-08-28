@@ -22,7 +22,9 @@
 
 static const struct of_device_id brcmstb_qspi_of_match[] = {
 	{ .compatible = "brcm,spi-brcmstb-qspi" },
+#ifdef CONFIG_SPI_BRCMSTB_MSPI
 	{ .compatible = "brcm,spi-brcmstb-mspi" },
+#endif
 	{},
 };
 MODULE_DEVICE_TABLE(of, brcmstb_qspi_of_match);

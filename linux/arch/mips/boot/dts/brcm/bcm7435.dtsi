@@ -46,13 +46,38 @@
 		#interrupt-cells = <1>;
 	};
 
+	pcie: pcie@10410000 {
+		reg = <0x10410000 0x930c>;
+		interrupts = <0x27>, <0x27>;
+		interrupt-names = "pcie", "msi";
+		interrupt-parent = <&periph_intc>;
+		compatible = "brcm,bcm7435-pcie", "brcm,pci-plat-dev";
+		#address-cells = <3>;
+		#size-cells = <2>;
+		tot-num-pcie = <1>;
+		brcm,ssc;
+		#interrupt-cells = <1>;
+		/* 4x128mb windows */
+		ranges = <0x2000000 0x0 0xd0000000 0xd0000000 0 0x08000000>,
+			 <0x2000000 0x0 0xd8000000 0xd8000000 0 0x08000000>,
+			 <0x2000000 0x0 0xe0000000 0xe0000000 0 0x08000000>,
+			 <0x2000000 0x0 0xe8000000 0xe8000000 0 0x08000000>;
+		interrupt-map-mask = <0 0 0 7>;
+		interrupt-map = <0 0 0 1 &periph_intc 35
+				 0 0 0 2 &periph_intc 36
+				 0 0 0 3 &periph_intc 37
+				 0 0 0 4 &periph_intc 38>;
+		clocks = <&sw_pcie>;
+		clock-names = "sw_pcie";
+		status = "disabled";
+	};
+
 	clocks {
 		uart_clk: uart_clk {
 			compatible = "fixed-clock";
 			#clock-cells = <0>;
 			clock-frequency = <81000000>;
 		};
-
 		upg_clk: upg_clk {
 			compatible = "fixed-clock";
 			#clock-cells = <0>;

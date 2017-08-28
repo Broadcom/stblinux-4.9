@@ -22,52 +22,43 @@
 #define PCIE_INTR2_CPU_BASE		0x4300
 
 struct brcm_msi;
-struct brcm_pcie;
+struct brcm_info;
+struct platform_device;
 
-struct brcm_msi *brcm_pcie_to_msi(struct brcm_pcie *pcie);
 dma_addr_t brcm_to_pci(dma_addr_t addr);
 dma_addr_t brcm_to_cpu(dma_addr_t addr);
 
 extern struct notifier_block brcmstb_platform_nb;
 
 #ifdef CONFIG_PCI_MSI
-struct brcm_msi *brcm_alloc_init_msi(
-	struct brcm_pcie *pcie, struct device *dev, void __iomem *base,
-	int irq, struct device_node *dn, const char *name);
-
-int brcm_pcie_enable_msi(struct brcm_msi *msi, int nr, bool suspended);
-
-void brcm_set_msi_rev(struct brcm_msi *msi, unsigned rev);
-
-void brcm_set_msi_target_addr(struct brcm_msi *msi, u64 target);
-
-struct msi_controller *brcm_get_msi_chip(struct brcm_msi *msi);
-
+int brcm_msi_probe(struct platform_device *pdev, struct brcm_info *info);
+void brcm_msi_set_regs(struct msi_controller *chip);
 #else
-
-static inline struct brcm_msi *brcm_alloc_init_msi(
-	struct brcm_pcie *pcie, struct device *dev, void __iomem *base,
-	int irq, struct device_node *dn, const char *name)
+int brcm_msi_probe(struct platform_device *pdev, struct brcm_info *info)
 {
-	return NULL;
+	return -ENODEV;
 }
 
-static inline int brcm_pcie_enable_msi(
-	struct brcm_msi *msi, int nr, bool suspended)
-{
-	return -EOPNOTSUPP;
-}
-
-static inline void brcm_set_msi_target_addr(struct brcm_msi *msi, u64 target)
-{}
-
-static inline void brcm_set_msi_rev(struct brcm_msi *msi, unsigned rev)
-{}
-
-static inline struct msi_controller *brcm_get_msi_chip(struct brcm_msi *msi)
-{
-	return NULL;
-}
+void brcm_msi_set_regs(struct msi_controller *chip) {}
 #endif /* CONFIG_PCI_MSI */
+
+struct brcm_info {
+	int rev;
+	u64 msi_target_addr;
+	void __iomem *base;
+	const char *name;
+	struct brcm_pcie *pcie;
+};
+
+#define BRCMSTB_ERROR_CODE	(~(dma_addr_t)0x0)
+
+#if defined(CONFIG_MIPS)
+/* Broadcom MIPs HW implicitly does the swapping if necessary */
+#define bcm_readl(a)		__raw_readl(a)
+#define bcm_writel(d, a)	__raw_writel(d, a)
+#else
+#define bcm_readl(a)		readl(a)
+#define bcm_writel(d, a)	writel(d, a)
+#endif
 
 #endif /* __BRCMSTB_PCI_H */

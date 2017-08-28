@@ -115,8 +115,8 @@ lxc_kill_SOURCES = lxc_kill.c
 
 install-exec-local: install-soPROGRAMS
 	mv $(DESTDIR)$(libdir)/liblxc.so $(DESTDIR)$(libdir)/liblxc.so.$(VERSION)
-	/sbin/ldconfig -l $(DESTDIR)$(libdir)/liblxc.so.$(VERSION)
 	cd $(DESTDIR)$(libdir); \
+	ln -sf liblxc.so.$(VERSION) liblxc.so.$(firstword $(subst ., ,$(VERSION))); \
 	ln -sf liblxc.so.$(firstword $(subst ., ,$(VERSION))) liblxc.so
 
 uninstall-local:

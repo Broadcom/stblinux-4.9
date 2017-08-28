@@ -117,7 +117,7 @@ ifeq ($(findstring y,$(CONFIG_LIB_LIBSTDCXX_FORCE)$(CONFIG_LIB_LIBSTDCXX)),y)
 	-$(RM) -f $(ROMFSDIR)/lib/$(OSLIB)/libstdc++.*
 	-cp -af $(GCCLIB)/libstdc++.so $(GCCLIB)/libstdc++.so*[0-9] \
 		$(ROMFSDIR)/lib/$(OSLIB)/
-	-cp -af $(GCCSYSROOT)/lib/libstdc++.so \
+	-cp -af --remove-destination $(GCCSYSROOT)/lib/libstdc++.so \
 		$(GCCSYSROOT)/lib/libstdc++.so*[0-9] \
 		$(ROMFSDIR)/lib/$(OSLIB)/
 	$(STRIP) $(ROMFSDIR)/lib/$(OSLIB)/libstdc++.so
@@ -127,7 +127,7 @@ ifeq ($(findstring y,$(CONFIG_LIB_LIBGCC_FORCE)$(CONFIG_LIB_LIBGCC)),y)
 	-$(RM) -f $(ROMFSDIR)/lib/$(OSLIB)/libgcc_s.so*
 	-cp -af $(GCCLIB)/libgcc_s.so $(GCCLIB)/libgcc_s.so*[0-9] \
 		$(ROMFSDIR)/lib/$(OSLIB)/
-	-cp -af $(GCCSYSROOT)/lib/libgcc_s.so \
+	-cp -af --remove-destination $(GCCSYSROOT)/lib/libgcc_s.so \
 		$(GCCSYSROOT)/lib/libgcc_s.so*[0-9] \
 		$(ROMFSDIR)/lib/$(OSLIB)/
 	$(STRIP) $(ROMFSDIR)/lib/$(OSLIB)/libgcc_s.so.1
@@ -137,7 +137,7 @@ ifeq ($(findstring y,$(CONFIG_LIB_LIBSSP_FORCE)$(CONFIG_LIB_LIBSSP)),y)
 	-$(RM) -f $(ROMFSDIR)/lib/$(OSLIB)/libssp.so*
 	-cp -af $(GCCLIB)/libssp.so $(GCCLIB)/libssp.so*[0-9] \
 		$(ROMFSDIR)/lib/$(OSLIB)/
-	-cp -af $(GCCSYSROOT)/lib/libssp.so \
+	-cp -af --remove-destination $(GCCSYSROOT)/lib/libssp.so \
 		$(GCCSYSROOT)/lib/libssp.so*[0-9] \
 		$(ROMFSDIR)/lib/$(OSLIB)/
 	$(STRIP) $(ROMFSDIR)/lib/$(OSLIB)/libssp.so.0.0.0

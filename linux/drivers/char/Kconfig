@@ -602,5 +602,12 @@ config BRCM_MOCA
           If your chipset supports power management, disabling this driver
           will keep the device permanently powered down.
 
+config BRCM_BCM6802
+	tristate "Support for BCM6802 MoCA-to-Ethernet chips"
+	default y
+	depends on BRCMSTB_BBSI && BRCM_MOCA
+	help
+	  Support for BCM6802 and BCM6803 external MoCA chips over BBSI
+
 endmenu
 

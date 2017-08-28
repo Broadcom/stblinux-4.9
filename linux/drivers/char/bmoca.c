@@ -41,31 +41,16 @@
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/of_net.h>
+#include <linux/of_irq.h>
 #include <linux/printk.h>
 #include <linux/slab.h>
 #include <linux/clk-provider.h>
 #include <linux/netdevice.h>
 #include <linux/suspend.h>
+#include <linux/bmoca.h>
 
 #define DRV_VERSION		0x00040000
-#define DRV_BUILD_NUMBER	0x20110831
-
-#if defined(CONFIG_BRCMSTB)
-#define MOCA6816		0
-#include <linux/bmoca.h>
-#elif defined(DSL_MOCA)
-#define MOCA6816		1
-#include "bmoca.h"
-#include <boardparms.h>
-#include <bcm3450.h>
-#include <linux/netdevice.h>
-#else
-#define MOCA6816		1
-#include <linux/bmoca.h>
-#endif
-
-#define MOCA_ENABLE		1
-#define MOCA_DISABLE		0
+#define DRV_BUILD_NUMBER	0x20170310
 
 #define OFF_PKT_REINIT_MEM	0x00a08000
 #define PKT_REINIT_MEM_SIZE	(32 * 1024)
@@ -157,38 +142,10 @@ struct moca_core_msg {
 	u32			len;
 };
 
-struct moca_regs {
-	unsigned int		data_mem_offset;
-	unsigned int		data_mem_size;
-	unsigned int		cntl_mem_size;
-	unsigned int		cntl_mem_offset;
-	unsigned int		gp0_offset;
-	unsigned int		gp1_offset;
-	unsigned int		ringbell_offset;
-	unsigned int		l2_status_offset;
-	unsigned int		l2_clear_offset;
-	unsigned int		l2_mask_set_offset;
-	unsigned int		l2_mask_clear_offset;
-	unsigned int		sw_reset_offset;
-	unsigned int		led_ctrl_offset;
-	unsigned int		m2m_src_offset;
-	unsigned int		m2m_dst_offset;
-	unsigned int		m2m_cmd_offset;
-	unsigned int		m2m_status_offset;
-	unsigned int		m2m_src_high_offset;
-	unsigned int		m2m_dst_high_offset;
-	unsigned int		moca2host_mmp_inbox_0_offset;
-	unsigned int		moca2host_mmp_inbox_1_offset;
-	unsigned int		moca2host_mmp_inbox_2_offset;
-	unsigned int		extras_mmp_outbox_3_offset;
-	unsigned int		h2m_resp_bit[2]; /* indexed by cpu */
-	unsigned int		h2m_req_bit[2]; /* indexed by cpu */
-	unsigned int		sideband_gmii_fc_offset;
-};
-
 struct moca_priv_data {
-	struct platform_device	*pdev;
+	struct moca_platform_data platform_data;
 	struct device		*dev;
+	struct device		*char_dev;
 
 	unsigned int		minor;
 	int			irq;
@@ -219,7 +176,6 @@ struct moca_priv_data {
 	spinlock_t		clock_lock;
 	spinlock_t		irq_status_lock;
 	struct mutex		dev_mutex;
-	struct mutex		copy_mutex;
 	struct mutex		moca_i2c_mutex;
 	int			host_mbx_busy;
 	int			host_resp_pending;
@@ -264,6 +220,12 @@ struct moca_priv_data {
 
 	/* wol */
 	int     wol_irq;
+
+	/* HW sepecific */
+	struct moca_ops		*moca_ops;
+	void			*hw_priv;
+
+	bool			range_check_flag;
 };
 
 static const struct moca_regs regs_11_plus = {
@@ -480,6 +442,10 @@ static inline int moca_range_ok(struct moca_priv_data *priv,
 	const struct moca_regs *r = priv->regs;
 	unsigned long lastad = offset + len - 1;
 
+	/* allow full access if the chip is not memory-mapped */
+	if (!priv->range_check_flag)
+		return 0;
+
 	if (lastad < offset)
 		return -EINVAL;
 
@@ -537,24 +503,26 @@ static bool moca_has_m2m_high(struct moca_priv_data *priv)
 	return priv->hw_rev >= HWREV_MOCA_20_GEN23;
 }
 
-#ifdef CONFIG_BRCM_MOCA_BUILTIN_FW
-#error Not supported in this version
-#else
-static const char *bmoca_fw_image;
-#endif
-
 /*
  * LOW-LEVEL DEVICE OPERATIONS
  */
 
-#define MOCA_RD(x)		__raw_readl((void __iomem *)(x))
-#define MOCA_WR(x, y)		__raw_writel((y), (void __iomem *)(x))
+#define MOCA_RD(x)	(priv->moca_ops->read32(priv->hw_priv, (uintptr_t)(x)))
+
+#define MOCA_WR(x, y)	priv->moca_ops->write32(priv->hw_priv, (uintptr_t)(x), (y))
 
 #define I2C_RD(x)		MOCA_RD(x)
 #define I2C_WR(x, y)		MOCA_WR(x, y)
 
 static void moca_hw_reset(struct moca_priv_data *priv)
 {
+	if (priv->moca_ops->hw_reset)
+		priv->moca_ops->hw_reset(priv->hw_priv);
+}
+
+static void moca_int_hw_reset(void *hw_priv)
+{
+	struct moca_priv_data *priv = hw_priv;
 	const struct moca_regs *r = priv->regs;
 
 	/* disable and clear all interrupts */
@@ -586,6 +554,15 @@ static void moca_hw_reset(struct moca_priv_data *priv)
 /* called any time we start/restart/stop MoCA */
 static void moca_hw_init(struct moca_priv_data *priv, int action)
 {
+	if (priv->moca_ops->hw_init)
+		priv->moca_ops->hw_init(priv->hw_priv, action, &priv->enabled,
+				     priv->bonded_mode);
+	}
+
+static void moca_int_hw_init(void *hw_priv, int action, int *enabled,
+			     int bonded_mode)
+{
+	struct moca_priv_data *priv = hw_priv;
 	const struct moca_regs *r = priv->regs;
 	int clk_status = 0;
 
@@ -709,6 +686,12 @@ static u32 moca_irq_status(struct moca_priv_data *priv, int flush)
 	return stat;
 }
 
+static void moca_hw_enable_irq(struct moca_priv_data *priv)
+{
+	if (priv->moca_ops->hw_enable_irq)
+		priv->moca_ops->hw_enable_irq(priv->hw_priv);
+}
+
 static void moca_enable_irq(struct moca_priv_data *priv)
 {
 	const struct moca_regs *r = priv->regs;
@@ -723,6 +706,12 @@ static void moca_enable_irq(struct moca_priv_data *priv)
 
 	MOCA_WR(priv->base + r->l2_mask_clear_offset, mask);
 	MOCA_RD(priv->base + r->l2_mask_clear_offset);
+}
+
+static void moca_hw_disable_irq(struct moca_priv_data *priv)
+{
+	if (priv->moca_ops->hw_disable_irq)
+		priv->moca_ops->hw_disable_irq(priv->hw_priv);
 }
 
 static void moca_disable_irq(struct moca_priv_data *priv)
@@ -750,7 +739,6 @@ static u32 moca_start_mips(struct moca_priv_data *priv, u32 cpu)
 			MOCA_UNSET(priv->base + r->sw_reset_offset,
 				   RESET_HIGH_CPU);
 		else {
-			moca_mmp_init(priv, 1);
 			MOCA_UNSET(priv->base + r->sw_reset_offset,
 				   RESET_LOW_CPU);
 		}
@@ -794,25 +782,47 @@ static void moca_m2m_xfer(struct moca_priv_data *priv,
 }
 
 static void moca_write_mem(struct moca_priv_data *priv,
-	dma_addr_t dst_offset, void *src, unsigned int len)
+	uintptr_t dst_offset, void *src, unsigned int len)
 {
-	dma_addr_t pa;
-
 	if (moca_range_ok(priv, dst_offset, len) < 0) {
 		dev_warn(priv->dev, "copy past end of cntl memory: %pad\n",
 			 &dst_offset);
 		return;
 	}
 
-	pa = dma_map_single(&priv->pdev->dev, src, len, DMA_TO_DEVICE);
+	if (priv->moca_ops->write_mem)
+		priv->moca_ops->write_mem(priv->hw_priv, dst_offset, src, len);
+}
+
+static void moca_int_write_mem(void *hw_priv, uintptr_t dst_offset, void *src,
+			       unsigned int len)
+{
+	struct moca_priv_data *priv = hw_priv;
+	dma_addr_t pa;
+
+	pa = dma_map_single(priv->dev, src, len, DMA_TO_DEVICE);
 	moca_m2m_xfer(priv, dst_offset + priv->regs->data_mem_offset, pa,
 		len | M2M_WRITE);
-	dma_unmap_single(&priv->pdev->dev, pa, len, DMA_TO_DEVICE);
+	dma_unmap_single(priv->dev, pa, len, DMA_TO_DEVICE);
 }
 
 static void moca_read_mem(struct moca_priv_data *priv,
-	void *dst, dma_addr_t src_offset, unsigned int len)
+	void *dst, uintptr_t src_offset, unsigned int len)
 {
+	if (moca_range_ok(priv, src_offset, len) < 0) {
+		dev_warn(priv->dev, "copy past end of cntl memory: %pad\n",
+			 &src_offset);
+		return;
+	}
+
+	if (priv->moca_ops->read_mem)
+		priv->moca_ops->read_mem(priv->hw_priv, dst, src_offset, len);
+}
+
+void moca_int_read_mem(void *hw_priv,
+		       void *dst, uintptr_t src_offset, unsigned int len)
+{
+	struct moca_priv_data *priv = hw_priv;
 	int i;
 
 	if (moca_range_ok(priv, src_offset, len) < 0) {
@@ -828,12 +838,35 @@ static void moca_read_mem(struct moca_priv_data *priv,
 }
 
 static void moca_write_sg(struct moca_priv_data *priv,
-	dma_addr_t dst_offset, struct scatterlist *sg, int nents)
+	dma_addr_t dst_offset, unsigned int sg_index, int nents)
 {
-	int j;
+	unsigned int i;
+	uintptr_t dest = (uintptr_t)dst_offset;
+
+	if (priv->moca_ops->write_sg)
+		priv->moca_ops->write_sg(priv->hw_priv, dst_offset,
+				      &priv->fw_sg[sg_index], nents);
+	else {
+		/* no DMA, sg list is useless...use fw_pages instead */
+		for (i = 0; i < nents; i++) {
+			unsigned char *src = kmap(priv->fw_pages[i+sg_index]);
+
+			priv->moca_ops->write_mem(priv->hw_priv, dest,
+						  (void *)src, PAGE_SIZE);
+			kunmap(priv->fw_pages[i+sg_index]);
+			dest += PAGE_SIZE;
+		}
+	}
+}
+
+static void moca_int_write_sg(void *hw_priv, dma_addr_t dst_offset,
+		       struct scatterlist *sg, int nents)
+{
+	struct moca_priv_data *priv = hw_priv;
+	unsigned int j;
 	uintptr_t addr = priv->regs->data_mem_offset + dst_offset;
 
-	dma_map_sg(&priv->pdev->dev, sg, nents, DMA_TO_DEVICE);
+	dma_map_sg(priv->dev, sg, nents, DMA_TO_DEVICE);
 
 	for (j = 0; j < nents; j++) {
 		moca_m2m_xfer(priv, addr, sg[j].dma_address,
@@ -842,26 +875,7 @@ static void moca_write_sg(struct moca_priv_data *priv,
 		addr += sg[j].length;
 	}
 
-	dma_unmap_sg(&priv->pdev->dev, sg, nents, DMA_TO_DEVICE);
-}
-
-static inline void moca_read_sg(struct moca_priv_data *priv,
-	dma_addr_t src_offset, struct scatterlist *sg, int nents)
-{
-	int j;
-	uintptr_t addr = priv->regs->data_mem_offset + src_offset;
-
-	dma_map_sg(&priv->pdev->dev, sg, nents, DMA_FROM_DEVICE);
-
-	for (j = 0; j < nents; j++) {
-		moca_m2m_xfer(priv, sg[j].dma_address, addr,
-			sg[j].length | M2M_READ);
-
-		addr += sg[j].length;
-		SetPageDirty(sg_page(&sg[j]));
-	}
-
-	dma_unmap_sg(&priv->pdev->dev, sg, nents, DMA_FROM_DEVICE);
+	dma_unmap_sg(priv->dev, sg, nents, DMA_TO_DEVICE);
 }
 
 #define moca_3450_write moca_3450_write_i2c
@@ -946,15 +960,19 @@ static int moca_write_img(struct moca_priv_data *priv, struct moca_xfer *x)
 	BUG_ON(FW_CHUNK_SIZE != PAGE_SIZE);
 
 	/* write the first two chunks, then start the MIPS */
-	moca_write_sg(priv, 0, &priv->fw_sg[0], bl_chunks + 1);
+	moca_write_sg(priv, 0, 0, bl_chunks + 1);
 	moca_enable_irq(priv);
 	moca_start_mips(priv, be32_to_cpu(hdr.cpuid));
 	ret = 0;
 
-	/* wait for an ACK, then write each successive chunk */
+	/* wait for an ACK, then write each successive chunk.
+	   6802/spi doesn't need an ACK, since the timing is
+	   guaranteed by the slow SPI writes. Not waiting for the
+	   ACK improves load times. */
 	for (i = bl_chunks + 1; i < pages; i++) {
-		if (wait_for_completion_timeout(&priv->chunk_complete, timeout)
-		    == 0) {
+		if (priv->moca_ops->dma &&
+		    (wait_for_completion_timeout(&priv->chunk_complete, timeout)
+		     == 0)) {
 			moca_disable_irq(priv);
 			dev_warn(priv->dev, "chunk ack timed out\n");
 			ret = -EIO;
@@ -962,12 +980,13 @@ static int moca_write_img(struct moca_priv_data *priv, struct moca_xfer *x)
 		}
 		moca_write_sg(priv, priv->regs->data_mem_offset +
 			      FW_CHUNK_SIZE * bl_chunks,
-			      &priv->fw_sg[i], 1);
+			      i, 1);
 	}
 
 	/* wait for ACK of last block.  Older firmware images didn't
 	   ACK the last block, so don't return an error */
-	wait_for_completion_timeout(&priv->chunk_complete, timeout);
+	if (priv->moca_ops->dma)
+		wait_for_completion_timeout(&priv->chunk_complete, timeout);
 
 out:
 	moca_put_pages(priv, pages);
@@ -1013,12 +1032,14 @@ static void moca_handle_lab_printf(struct moca_priv_data *priv,
 		}
 	}
 }
+
 static void moca_msg_reset(struct moca_priv_data *priv)
 {
 	int i;
 
 	if (priv->running)
 		moca_disable_irq(priv);
+
 	priv->running = 0;
 	priv->host_mbx_busy = 0;
 	priv->host_resp_pending = 0;
@@ -1428,8 +1449,8 @@ static void moca_work_handler(struct work_struct *work)
 
 	mutex_lock(&priv->dev_mutex);
 
-
 	if (priv->enabled) {
+		moca_disable_irq(priv);
 		mask = moca_irq_status(priv, FLUSH_IRQ);
 
 		if (mask & M2H_DMA) {
@@ -1449,6 +1470,7 @@ static void moca_work_handler(struct work_struct *work)
 
 		if (mask == 0) {
 			mutex_unlock(&priv->dev_mutex);
+			moca_hw_enable_irq(priv);
 			moca_enable_irq(priv);
 			return;
 		}
@@ -1458,6 +1480,7 @@ static void moca_work_handler(struct work_struct *work)
 			if (moca_get_mbx_offset(priv)) {
 				/* mbx interrupt but mbx_offset is bogus?? */
 				mutex_unlock(&priv->dev_mutex);
+				moca_hw_enable_irq(priv);
 				moca_enable_irq(priv);
 				return;
 			}
@@ -1501,6 +1524,7 @@ static void moca_work_handler(struct work_struct *work)
 		priv->host_mbx_busy = 1;
 		mutex_unlock(&priv->dev_mutex);
 		wake_up(&priv->core_msg_wq);
+		moca_hw_enable_irq(priv);
 		return;
 	}
 
@@ -1540,6 +1564,7 @@ static void moca_work_handler(struct work_struct *work)
 	}
 	mutex_unlock(&priv->dev_mutex);
 
+	moca_hw_enable_irq(priv);
 	moca_enable_irq(priv);
 }
 
@@ -1547,7 +1572,11 @@ static irqreturn_t moca_interrupt(int irq, void *arg)
 {
 	struct moca_priv_data *priv = arg;
 
-	if (1) {
+	/* We can't do SPI transactions in the irq,
+	   do them in the work handler instead.  We
+	   shouldn't get DMA interrupts for SPI devices
+	   anyways */
+	if (priv->moca_ops->dma) {
 		u32 mask = moca_irq_status(priv, FLUSH_DMA_ONLY);
 
 		/* need to handle DMA completions ASAP */
@@ -1562,8 +1591,12 @@ static irqreturn_t moca_interrupt(int irq, void *arg)
 
 		if (!mask)
 			return IRQ_HANDLED;
+
+		moca_disable_irq(priv);
 	}
-	moca_disable_irq(priv);
+
+	moca_hw_disable_irq(priv);
+
 	schedule_work(&priv->work);
 
 	return IRQ_HANDLED;
@@ -1594,7 +1627,7 @@ static int moca_3450_wait(struct moca_priv_data *priv)
 static void moca_3450_write_i2c(struct moca_priv_data *priv, u8 addr, u32 data)
 {
 	struct bsc_regs *bsc = priv->i2c_base;
-	struct moca_platform_data *pd = priv->pdev->dev.platform_data;
+	struct moca_platform_data *pd = &priv->platform_data;
 
 	I2C_WR(&bsc->iic_enable, 0);
 	I2C_WR(&bsc->chip_address, pd->bcm3450_i2c_addr << 1);
@@ -1611,7 +1644,7 @@ static void moca_3450_write_i2c(struct moca_priv_data *priv, u8 addr, u32 data)
 static u32 moca_3450_read_i2c(struct moca_priv_data *priv, u8 addr)
 {
 	struct bsc_regs *bsc = priv->i2c_base;
-	struct moca_platform_data *pd = priv->pdev->dev.platform_data;
+	struct moca_platform_data *pd = &priv->platform_data;
 
 	I2C_WR(&bsc->iic_enable, 0);
 	I2C_WR(&bsc->chip_address, pd->bcm3450_i2c_addr << 1);
@@ -1680,7 +1713,6 @@ err_out:
 
 	return ret;
 }
-
 
 static void moca_3450_init(struct moca_priv_data *priv, int action)
 {
@@ -1785,10 +1817,20 @@ static int moca_ioctl_readmem(struct moca_priv_data *priv,
 	if (copy_from_user(&x, (void __user *)xfer_uaddr, sizeof(x)))
 		return -EFAULT;
 
+	/* if flag set, absolute memory read from start of chip, subject to
+	   range check */
+	if ((x.len & MOCA_ABSOLUTE_ADDR_FLAG) && (!priv->range_check_flag)) {
+		src = (uintptr_t)x.moca_addr;
+		x.len &= ~MOCA_ABSOLUTE_ADDR_FLAG;
+	} else {
+		if (!priv->running)
+			return -ENOTTY;
+		src = (uintptr_t)priv->base + x.moca_addr;
+	}
+
 	if (moca_range_ok(priv, x.moca_addr, x.len) < 0)
 		return -EINVAL;
 
-	src = (uintptr_t)priv->base + x.moca_addr;
 	dst = (void *)(unsigned long)x.buf;
 
 	for (i = 0; i < x.len; i += 4, src += 4, dst++)
@@ -1808,14 +1850,25 @@ static int moca_ioctl_writemem(struct moca_priv_data *priv,
 	if (copy_from_user(&x, (void __user *)xfer_uaddr, sizeof(x)))
 		return -EFAULT;
 
+	/* if flag set, absolute memory read from start of chip, subject to
+	   range check */
+	if ((x.len & MOCA_ABSOLUTE_ADDR_FLAG) && (!priv->range_check_flag)) {
+		dst = (uintptr_t)x.moca_addr;
+		x.len &= ~MOCA_ABSOLUTE_ADDR_FLAG;
+	} else {
+		if (!priv->running)
+			return -ENOTTY;
+		dst = (uintptr_t)priv->base + x.moca_addr;
+	}
+
 	if (moca_range_ok(priv, x.moca_addr, x.len) < 0)
 		return -EINVAL;
 
-	dst = (uintptr_t)priv->base + x.moca_addr;
 	src = (void *)(unsigned long)x.buf;
 
 	for (i = 0; i < x.len; i += 4, src++, dst += 4) {
 		unsigned int x;
+
 		if (get_user(x, src))
 			return -EFAULT;
 
@@ -1830,12 +1883,11 @@ static int moca_ioctl_get_drv_info_v2(struct moca_priv_data *priv,
 	unsigned long arg)
 {
 	struct moca_kdrv_info_v2 info;
-	struct moca_platform_data *pd = priv->pdev->dev.platform_data;
+	struct moca_platform_data *pd = &priv->platform_data;
 
 	memset(&info, 0, sizeof(info));
 	info.version = DRV_VERSION;
 	info.build_number = DRV_BUILD_NUMBER;
-	info.builtin_fw = !!bmoca_fw_image;
 
 	info.uptime = (jiffies - priv->start_time) / HZ;
 	info.refcount = priv->refcount;
@@ -1865,12 +1917,11 @@ static int moca_ioctl_get_drv_info(struct moca_priv_data *priv,
 	unsigned long arg)
 {
 	struct moca_kdrv_info info;
-	struct moca_platform_data *pd = priv->pdev->dev.platform_data;
+	struct moca_platform_data *pd = &priv->platform_data;
 
 	memset(&info, 0, sizeof(info));
 	info.version = DRV_VERSION;
 	info.build_number = DRV_BUILD_NUMBER;
-	info.builtin_fw = !!bmoca_fw_image;
 
 	info.uptime = (jiffies - priv->start_time) / HZ;
 	info.refcount = priv->refcount;
@@ -2001,7 +2052,6 @@ static long moca_file_ioctl(struct file *file, unsigned int cmd,
 				moca_hw_init(priv, MOCA_ENABLE);
 				moca_3450_init(priv, MOCA_ENABLE);
 				moca_irq_status(priv, FLUSH_IRQ);
-				moca_mmp_init(priv, 0);
 			}
 
 			ret = moca_write_img(priv, &start.x);
@@ -2024,12 +2074,10 @@ static long moca_file_ioctl(struct file *file, unsigned int cmd,
 		ret = 0;
 		break;
 	case MOCA_IOCTL_READMEM:
-		if (priv->running)
-			ret = moca_ioctl_readmem(priv, arg);
+		ret = moca_ioctl_readmem(priv, arg);
 		break;
 	case MOCA_IOCTL_WRITEMEM:
-		if (priv->running)
-			ret = moca_ioctl_writemem(priv, arg);
+		ret = moca_ioctl_writemem(priv, arg);
 		break;
 	case MOCA_IOCTL_GET_DRV_INFO_V2:
 		ret = moca_ioctl_get_drv_info_v2(priv, arg);
@@ -2308,9 +2356,8 @@ static const struct file_operations moca_fops = {
 #ifdef CONFIG_OF
 static int moca_parse_dt_node(struct moca_priv_data *priv)
 {
-	struct platform_device *pdev = priv->pdev;
-	struct moca_platform_data pd;
-	struct device_node *of_node = pdev->dev.of_node;
+	struct moca_platform_data *pd;
+	struct device_node *of_node = priv->dev->of_node;
 	phandle enet_ph;
 	int status = 0, i = 0;
 	const u8 *macaddr;
@@ -2318,70 +2365,51 @@ static int moca_parse_dt_node(struct moca_priv_data *priv)
 	const char *const of_rfb[MOCA_BAND_MAX + 1] = MOCA_BAND_NAMES;
 	u32 val;
 
-	memset(&pd, 0, sizeof(pd));
-
-	/* mandatory entries */
+	pd = &priv->platform_data;
 
 	/* get the common clocks from bmoca node */
-	priv->clk = devm_clk_get(&pdev->dev, "sw_moca");
-	if (IS_ERR(priv->clk)) {
-		dev_err(&pdev->dev,
-			"can't find sw_moca clk\n");
+	priv->clk = devm_clk_get(priv->dev, "sw_moca");
+	if (IS_ERR(priv->clk))
 		priv->clk = NULL;
-	}
 
-	priv->cpu_clk = devm_clk_get(&pdev->dev, "sw_moca_cpu");
-	if (IS_ERR(priv->cpu_clk)) {
-		dev_err(&pdev->dev,
-			"can't find moca_cpu clk\n");
+	priv->cpu_clk = devm_clk_get(priv->dev, "sw_moca_cpu");
+	if (IS_ERR(priv->cpu_clk))
 		priv->cpu_clk = NULL;
-	}
 
-	priv->phy_clk = devm_clk_get(&pdev->dev, "sw_moca_phy");
-	if (IS_ERR(priv->phy_clk)) {
-		dev_err(&pdev->dev,
-			"can't find moca_phy clk\n");
+	priv->phy_clk = devm_clk_get(priv->dev, "sw_moca_phy");
+	if (IS_ERR(priv->phy_clk))
 		priv->phy_clk = NULL;
-	}
 
 	priv->wol_clk = of_clk_get_by_name(of_node, "sw_mocawol");
-	if (IS_ERR(priv->wol_clk)) {
-		dev_err(&pdev->dev,
-			"can't find mocawol clk\n");
+	if (IS_ERR(priv->wol_clk))
 		priv->wol_clk = NULL;
-	}
 
-	status = of_property_read_u32(of_node, "hw-rev", &pd.hw_rev);
+	status = of_property_read_u32(of_node, "hw-rev", &pd->hw_rev);
 	if (status)
 		goto err;
 
 	status = of_property_read_u32(of_node, "enet-id", &enet_ph);
-	if (status)
-		goto err;
-	priv->enet_node = of_find_node_by_phandle(enet_ph);
-	if (!priv->enet_node) {
-		dev_err(&pdev->dev,
-			"can't find associated network interface\n");
-		return -EINVAL;
+	if (!status) {
+		priv->enet_node = of_find_node_by_phandle(enet_ph);
+		if (!priv->enet_node) {
+			dev_err(priv->dev,
+				"can't find associated network interface\n");
+			return -EINVAL;
+		}
 	}
 
 	macaddr = of_get_mac_address(of_node);
-	if (!macaddr) {
-		dev_err(&pdev->dev, "can't find MAC address\n");
-		return -EINVAL;
-	}
-
-	mac_to_u32(&pd.macaddr_hi, &pd.macaddr_lo, macaddr);
+	if (macaddr)
+		mac_to_u32(&pd->macaddr_hi, &pd->macaddr_lo, macaddr);
 
 	/* defaults for optional entries.  All other defaults are 0 */
-	pd.use_dma = 1;
 
 	status = of_property_read_string(of_node, "rf-band", &rfb);
 	if (!status) {
 		for (i = 0; i < MOCA_BAND_MAX; i++) {
 			if (strcmp(rfb, of_rfb[i]) == 0) {
-				pd.rf_band = i;
-				dev_info(&pdev->dev, "using %s(%d) band\n",
+				pd->rf_band = i;
+				dev_info(priv->dev, "using %s(%d) band\n",
 					 of_rfb[i], i);
 				break;
 			}
@@ -2389,27 +2417,21 @@ static int moca_parse_dt_node(struct moca_priv_data *priv)
 	}
 
 	if (status || i == MOCA_BAND_MAX) {
-		dev_warn(&pdev->dev, "Defaulting to rf-band %s\n", of_rfb[0]);
-		pd.rf_band = 0;
+		dev_warn(priv->dev, "Defaulting to rf-band %s\n", of_rfb[0]);
+		pd->rf_band = 0;
 	}
 
 	/* optional entries */
 	if (!of_property_read_u32(of_node, "i2c-base", &val))
-		pd.bcm3450_i2c_base = val;
-	of_property_read_u32(of_node, "i2c-addr", &pd.bcm3450_i2c_addr);
-	of_property_read_u32(of_node, "use-dma", &pd.use_dma);
-	of_property_read_u32(of_node, "use-spi", &pd.use_spi);
+		pd->bcm3450_i2c_base = val;
+	of_property_read_u32(of_node, "i2c-addr", &pd->bcm3450_i2c_addr);
 
 	/* Try to read the chip-id property.  If not present, fall back to
 	 * reading it from the chip family ID register.
 	 */
-	of_property_read_u32(of_node, "chip-id", &pd.chip_id);
-
-	status = platform_device_add_data(pdev, &pd, sizeof(pd));
-
+	of_property_read_u32(of_node, "chip-id", &pd->chip_id);
 err:
 	return status;
-
 }
 
 static const struct of_device_id bmoca_instance_match[] = {
@@ -2640,6 +2662,7 @@ static int moca_unregister_pm_notifier(struct moca_priv_data *priv)
 {
 	return unregister_pm_notifier(&priv->pm_notifier);
 }
+
 #else
 
 static inline void moca_set_pm_state(struct moca_priv_data *priv,
@@ -2656,6 +2679,7 @@ static irqreturn_t moca_wol_isr(int irq, void *dev_id)
 	/* get status reg and log */
 	u32 stat = moca_irq_status(priv, FLUSH_WOL_ONLY);
 	u32 assert_code_in = 0;
+
 	if (moca_is_20(priv))
 		assert_code_in = MOCA_RD(priv->base +
 				    priv->regs->extras_mmp_outbox_3_offset);
@@ -2674,36 +2698,80 @@ static irqreturn_t moca_wol_isr(int irq, void *dev_id)
 		moca_set_pm_state(priv, MOCA_RESUMING_WDOG);
 	}
 
-	pm_wakeup_event(&priv->pdev->dev, 0);
+	pm_wakeup_event(priv->dev, 0);
 
 	return IRQ_HANDLED;
 }
 
-static int moca_probe(struct platform_device *pdev)
+unsigned int moca_int_read32(void *hw_priv, uintptr_t addr)
+{
+	return __raw_readl((void __iomem *)addr);
+}
+
+void moca_int_write32(void *hw_priv, uintptr_t addr, u32 data)
+{
+	__raw_writel(data, (void __iomem *)addr);
+}
+
+int moca_initialize(struct device *dev, struct moca_ops *moca_ops,
+		    void *hw_priv, void __iomem *base, u32 chip_id,
+		    int range_check_flag, int irq, int wol_irq,
+		    const u8 *macaddr, unsigned int enet_ph,
+		    const struct moca_regs *regs)
 {
 	struct moca_priv_data *priv;
-	struct resource *mres;
 	int minor, err;
 	struct moca_platform_data *pd;
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
-	if (!priv) {
-		dev_err(&pdev->dev, "out of memory\n");
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
 		return -ENOMEM;
-	}
-	dev_set_drvdata(&pdev->dev, priv);
-	priv->pdev = pdev;
+
+	dev_set_drvdata(dev, priv);
+	priv->dev = dev;
 	priv->start_time = jiffies;
+	priv->range_check_flag = range_check_flag;
+
+	pd = &priv->platform_data;
+	pd->chip_id = chip_id;
 
 #if defined(CONFIG_OF)
 	err = moca_parse_dt_node(priv);
 	if (err)
 		return err;
 #endif
-	pd = pdev->dev.platform_data;
+
+	/* MAC address can be provided from the device-tree or passed
+	   in to this function */
+	if (macaddr)
+		mac_to_u32(&pd->macaddr_hi, &pd->macaddr_lo, macaddr);
+
+	if (!pd->macaddr_hi && !pd->macaddr_lo) {
+		dev_err(priv->dev, "No MAC address supplied\n");
+		return -EINVAL;
+	}
+
+	if (enet_ph) {
+		priv->enet_node = of_find_node_by_phandle(enet_ph);
+		if (!priv->enet_node) {
+			dev_err(priv->dev,
+				"can't find associated network interface\n");
+			return -EINVAL;
+		}
+	}
+
+	priv->moca_ops = moca_ops;
+
+	if (hw_priv)
+		priv->hw_priv = hw_priv;
+	else
+		priv->hw_priv = (void *)priv;
+
 	priv->hw_rev = pd->hw_rev;
 
-	if (pd->hw_rev == HWREV_MOCA_11_PLUS)
+	if (regs)
+		priv->regs = regs;
+	else if (pd->hw_rev == HWREV_MOCA_11_PLUS)
 		priv->regs = &regs_11_plus;
 	else if (pd->hw_rev == HWREV_MOCA_11_LITE)
 		priv->regs = &regs_11_lite;
@@ -2717,10 +2785,12 @@ static int moca_probe(struct platform_device *pdev)
 	else if (pd->hw_rev == HWREV_MOCA_20_GEN24)
 		priv->regs = &regs_20_gen4;
 	else {
-		dev_err(&pdev->dev, "unsupported MoCA HWREV: %x\n",
+		dev_err(priv->dev, "unsupported MoCA HWREV: %x\n",
 			pd->hw_rev);
 		return -EINVAL;
 	}
+
+	moca_mmp_init(priv, moca_is_20(priv));
 
 	init_waitqueue_head(&priv->host_msg_wq);
 	init_waitqueue_head(&priv->core_msg_wq);
@@ -2733,93 +2803,132 @@ static int moca_probe(struct platform_device *pdev)
 	spin_lock_init(&priv->irq_status_lock);
 
 	mutex_init(&priv->dev_mutex);
-	mutex_init(&priv->copy_mutex);
 	mutex_init(&priv->moca_i2c_mutex);
 
 	sg_init_table(priv->fw_sg, MAX_FW_PAGES);
 
 	INIT_WORK(&priv->work, moca_work_handler);
 
-	priv->minor = -1;
-	for (minor = 0; minor < NUM_MINORS; minor++) {
-		if (minor_tbl[minor] == NULL) {
-			priv->minor = minor;
-			break;
+	if (pd->minor == -1) {
+		for (minor = 0; minor < NUM_MINORS; minor++) {
+			if (minor_tbl[minor] == NULL) {
+				pd->minor = minor;
+				break;
+			}
 		}
 	}
 
-	if (priv->minor == -1) {
-		dev_err(&pdev->dev, "can't allocate minor device\n");
+	if (pd->minor == -1) {
+		dev_err(priv->dev, "can't allocate minor device\n");
 		return -EIO;
 	}
 
-	mres = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	priv->base = devm_ioremap_resource(&pdev->dev, mres);
-	if (IS_ERR(priv->base))
-		return PTR_ERR(priv->base);
-
-	priv->irq = platform_get_irq(pdev, 0);
-	if (priv->irq < 0) {
-		dev_err(&pdev->dev, "can't get IRQ\n");
-		return -EIO;
+	if (minor_tbl[pd->minor]) {
+		dev_err(priv->dev, "minor device already taken\n");
+		return -EINVAL;
 	}
 
-	priv->wol_irq = platform_get_irq(pdev, 1);
-	if (priv->wol_irq < 0)
-		dev_err(&pdev->dev, "can't find IRQs\n");
+	priv->base = base;
+
+	priv->irq = irq;
+
+	priv->wol_irq = wol_irq;
 
 	if (pd->bcm3450_i2c_base)
-		priv->i2c_base = devm_ioremap(&pdev->dev, pd->bcm3450_i2c_base,
+		priv->i2c_base = devm_ioremap(dev, pd->bcm3450_i2c_base,
 					      sizeof(struct bsc_regs));
 
 	/* leave core in reset until we get an ioctl */
 	moca_hw_reset(priv);
 
+	moca_disable_irq(priv);
+
 	if (request_irq(priv->irq, moca_interrupt, 0, "moca",
 			priv) < 0) {
-		dev_err(&pdev->dev, "can't request interrupt\n");
+		dev_err(priv->dev, "can't request interrupt\n");
 		return -EIO;
 	}
 
 	/* Request the WOL interrupt line and advertise suspend if available */
-	err = devm_request_irq(&pdev->dev, priv->wol_irq, moca_wol_isr, 0,
+	err = devm_request_irq(priv->dev, priv->wol_irq, moca_wol_isr, 0,
 			       "mocawol", priv);
 	if (!err && !(priv->wol_irq < 0)) {
-		device_set_wakeup_capable(&pdev->dev, 1);
-		device_set_wakeup_enable(&priv->pdev->dev, 1);
+		device_set_wakeup_capable(priv->dev, 1);
+		device_set_wakeup_enable(priv->dev, 1);
 		enable_irq_wake(priv->wol_irq);
 	}
 
 	moca_hw_init(priv, MOCA_ENABLE);
-	moca_disable_irq(priv);
 	moca_msg_reset(priv);
 	moca_hw_init(priv, MOCA_DISABLE);
 
-	dev_info(&pdev->dev, "minor #%d %pR irq %d\n",
-		 priv->minor, mres, priv->irq);
+	dev_info(priv->dev, "minor #%d irq %d\n",
+		 pd->minor, priv->irq);
 	if (pd->bcm3450_i2c_base) {
-		dev_info(&pdev->dev, "I2C %pa/0x%02x\n",
+		dev_info(priv->dev, "I2C %pa/0x%02x\n",
 			 &pd->bcm3450_i2c_base, pd->bcm3450_i2c_addr);
 	}
 
-	minor_tbl[priv->minor] = priv;
-	priv->dev = device_create(moca_class, NULL,
-		MKDEV(MOCA_MAJOR, priv->minor), NULL, "bmoca%d", priv->minor);
-	if (IS_ERR(priv->dev)) {
-		dev_warn(&pdev->dev, "can't register class device\n");
-		priv->dev = NULL;
+	priv->char_dev = device_create(moca_class, NULL,
+		MKDEV(MOCA_MAJOR, pd->minor), NULL, "bmoca%d", pd->minor);
+	if (IS_ERR(priv->char_dev)) {
+		dev_err(priv->dev, "can't register class device\n");
+		return -ENOMEM;
 	}
 
 #ifdef CONFIG_PM
 	err = moca_register_pm_notifier(priv);
 	if (err) {
-		dev_err(&pdev->dev, "register_pm_notifier failed err %d\n",
+		dev_err(priv->dev, "register_pm_notifier failed err %d\n",
 			err);
 		return err;
 	}
 #endif
 
+	minor_tbl[pd->minor] = priv;
+
 	return 0;
+}
+EXPORT_SYMBOL(moca_initialize);
+
+struct moca_ops moca_int_moca_ops = {
+	.read32 = moca_int_read32,
+	.write32 = moca_int_write32,
+	.hw_reset = moca_int_hw_reset,
+	.hw_init = moca_int_hw_init,
+	.write_mem = moca_int_write_mem,
+	.read_mem = moca_int_read_mem,
+	.write_sg = moca_int_write_sg,
+
+	.dma = 1
+};
+
+static int moca_probe(struct platform_device *pdev)
+{
+	void __iomem *base;
+	struct resource *mres;
+	int irq, wol_irq;
+
+	mres = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	base = devm_ioremap_resource(&pdev->dev, mres);
+
+	if (IS_ERR(base)) {
+		dev_err(&pdev->dev, "can't find MoCA base address\n");
+		return PTR_ERR(base);
+	}
+
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0) {
+		dev_err(&pdev->dev, "can't get IRQ\n");
+		return -EIO;
+	}
+
+	wol_irq = platform_get_irq(pdev, 1);
+	if (wol_irq < 0)
+		dev_err(&pdev->dev, "can't find wol IRQ\n");
+
+	return moca_initialize(&pdev->dev, &moca_int_moca_ops, NULL, base, 0, 0,
+			       irq, wol_irq, NULL, 0, NULL);
 }
 
 static int moca_remove(struct platform_device *pdev)
@@ -2828,8 +2937,10 @@ static int moca_remove(struct platform_device *pdev)
 	int err = 0;
 
 	if (priv->dev)
-		device_destroy(moca_class, MKDEV(MOCA_MAJOR, priv->minor));
-	minor_tbl[priv->minor] = NULL;
+		device_destroy(moca_class,
+			       MKDEV(MOCA_MAJOR, priv->platform_data.minor));
+
+	minor_tbl[priv->platform_data.minor] = NULL;
 
 #ifdef CONFIG_PM
 	err = moca_unregister_pm_notifier(priv);
@@ -2846,8 +2957,10 @@ static int moca_remove(struct platform_device *pdev)
 static int moca_suspend(struct device *dev)
 {
 	int minor;
+
 	for (minor = 0; minor < NUM_MINORS; minor++) {
 		struct moca_priv_data *priv = minor_tbl[minor];
+
 		if (priv && priv->enabled) {
 			mutex_lock(&priv->dev_mutex);
 
@@ -2937,6 +3050,7 @@ static struct platform_driver moca_plat_drv = {
 static int moca_init(void)
 {
 	int ret;
+
 	memset(minor_tbl, 0, sizeof(minor_tbl));
 	ret = register_chrdev(MOCA_MAJOR, MOCA_CLASS, &moca_fops);
 	if (ret < 0) {
@@ -2956,8 +3070,6 @@ static int moca_init(void)
 		pr_err("can't register platform_driver\n");
 		goto bad3;
 	}
-
-
 
 	return 0;
 
