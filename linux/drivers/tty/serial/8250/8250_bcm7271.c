@@ -176,7 +176,7 @@ static int brcmuart_probe(struct platform_device *pdev)
 		| UPF_FIXED_PORT | UPF_FIXED_TYPE | UPF_IOREMAP;
 	up.port.dev = &pdev->dev;
 	up.port.private_data = priv;
-	up.capabilities = UART_CAP_FIFO;
+	up.capabilities = UART_CAP_FIFO | UART_CAP_AFE;
 	up.port.fifosize = 32;
 
 	/* Check for a fixed line number */

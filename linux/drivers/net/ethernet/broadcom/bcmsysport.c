@@ -285,6 +285,7 @@ static const struct bcm_sysport_stats bcm_sysport_gstrings_stats[] = {
 	STAT_MIB_SOFT("alloc_rx_buff_failed", mib.alloc_rx_buff_failed),
 	STAT_MIB_SOFT("rx_dma_failed", mib.rx_dma_failed),
 	STAT_MIB_SOFT("tx_dma_failed", mib.tx_dma_failed),
+	/* Per TX-queue statistics are dynamically appended */
 };
 
 #define BCM_SYSPORT_STATS_LEN	ARRAY_SIZE(bcm_sysport_gstrings_stats)
@@ -339,7 +340,8 @@ static int bcm_sysport_get_sset_count(struct net_device *dev, int string_set)
 				continue;
 			j++;
 		}
-		return j;
+		/* Include per-queue statistics */
+		return j + dev->num_tx_queues * NUM_SYSPORT_TXQ_STAT;
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -350,6 +352,7 @@ static void bcm_sysport_get_strings(struct net_device *dev,
 {
 	struct bcm_sysport_priv *priv = netdev_priv(dev);
 	const struct bcm_sysport_stats *s;
+	char buf[128];
 	int i, j;
 
 	switch (stringset) {
@@ -361,6 +364,18 @@ static void bcm_sysport_get_strings(struct net_device *dev,
 				continue;
 
 			memcpy(data + j * ETH_GSTRING_LEN, s->stat_string,
+			       ETH_GSTRING_LEN);
+			j++;
+		}
+
+		for (i = 0; i < dev->num_tx_queues; i++) {
+			snprintf(buf, sizeof(buf), "txq%d_packets", i);
+			memcpy(data + j * ETH_GSTRING_LEN, buf,
+			       ETH_GSTRING_LEN);
+			j++;
+
+			snprintf(buf, sizeof(buf), "txq%d_bytes", i);
+			memcpy(data + j * ETH_GSTRING_LEN, buf,
 			       ETH_GSTRING_LEN);
 			j++;
 		}
@@ -419,6 +434,7 @@ static void bcm_sysport_get_stats(struct net_device *dev,
 				  struct ethtool_stats *stats, u64 *data)
 {
 	struct bcm_sysport_priv *priv = netdev_priv(dev);
+	struct bcm_sysport_tx_ring *ring;
 	int i, j;
 
 	if (netif_running(dev))
@@ -433,8 +449,28 @@ static void bcm_sysport_get_stats(struct net_device *dev,
 			p = (char *)&dev->stats;
 		else
 			p = (char *)priv;
+
+		if (priv->is_lite && !bcm_sysport_lite_stat_valid(s->type))
+			continue;
+
 		p += s->stat_offset;
 		data[j] = *(unsigned long *)p;
+		j++;
+	}
+
+	/* For SYSTEMPORT Lite since we have holes in our statistics, j would
+	 * be equal to BCM_SYSPORT_STATS_LEN at the end of the loop, but it
+	 * needs to point to how many total statistics we have minus the
+	 * number of per TX queue statistics
+	 */
+	j = bcm_sysport_get_sset_count(dev, ETH_SS_STATS) -
+	    dev->num_tx_queues * NUM_SYSPORT_TXQ_STAT;
+
+	for (i = 0; i < dev->num_tx_queues; i++) {
+		ring = &priv->tx_rings[i];
+		data[j] = ring->packets;
+		j++;
+		data[j] = ring->bytes;
 		j++;
 	}
 }
@@ -561,7 +597,7 @@ static int bcm_sysport_set_coalesce(struct net_device *dev,
 
 static void bcm_sysport_free_cb(struct bcm_sysport_cb *cb)
 {
-	dev_kfree_skb_any(cb->skb);
+	dev_consume_skb_any(cb->skb);
 	cb->skb = NULL;
 	dma_unmap_addr_set(cb, dma_addr, 0);
 }
@@ -638,6 +674,9 @@ static unsigned int bcm_sysport_desc_rx(struct bcm_sysport_priv *priv,
 	u16 len, status;
 	struct bcm_rsb *rsb;
 
+	/* Clear status before servicing to reduce spurious interrupts */
+	intrl2_0_writel(priv, INTRL2_0_RDMA_MBDONE, INTRL2_CPU_CLEAR);
+
 	/* Determine how much we should process since last call, SYSTEMPORT Lite
 	 * groups the producer and consumer indexes into the same 32-bit
 	 * which we access using RDMA_CONS_INDEX
@@ -648,11 +687,7 @@ static unsigned int bcm_sysport_desc_rx(struct bcm_sysport_priv *priv,
 		p_index = rdma_readl(priv, RDMA_CONS_INDEX);
 	p_index &= RDMA_PROD_INDEX_MASK;
 
-	if (p_index < priv->rx_c_index)
-		to_process = (RDMA_CONS_INDEX_MASK + 1) -
-			priv->rx_c_index + p_index;
-	else
-		to_process = p_index - priv->rx_c_index;
+	to_process = (p_index - priv->rx_c_index) & RDMA_CONS_INDEX_MASK;
 
 	netif_dbg(priv, rx_status, ndev,
 		  "p_index=%d rx_c_index=%d to_process=%d\n",
@@ -747,26 +782,26 @@ next:
 	return processed;
 }
 
-static void bcm_sysport_tx_reclaim_one(struct bcm_sysport_priv *priv,
+static void bcm_sysport_tx_reclaim_one(struct bcm_sysport_tx_ring *ring,
 				       struct bcm_sysport_cb *cb,
 				       unsigned int *bytes_compl,
 				       unsigned int *pkts_compl)
 {
+	struct bcm_sysport_priv *priv = ring->priv;
 	struct device *kdev = &priv->pdev->dev;
-	struct net_device *ndev = priv->netdev;
 
 	if (cb->skb) {
-		ndev->stats.tx_bytes += cb->skb->len;
+		ring->bytes += cb->skb->len;
 		*bytes_compl += cb->skb->len;
 		dma_unmap_single(kdev, dma_unmap_addr(cb, dma_addr),
 				 dma_unmap_len(cb, dma_len),
 				 DMA_TO_DEVICE);
-		ndev->stats.tx_packets++;
+		ring->packets++;
 		(*pkts_compl)++;
 		bcm_sysport_free_cb(cb);
 	/* SKB fragment */
 	} else if (dma_unmap_addr(cb, dma_addr)) {
-		ndev->stats.tx_bytes += dma_unmap_len(cb, dma_len);
+		ring->bytes += dma_unmap_len(cb, dma_len);
 		dma_unmap_page(kdev, dma_unmap_addr(cb, dma_addr),
 			       dma_unmap_len(cb, dma_len), DMA_TO_DEVICE);
 		dma_unmap_addr_set(cb, dma_addr, 0);
@@ -782,6 +817,13 @@ static unsigned int __bcm_sysport_tx_reclaim(struct bcm_sysport_priv *priv,
 	unsigned int pkts_compl = 0, bytes_compl = 0;
 	struct bcm_sysport_cb *cb;
 	u32 hw_ind;
+
+	/* Clear status before servicing to reduce spurious interrupts */
+	if (!ring->priv->is_lite)
+		intrl2_1_writel(ring->priv, BIT(ring->index), INTRL2_CPU_CLEAR);
+	else
+		intrl2_0_writel(ring->priv, BIT(ring->index +
+				INTRL2_0_TDMA_MBDONE_SHIFT), INTRL2_CPU_CLEAR);
 
 	/* Compute how many descriptors have been processed since last call */
 	hw_ind = tdma_readl(priv, TDMA_DESC_RING_PROD_CONS_INDEX(ring->index));
@@ -804,7 +846,7 @@ static unsigned int __bcm_sysport_tx_reclaim(struct bcm_sysport_priv *priv,
 
 	while (last_tx_cn-- > 0) {
 		cb = ring->cbs + last_c_index;
-		bcm_sysport_tx_reclaim_one(priv, cb, &bytes_compl, &pkts_compl);
+		bcm_sysport_tx_reclaim_one(ring, cb, &bytes_compl, &pkts_compl);
 
 		ring->desc_count++;
 		last_c_index++;
@@ -1304,6 +1346,8 @@ static int bcm_sysport_init_tx_ring(struct bcm_sysport_priv *priv,
 
 	ring->cbs = kcalloc(size, sizeof(struct bcm_sysport_cb), GFP_KERNEL);
 	if (!ring->cbs) {
+		dma_free_coherent(kdev, sizeof(struct dma_desc),
+				  ring->desc_cpu, ring->desc_dma);
 		netif_err(priv, hw, priv->netdev, "CB allocation failed\n");
 		return -ENOMEM;
 	}
@@ -1324,7 +1368,13 @@ static int bcm_sysport_init_tx_ring(struct bcm_sysport_priv *priv,
 	tdma_writel(priv, 0, TDMA_DESC_RING_COUNT(index));
 	tdma_writel(priv, 1, TDMA_DESC_RING_INTR_CONTROL(index));
 	tdma_writel(priv, 0, TDMA_DESC_RING_PROD_CONS_INDEX(index));
-	tdma_writel(priv, 0, TDMA_DESC_RING_MAPPING(index));
+
+	/* Configure QID and port mapping */
+	reg = tdma_readl(priv, TDMA_DESC_RING_MAPPING(index));
+	reg &= ~(RING_QID_MASK | RING_PORT_ID_MASK << RING_PORT_ID_SHIFT);
+	reg |= ring->switch_queue & RING_QID_MASK;
+	reg |= ring->switch_port << RING_PORT_ID_SHIFT;
+	tdma_writel(priv, reg, TDMA_DESC_RING_MAPPING(index));
 	tdma_writel(priv, 0, TDMA_DESC_RING_PCP_DEI_VID(index));
 
 	/* Enable ACB algorithm 1 */
@@ -1347,8 +1397,9 @@ static int bcm_sysport_init_tx_ring(struct bcm_sysport_priv *priv,
 	napi_enable(&ring->napi);
 
 	netif_dbg(priv, hw, priv->netdev,
-		  "TDMA cfg, size=%d, desc_cpu=%p\n",
-		  ring->size, ring->desc_cpu);
+		  "TDMA cfg, size=%d, desc_cpu=%p switch q=%d,port=%d\n",
+		  ring->size, ring->desc_cpu, ring->switch_queue,
+		  ring->switch_port);
 
 	return 0;
 }
@@ -1638,6 +1689,24 @@ static int bcm_sysport_change_mac(struct net_device *dev, void *p)
 	return 0;
 }
 
+static struct net_device_stats *bcm_sysport_get_nstats(struct net_device *dev)
+{
+	struct bcm_sysport_priv *priv = netdev_priv(dev);
+	unsigned long tx_bytes = 0, tx_packets = 0;
+	struct bcm_sysport_tx_ring *ring;
+	unsigned int q;
+
+	for (q = 0; q < dev->num_tx_queues; q++) {
+		ring = &priv->tx_rings[q];
+		tx_bytes += ring->bytes;
+		tx_packets += ring->packets;
+	}
+
+	dev->stats.tx_bytes = tx_bytes;
+	dev->stats.tx_packets = tx_packets;
+	return &dev->stats;
+}
+
 static void bcm_sysport_netif_start(struct net_device *dev)
 {
 	struct bcm_sysport_priv *priv = netdev_priv(dev);
@@ -1895,6 +1964,87 @@ static const struct ethtool_ops bcm_sysport_ethtool_ops = {
 	.set_link_ksettings     = phy_ethtool_set_link_ksettings,
 };
 
+static u16 bcm_sysport_select_queue(struct net_device *dev, struct sk_buff *skb,
+				    void *accel_priv,
+				    select_queue_fallback_t fallback)
+{
+	struct bcm_sysport_priv *priv = netdev_priv(dev);
+	u16 queue = skb_get_queue_mapping(skb);
+	struct bcm_sysport_tx_ring *tx_ring;
+	unsigned int q, port;
+
+	if (!netdev_uses_dsa(dev))
+		return fallback(dev, skb);
+
+	/* DSA tagging layer will have configured the correct queue */
+	q = BRCM_TAG_GET_QUEUE(queue);
+	port = BRCM_TAG_GET_PORT(queue);
+	tx_ring = priv->ring_map[q + port * priv->per_port_num_tx_queues];
+
+	return tx_ring->index;
+}
+
+static int bcm_sysport_map_queues(struct bcm_sysport_priv *priv,
+				  struct net_device *slave_dev)
+{
+	struct net_device *dev = priv->netdev;
+	struct bcm_sysport_tx_ring *ring;
+	unsigned int num_tx_queues;
+	unsigned int q, start, port;
+
+	port = dsa_slave_dev_port_num(slave_dev);
+
+	/* On SYSTEMPORT Lite we have twice as less queues, so we cannot do a
+	 * 1:1 mapping, we can only do a 2:1 mapping. By reducing the number of
+	 * per-port (slave_dev) network devices queue, we achieve just that.
+	 * This need to happen now
+	 */
+	if (priv->is_lite)
+		netif_set_real_num_tx_queues(slave_dev,
+					     slave_dev->num_tx_queues / 2);
+	num_tx_queues = slave_dev->real_num_tx_queues;
+
+	if (priv->per_port_num_tx_queues &&
+	    priv->per_port_num_tx_queues != num_tx_queues)
+		netdev_warn(slave_dev, "asymetric number of per-port queues\n");
+
+	priv->per_port_num_tx_queues = num_tx_queues;
+
+	start = find_first_zero_bit(&priv->queue_bitmap, dev->num_tx_queues);
+	for (q = 0; q < num_tx_queues; q++) {
+		ring = &priv->tx_rings[q + start];
+
+		/* Just remember the mapping actual programming done
+		 * during bcm_sysport_init_tx_ring
+		 */
+		ring->switch_queue = q;
+		ring->switch_port = port;
+		priv->ring_map[q + port * num_tx_queues] = ring;
+
+		/* Set all queues as being used now */
+		set_bit(q + start, &priv->queue_bitmap);
+	}
+
+	return NOTIFY_OK;
+}
+
+static int bcm_sysport_notifier_event(struct notifier_block *nb,
+				      unsigned long event, void *ptr)
+{
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
+	struct bcm_sysport_priv *priv;
+
+	priv = container_of(nb, struct bcm_sysport_priv, queue_nb);
+
+	if (!dsa_slave_dev_check(dev))
+		return NOTIFY_DONE;
+
+	if (event == NETDEV_REGISTER)
+		return bcm_sysport_map_queues(priv, dev);
+
+	return NOTIFY_DONE;
+}
+
 static const struct net_device_ops bcm_sysport_netdev_ops = {
 	.ndo_start_xmit		= bcm_sysport_xmit,
 	.ndo_tx_timeout		= bcm_sysport_tx_timeout,
@@ -1906,6 +2056,8 @@ static const struct net_device_ops bcm_sysport_netdev_ops = {
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= bcm_sysport_poll_controller,
 #endif
+	.ndo_get_stats		= bcm_sysport_get_nstats,
+	.ndo_select_queue	= bcm_sysport_select_queue,
 };
 
 #define REV_FMT	"v%2x.%02x"
@@ -2059,10 +2211,17 @@ static int bcm_sysport_probe(struct platform_device *pdev)
 	/* libphy will adjust the link state accordingly */
 	netif_carrier_off(dev);
 
+	priv->queue_nb.notifier_call = bcm_sysport_notifier_event;
+	ret = register_netdevice_notifier(&priv->queue_nb);
+	if (ret) {
+		dev_err(&pdev->dev, "failed to register notifier\n");
+		goto err_deregister_fixed_link;
+	}
+
 	ret = register_netdev(dev);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to register net_device\n");
-		goto err_deregister_fixed_link;
+		goto err_deregister_nb;
 	}
 
 	clk_prepare_enable(priv->clk);
@@ -2079,6 +2238,8 @@ static int bcm_sysport_probe(struct platform_device *pdev)
 
 	return 0;
 
+err_deregister_nb:
+	unregister_netdevice_notifier(&priv->queue_nb);
 err_deregister_fixed_link:
 	if (of_phy_is_fixed_link(dn))
 		of_phy_deregister_fixed_link(dn);
@@ -2090,6 +2251,7 @@ err_free_netdev:
 static int bcm_sysport_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = dev_get_drvdata(&pdev->dev);
+	struct bcm_sysport_priv *priv = netdev_priv(dev);
 	struct device_node *dn = pdev->dev.of_node;
 
 	/* Not much to do, ndo_close has been called
@@ -2098,6 +2260,7 @@ static int bcm_sysport_remove(struct platform_device *pdev)
 	unregister_netdev(dev);
 	if (of_phy_is_fixed_link(dn))
 		of_phy_deregister_fixed_link(dn);
+	unregister_netdevice_notifier(&priv->queue_nb);
 	free_netdev(dev);
 	dev_set_drvdata(&pdev->dev, NULL);
 

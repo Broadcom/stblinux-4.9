@@ -124,6 +124,8 @@ enum bcm_sf2_reg_offs {
 #define ACB_CONTROL			0x00
 #define  ACB_EN				(1 << 0)
 #define  ACB_ALGORITHM			(1 << 1)
+#define  ACB_FLUSH_SHIFT		2
+#define  ACB_FLUSH_MASK			0x3
 
 #define ACB_QUEUE_0_CFG			0x08
 #define  XOFF_THRESHOLD_MASK		0x7ff
@@ -134,7 +136,7 @@ enum bcm_sf2_reg_offs {
 #define  TOTAL_XON_EN			(1 << 24)
 #define  PKTLEN_SHIFT			25
 #define  PKTLEN_MASK			0x3f
-#define ACB_QUEUE_CFG(x)		(ACB_QUEUE_0_CFG + (x * 0x4))
+#define ACB_QUEUE_CFG(x)		(ACB_QUEUE_0_CFG + ((x) * 0x4))
 
 /* Register set relative to 'CORE' */
 #define CORE_G_PCTL_PORT0		0x00000
@@ -421,5 +423,8 @@ enum bcm_sf2_reg_offs {
 #define UDF_SLICE_OFFSET		0x40
 
 #define CFP_NUM_RULES			256
+
+/* Number of egress queues per port */
+#define SF2_NUM_EGRESS_QUEUES		8
 
 #endif /* __BCM_SF2_REGS_H */

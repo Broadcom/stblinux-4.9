@@ -183,17 +183,26 @@ static const u32 dpfe_commands[DPFE_CMD_MAX][MSG_FIELD_MAX] = {
 	},
 };
 
+static bool is_dcpu_enabled(void __iomem *regs)
+{
+	u32 val;
+
+	val = readl_relaxed(regs + REG_DCPU_RESET);
+
+	return !(val & DCPU_RESET_MASK);
+}
+
 static void __disable_dcpu(void __iomem *regs)
 {
 	u32 val;
 
-	/* Check if DCPU is running */
+	if (!is_dcpu_enabled(regs))
+		return;
+
+	/* Put DCPU in reset if it's running. */
 	val = readl_relaxed(regs + REG_DCPU_RESET);
-	if (!(val & DCPU_RESET_MASK)) {
-		/* Put DCPU in reset */
-		val |= (1 << DCPU_RESET_SHIFT);
-		writel_relaxed(val, regs + REG_DCPU_RESET);
-	}
+	val |= (1 << DCPU_RESET_SHIFT);
+	writel_relaxed(val, regs + REG_DCPU_RESET);
 }
 
 static void __enable_dcpu(void __iomem *regs)
@@ -405,12 +414,27 @@ static int brcmstb_dpfe_download_firmware(struct platform_device *pdev,
 	const void *fw_blob;
 	int ret;
 
+	priv = platform_get_drvdata(pdev);
+
+	/*
+	 * Skip downloading the firmware if the DCPU is already running and
+	 * responding to commands. This is needed for secure mode when Linux is
+	 * blocked from accessing the DCPU memory and the firmware has already
+	 * been loaded by the boot loader. (We need to check this upon resuming,
+	 * as well.)
+	 */
+	if (is_dcpu_enabled(priv->regs)) {
+		u32 response[MSG_FIELD_MAX];
+
+		ret = __send_command(priv, DPFE_CMD_GET_INFO, response);
+		if (!ret)
+			return 0;
+	}
+
 	ret = request_firmware(&fw, FIRMWARE_NAME, dev);
 	/* request_firmware() prints its own error messages. */
 	if (ret)
 		return ret;
-
-	priv = platform_get_drvdata(pdev);
 
 	ret = __verify_firmware(init, fw);
 	if (ret)

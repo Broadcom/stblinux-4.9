@@ -1,3 +1,14 @@
 iface=$1
 ifconfig $iface 0.0.0.0 up
-udhcpc -i $iface -p /tmp/udhcpc.$iface.pid >& /dev/null &
+OPTIONHOST="$(hostname)"
+DT_DIR=/proc/device-tree
+if [ "$OPTIONHOST" = "(none)" -a -d $DT_DIR ]; then
+	if [ -e $DT_DIR/serial-number ]; then
+		serial="$(cat $DT_DIR/serial-number)"
+	else
+		serial="$(cat $DT_DIR/bolt/serial-number 2> /dev/null)"
+	fi
+	OPTIONHOST="$(cat $DT_DIR/model | sed 's/^Broadcom\ //')"
+	[ ! -z $serial ] && OPTIONHOST="$OPTIONHOST-$serial"
+fi
+udhcpc -i $iface -p /tmp/udhcpc.$iface.pid -x hostname:"$OPTIONHOST" >& /dev/null &

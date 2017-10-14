@@ -149,6 +149,7 @@ static void bcm_sf2_imp_setup(struct dsa_switch *ds, int port)
 {
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
 	u32 reg, offset;
+	unsigned int i;
 
 	if (priv->type == BCM7445_DEVICE_ID)
 		offset = CORE_STS_OVERRIDE_IMP;
@@ -173,6 +174,14 @@ static void bcm_sf2_imp_setup(struct dsa_switch *ds, int port)
 	reg = core_readl(priv, CORE_SWITCH_CTRL);
 	reg |= MII_DUMB_FWDG_EN;
 	core_writel(priv, reg, CORE_SWITCH_CTRL);
+
+	/* Configure Traffic Class to QoS mapping, allow each priority to map
+	 * to a different queue number
+	 */
+	reg = core_readl(priv, CORE_PORT_TC2_QOS_MAP_PORT(port));
+	for (i = 0; i < SF2_NUM_EGRESS_QUEUES; i++)
+		reg |= i << (PRT_TO_QID_SHIFT * i);
+	core_writel(priv, reg, CORE_PORT_TC2_QOS_MAP_PORT(port));
 
 	bcm_sf2_brcm_hdr_setup(priv, port);
 
@@ -303,7 +312,7 @@ static int bcm_sf2_port_setup(struct dsa_switch *ds, int port,
 	 * to a different queue number
 	 */
 	reg = core_readl(priv, CORE_PORT_TC2_QOS_MAP_PORT(port));
-	for (i = 0; i < 8; i++)
+	for (i = 0; i < SF2_NUM_EGRESS_QUEUES; i++)
 		reg |= i << (PRT_TO_QID_SHIFT * i);
 	core_writel(priv, reg, CORE_PORT_TC2_QOS_MAP_PORT(port));
 
@@ -348,15 +357,17 @@ static int bcm_sf2_port_setup(struct dsa_switch *ds, int port,
 	if (priv->port_sts[port].eee.eee_enabled)
 		bcm_sf2_eee_enable_set(ds, port, true);
 
-	if (priv->type == BCM7445_DEVICE_ID) {
-		/* Set per-queue pause threshold to 32 */
-		core_writel(priv, 32, CORE_TXQ_THD_PAUSE_QN_PORT(port));
+	/* Set per-queue pause threshold to 32 */
+	core_writel(priv, 32, CORE_TXQ_THD_PAUSE_QN_PORT(port));
 
-		/* Set ACB threshold to 24 */
-		reg = acb_readl(priv, ACB_QUEUE_CFG(port * 8));
+	/* Set ACB threshold to 24 */
+	for (i = 0; i < SF2_NUM_EGRESS_QUEUES; i++) {
+		reg = acb_readl(priv, ACB_QUEUE_CFG(port *
+						    SF2_NUM_EGRESS_QUEUES + i));
 		reg &= ~XOFF_THRESHOLD_MASK;
 		reg |= 24;
-		acb_writel(priv, reg, ACB_QUEUE_CFG(port * 8));
+		acb_writel(priv, reg, ACB_QUEUE_CFG(port *
+						    SF2_NUM_EGRESS_QUEUES + i));
 	}
 
 	return 0;
@@ -837,12 +848,13 @@ static void bcm_sf2_enable_acb(struct dsa_switch *ds)
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
 	u32 reg;
 
-	if (priv->type == BCM7445_DEVICE_ID) {
-		/* Enable ACB globally */
-		reg = acb_readl(priv, ACB_CONTROL);
-		reg |= ACB_EN | ACB_ALGORITHM;
-		acb_writel(priv, reg, ACB_CONTROL);
-	}
+	/* Enable ACB globally */
+	reg = acb_readl(priv, ACB_CONTROL);
+	reg |= (ACB_FLUSH_MASK << ACB_FLUSH_SHIFT);
+	acb_writel(priv, reg, ACB_CONTROL);
+	reg &= ~(ACB_FLUSH_MASK << ACB_FLUSH_SHIFT);
+	reg |= ACB_EN | ACB_ALGORITHM;
+	acb_writel(priv, reg, ACB_CONTROL);
 }
 
 static int bcm_sf2_sw_suspend(struct dsa_switch *ds)
@@ -1114,6 +1126,7 @@ struct bcm_sf2_of_data {
 	u32 type;
 	const u16 *reg_offsets;
 	unsigned int core_reg_align;
+	unsigned int num_cfp_rules;
 };
 
 /* Register offsets for the SWITCH_REG_* block */
@@ -1137,6 +1150,7 @@ static const struct bcm_sf2_of_data bcm_sf2_7445_data = {
 	.type		= BCM7445_DEVICE_ID,
 	.core_reg_align	= 0,
 	.reg_offsets	= bcm_sf2_7445_reg_offsets,
+	.num_cfp_rules	= 256,
 };
 
 static const u16 bcm_sf2_7278_reg_offsets[] = {
@@ -1159,6 +1173,7 @@ static const struct bcm_sf2_of_data bcm_sf2_7278_data = {
 	.type		= BCM7278_DEVICE_ID,
 	.core_reg_align	= 1,
 	.reg_offsets	= bcm_sf2_7278_reg_offsets,
+	.num_cfp_rules	= 128,
 };
 
 static const struct of_device_id bcm_sf2_of_match[] = {
@@ -1215,6 +1230,7 @@ static int bcm_sf2_sw_probe(struct platform_device *pdev)
 	priv->type = data->type;
 	priv->reg_offsets = data->reg_offsets;
 	priv->core_reg_align = data->core_reg_align;
+	priv->num_cfp_rules = data->num_cfp_rules;
 
 	/* Auto-detection using standard registers will not work, so
 	 * provide an indication of what kind of device we are for
@@ -1249,6 +1265,9 @@ static int bcm_sf2_sw_probe(struct platform_device *pdev)
 	 * ds->slave_mii_bus and ds->ops->phy_read being non-NULL)
 	 */
 	ds->ops->phy_read = NULL;
+
+	/* Advertise the 8 egress queues */
+	ds->num_tx_queues = SF2_NUM_EGRESS_QUEUES;
 
 	dev_set_drvdata(&pdev->dev, priv);
 

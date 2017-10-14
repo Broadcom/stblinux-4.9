@@ -404,7 +404,7 @@ struct bcm_rsb {
 #define  RING_CONS_INDEX_MASK		0xffff
 
 #define RING_MAPPING			0x14
-#define  RING_QID_MASK			0x3
+#define  RING_QID_MASK			0x7
 #define  RING_PORT_ID_SHIFT		3
 #define  RING_PORT_ID_MASK		0x7
 #define  RING_IGNORE_STATUS		(1 << 6)
@@ -647,6 +647,9 @@ enum bcm_sysport_stat_type {
 	.reg_offset = ofs, \
 }
 
+/* TX bytes and packets */
+#define NUM_SYSPORT_TXQ_STAT	2
+
 struct bcm_sysport_stats {
 	char stat_string[ETH_GSTRING_LEN];
 	int stat_sizeof;
@@ -690,6 +693,10 @@ struct bcm_sysport_tx_ring {
 	struct bcm_sysport_cb *cbs;	/* Transmit control blocks */
 	struct dma_desc	*desc_cpu;	/* CPU view of the descriptor */
 	struct bcm_sysport_priv *priv;	/* private context backpointer */
+	unsigned long	packets;	/* packets statistics */
+	unsigned long	bytes;		/* bytes statistics */
+	unsigned int	switch_queue;	/* switch port queue number */
+	unsigned int	switch_port;	/* switch port queue number */
 };
 
 /* Driver private structure */
@@ -739,5 +746,11 @@ struct bcm_sysport_priv {
 
 	/* Ethtool */
 	u32			msg_enable;
+
+	/* netdev notifier to map switch port queues */
+	struct notifier_block	queue_nb;
+	unsigned int		per_port_num_tx_queues;
+	unsigned long		queue_bitmap;
+	struct bcm_sysport_tx_ring *ring_map[DSA_MAX_PORTS * 8];
 };
 #endif /* __BCM_SYSPORT_H */

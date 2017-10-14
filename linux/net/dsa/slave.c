@@ -1013,6 +1013,13 @@ static int dsa_slave_set_rxnfc(struct net_device *dev,
 	return ds->ops->set_rxnfc(ds, p->port, nfc);
 }
 
+static u16 dsa_slave_select_queue(struct net_device *dev, struct sk_buff *skb,
+				  void *accel_priv,
+				  select_queue_fallback_t fallback)
+{
+	return skb_get_queue_mapping(skb);
+}
+
 static const struct ethtool_ops dsa_slave_ethtool_ops = {
 	.get_settings		= dsa_slave_get_settings,
 	.set_settings		= dsa_slave_set_settings,
@@ -1055,6 +1062,7 @@ static const struct net_device_ops dsa_slave_netdev_ops = {
 	.ndo_bridge_getlink	= switchdev_port_bridge_getlink,
 	.ndo_bridge_setlink	= switchdev_port_bridge_setlink,
 	.ndo_bridge_dellink	= switchdev_port_bridge_dellink,
+	.ndo_select_queue	= dsa_slave_select_queue,
 };
 
 static const struct switchdev_ops dsa_slave_switchdev_ops = {
@@ -1129,10 +1137,8 @@ static int dsa_slave_phy_connect(struct dsa_slave_priv *p,
 	/* Use already configured phy mode */
 	if (p->phy_interface == PHY_INTERFACE_MODE_NA)
 		p->phy_interface = p->phy->interface;
-	phy_connect_direct(slave_dev, p->phy, dsa_slave_adjust_link,
-			   p->phy_interface);
-
-	return 0;
+	return phy_connect_direct(slave_dev, p->phy, dsa_slave_adjust_link,
+				  p->phy_interface);
 }
 
 static int dsa_slave_phy_setup(struct dsa_slave_priv *p,
@@ -1267,8 +1273,12 @@ int dsa_slave_create(struct dsa_switch *ds, struct device *parent,
 	if (ds->master_netdev)
 		master = ds->master_netdev;
 
-	slave_dev = alloc_netdev(sizeof(struct dsa_slave_priv), name,
-				 NET_NAME_UNKNOWN, ether_setup);
+	if (!ds->num_tx_queues)
+		ds->num_tx_queues = 1;
+
+	slave_dev = alloc_netdev_mqs(sizeof(struct dsa_slave_priv), name,
+				     NET_NAME_UNKNOWN, ether_setup,
+				     ds->num_tx_queues, 1);
 	if (slave_dev == NULL)
 		return -ENOMEM;
 
@@ -1338,10 +1348,19 @@ void dsa_slave_destroy(struct net_device *slave_dev)
 	free_netdev(slave_dev);
 }
 
-static bool dsa_slave_dev_check(struct net_device *dev)
+bool dsa_slave_dev_check(struct net_device *dev)
 {
 	return dev->netdev_ops == &dsa_slave_netdev_ops;
 }
+EXPORT_SYMBOL_GPL(dsa_slave_dev_check);
+
+unsigned int dsa_slave_dev_port_num(struct net_device *dev)
+{
+	struct dsa_slave_priv *p = netdev_priv(dev);
+
+	return p->port;
+}
+EXPORT_SYMBOL_GPL(dsa_slave_dev_port_num);
 
 static int dsa_slave_port_upper_event(struct net_device *dev,
 				      unsigned long event, void *ptr)

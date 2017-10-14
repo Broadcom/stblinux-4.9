@@ -68,10 +68,14 @@ romfs-rootfs::
 romfs-toolchain::
 	rm -fr temp
 	mkdir -p temp/{bin,lib,sbin}
-	cp -df $(GCCSYSROOT)/lib/*.so* temp/lib
 	if [ -d "$(GCCSYSROOT)/lib64" ]; then \
 		mkdir -p temp/lib64; \
 		cp -df $(GCCSYSROOT)/lib64/*.so* temp/lib64; \
+		cp -df $(GCCSYSROOT)/lib/ld-linux-* temp/lib; \
+		ln -s -f ../lib64/$$(basename $$(readlink temp/lib/ld-linux-*)) \
+			temp/lib/ld-linux-*; \
+	else \
+		cp -df $(GCCSYSROOT)/lib/*.so* temp/lib; \
 	fi
 	# FIXME: libgcc was removed from sysroot in stbgcc-4.8-1.1, eventually
 	# delete the next line

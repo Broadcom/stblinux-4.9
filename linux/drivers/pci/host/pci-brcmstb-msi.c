@@ -169,6 +169,7 @@ static void brcm_msi_teardown_irq(struct msi_controller *chip, unsigned int irq)
 	struct irq_data *d = irq_get_irq_data(irq);
 
 	brcm_msi_free(msi, d->hwirq);
+	irq_dispose_mapping(irq);
 }
 
 static int brcm_msi_map(struct irq_domain *domain, unsigned int irq,
@@ -248,6 +249,19 @@ fail:
 	kfree(new->name);
 	kfree(new);
 	return err;
+}
+
+void brcm_msi_remove(struct msi_controller *chip)
+{
+	struct brcm_msi *msi;
+
+	if (!chip)
+		return;
+	msi = to_brcm_msi(chip);
+	if (msi->domain) {
+		irq_domain_remove(msi->domain);
+		msi->domain = NULL;
+	}
 }
 
 int brcm_msi_probe(struct platform_device *pdev, struct brcm_info *info)

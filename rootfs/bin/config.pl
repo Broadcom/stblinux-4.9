@@ -269,13 +269,6 @@ sub populate_linux_defaults($$)
 	my @mods = @{$_[0]};
 	my $chip = $_[1];
 
-	# Original plan: if using a semi-multiplatform kernel we need a new
-	# way to tell if the chip is MIPS or ARM.  Suggest adding new
-	# metadata under include/linux/brcmstb/7*
-	#
-	# However, it doesn't look like that's actually happening.  Until it
-	# does, we can assume that anything that has an entry under
-	# include/linux/brcmstb is ARM.
 	if ($chip eq "arm64") {
 		if (grep(/^hardened$/, @mods)) {
 			$linux_defaults =~ s/defconfig$/hardened_defconfig/;
@@ -290,45 +283,29 @@ sub populate_linux_defaults($$)
 		$arch_config_options{"ARCH"} = "arm";
 		$linux_defaults = "$LINUXDIR/arch/".$arch_config_options{"ARCH"}."/configs/brcmstb_defconfig";
 		$linux_new_defaults = "$LINUXDIR/arch/".$arch_config_options{"ARCH"}."/configs/brcmstb_new_defconfig";
-	} elsif ($chip eq "probe") {
-		$linux_defaults= "$LINUXDIR/arch/mips/configs/bcmejtag_defconfig";
+	} elsif ($chip eq "bmips") {
 		$arch_config_options{"ARCH"} = "mips";
-	} elsif ($chip ne "bmips") {
+		$linux_defaults = "$LINUXDIR/arch/".$arch_config_options{"ARCH"}."/configs/bmips_stb_defconfig";
+	} elsif ($chip eq "probe") {
+		$arch_config_options{"ARCH"} = "mips";
+		$linux_defaults = "$LINUXDIR/arch/".$arch_config_options{"ARCH"}."/configs/bcmejtag_defconfig";
+	} else {
 		if (grep(/^hardened$/, @mods)) {
 			$linux_defaults =~ s/defconfig$/hardened_defconfig/;
 		}
-		if ($chip eq "7271a0") {
-			if (grep(/^32$/, @mods)) {
-				$arch_config_options{"ARCH"} = "arm";
-			} else {
-				$arch_config_options{"ARCH"} = "arm64";
-			}
-		} elsif (-e "$LINUXDIR/arch/mips/configs/bcm".$chip."_defconfig") {
-			$linux_defaults = "$LINUXDIR/arch/mips/configs/bcm".$chip."_defconfig";
-			$linux_new_defaults = "$LINUXDIR/arch/mips/configs/bcm".$chip."_new_defconfig";
-			$arch_config_options{"ARCH"} = "mips";
-		} else {
-			$arch_config_options{"ARCH"} = "arm";
-		}
 
-		if ($arch_config_options{"ARCH"} ne "mips") {
+		if (-e "$LINUXDIR/arch/mips/configs/bcm".$chip."_defconfig") {
+			$arch_config_options{"ARCH"} = "mips";
+			$linux_defaults = "$LINUXDIR/arch/".$arch_config_options{"ARCH"}."/configs/bcm".$chip."_defconfig";
+			$linux_new_defaults = "$LINUXDIR/arch/".$arch_config_options{"ARCH"}."/configs/bcm".$chip."_new_defconfig";
+		} elsif (-e "$LINUXDIR/include/linux/brcmstb/$chip") {
+			$arch_config_options{"ARCH"} = "arm";
 			$linux_defaults = "$LINUXDIR/arch/".$arch_config_options{"ARCH"}."/configs/brcmstb_defconfig";
 			$linux_new_defaults = "$LINUXDIR/arch/".$arch_config_options{"ARCH"}."/configs/brcmstb_new_defconfig";
-		}
-	} elsif (-e "$LINUXDIR/arch/mips/configs/".$chip."_stb_defconfig") {
-		$linux_defaults = "$LINUXDIR/arch/mips/configs/bmips_stb_defconfig";
-		$arch_config_options{"ARCH"} = "mips";
-	} else {
-		print "\n";
-		print "WARNING: can't find $LINUXDIR/include/linux/brcmstb/*\n";
-		if (-r "$LINUXDIR/arch/arm/configs/brcmstb_defconfig") {
-			print "But brcmstb_defconfig exists. Using it.\n";
-			$linux_defaults = "$LINUXDIR/arch/arm/configs/brcmstb_defconfig";
-			$arch_config_options{"ARCH"} = "arm";
 		} else {
+			print "\n";
 			print "ERROR: No Linux configuration for $chip\n";
-			print "Attempted to open: $LINUXDIR/arch/arm/configs/brcmstb_defconfig,\n";
-			print "                   $linux_defaults\n";
+			print "Attempted to find from: $LINUXDIR/arch/mips/configs/* & $LINUXDIR/include/linx/brcmstb/* \n";
 			print "\n";
 			exit 1;
 		}

@@ -66,6 +66,7 @@
 #define   USB_CTRL_USB30_CTL1_USB3_IPP_MASK		0x20000000 /* option */
 #define USB_CTRL_USB30_PCTL		0x70
 #define   USB_CTRL_USB30_PCTL_PHY3_SOFT_RESETB_MASK	0x00000002
+#define   USB_CTRL_USB30_PCTL_PHY3_IDDQ_OVERRIDE_MASK	0x00008000
 #define   USB_CTRL_USB30_PCTL_PHY3_SOFT_RESETB_P1_MASK	0x00020000
 #define USB_CTRL_USB_DEVICE_CTL1	0x90
 #define   USB_CTRL_USB_DEVICE_CTL1_PORT_MODE_MASK	0x00000003 /* option */
@@ -986,6 +987,10 @@ void brcm_usb_init_xhci(struct brcm_usb_common_init_params *params)
 
 	pr_debug("brcm_usb_init_xhci()\n");
 
+	USB_CTRL_UNSET(ctrl, USB30_PCTL, PHY3_IDDQ_OVERRIDE);
+	/* 1 millisecond - for USB clocks to settle down */
+	usleep_range(1000, 2000);
+
 	if (BRCM_ID(params->family_id) == 0x7366) {
 		/*
 		 * The PHY3_SOFT_RESETB bits default to the wrong state.
@@ -1033,4 +1038,5 @@ void brcm_usb_uninit_xhci(struct brcm_usb_common_init_params *params)
 	pr_debug("brcm_usb_uninit_xhci()\n");
 
 	xhci_soft_reset(params, 1);
+	USB_CTRL_SET(params->ctrl_regs, USB30_PCTL, PHY3_IDDQ_OVERRIDE);
 }

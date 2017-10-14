@@ -1215,6 +1215,8 @@ int spi_flash_read(struct spi_device *spi,
  *	from the chip datasheet and board-specific signal quality issues.
  * @bus_num: Identifies which spi_master parents the spi_device; unused
  *	by spi_new_device(), and otherwise depends on board wiring.
+ * @of_node: Identifies which spi_master parents the spi_device; unused
+ * 	by spi_new_device(), and otherwise depends on board wiring.
  * @chip_select: Initializes spi_device.chip_select; depends on how
  *	the board is wired.
  * @mode: Initializes spi_device.mode; based on the chip datasheet, board
@@ -1258,6 +1260,7 @@ struct spi_board_info {
 	 * it's less than num_chipselect.
 	 */
 	u16		bus_num;
+	struct device_node	*of_node;
 	u16		chip_select;
 
 	/* mode becomes spi_device.mode, and is essential for chips

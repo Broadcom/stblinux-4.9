@@ -200,6 +200,9 @@ struct dsa_switch {
 	u32			phys_mii_mask;
 	struct dsa_port		ports[DSA_MAX_PORTS];
 	struct mii_bus		*slave_mii_bus;
+
+	/* Number of switch port queues */
+	unsigned int		num_tx_queues;
 };
 
 static inline bool dsa_is_cpu_port(struct dsa_switch *ds, int p)
@@ -407,6 +410,22 @@ static inline bool dsa_uses_tagged_protocol(struct dsa_switch_tree *dst)
 	return dst->rcv != NULL;
 }
 
+#if IS_ENABLED(CONFIG_NET_DSA)
+bool dsa_slave_dev_check(struct net_device *dev);
+unsigned int dsa_slave_dev_port_num(struct net_device *dev);
+#else
+static inline bool dsa_slave_dev_check(struct net_device *dev)
+{
+	return false;
+}
+
+static inline unsigned int dsa_slave_dev_port_num(struct net_device *dev)
+{
+	return DSA_MAX_PORTS;
+}
+#endif
+
+struct dsa_switch *dsa_switch_alloc(struct device *dev, size_t n);
 void dsa_unregister_switch(struct dsa_switch *ds);
 int dsa_register_switch(struct dsa_switch *ds, struct device_node *np);
 #ifdef CONFIG_PM_SLEEP
@@ -422,5 +441,10 @@ static inline int dsa_switch_resume(struct dsa_switch *ds)
 	return 0;
 }
 #endif /* CONFIG_PM_SLEEP */
+
+/* Broadcom tag specific */
+#define BRCM_TAG_SET_PORT_QUEUE(p, q)	((p) << 8 | q)
+#define BRCM_TAG_GET_PORT(v)		((v) >> 8)
+#define BRCM_TAG_GET_QUEUE(v)		((v) & 0xff)
 
 #endif

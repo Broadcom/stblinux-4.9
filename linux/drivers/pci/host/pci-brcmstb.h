@@ -33,13 +33,15 @@ extern struct notifier_block brcmstb_platform_nb;
 #ifdef CONFIG_PCI_MSI
 int brcm_msi_probe(struct platform_device *pdev, struct brcm_info *info);
 void brcm_msi_set_regs(struct msi_controller *chip);
+void brcm_msi_remove(struct msi_controller *chip);
 #else
 int brcm_msi_probe(struct platform_device *pdev, struct brcm_info *info)
 {
 	return -ENODEV;
 }
 
-void brcm_msi_set_regs(struct msi_controller *chip) {}
+static inline void brcm_msi_set_regs(struct msi_controller *chip) {}
+static inline void brcm_msi_remove(struct msi_controller *chip) {}
 #endif /* CONFIG_PCI_MSI */
 
 struct brcm_info {
