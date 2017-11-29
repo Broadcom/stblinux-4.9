@@ -283,6 +283,7 @@ dir_$(CONFIG_USER_SQUID_SQUID)              += squid
 dir_$(CONFIG_USER_SSH_SSHD)                 += dropbear
 dir_$(CONFIG_USER_SSH_SSH)                  += dropbear
 dir_$(CONFIG_USER_SSH_SSHKEYGEN)            += dropbear
+dir_$(CONFIG_USER_RNG_TOOLS)		    += rng-tools
 dir_$(CONFIG_USER_STP_STP)                  += stp
 dir_$(CONFIG_USER_STRACE_STRACE)            += strace
 dir_$(CONFIG_USER_STTY_STTY)                += stty

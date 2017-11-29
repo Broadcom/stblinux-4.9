@@ -1,5 +1,5 @@
 dnl Process this file with autoconf to produce a configure script.
-AC_INIT(ethtool, 3.15, netdev@vger.kernel.org)
+AC_INIT(ethtool, 4.11, netdev@vger.kernel.org)
 AC_PREREQ(2.52)
 AC_CONFIG_SRCDIR([ethtool.c])
 AM_INIT_AUTOMAKE([gnu])
@@ -15,7 +15,6 @@ AM_PROG_CC_C_O
 dnl Checks for libraries.
 
 dnl Checks for header files.
-AC_CHECK_HEADERS(sys/ioctl.h)
 
 dnl Checks for typedefs, structures, and compiler characteristics.
 AC_MSG_CHECKING([whether <linux/types.h> defines big-endian types])

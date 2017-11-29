@@ -27,16 +27,21 @@ while (@ARGV) {
 	}
 }
 
-my $file = "<toolchain";
-if ($kern_ver >= 4.9) {
-	$file = "<toolchain_63";
-} else {
-	$file = "<toolchain";
-}
+my $toolchain;
 
-open(F, $file) or die "can't open toolchain file";
-my $toolchain = <F>;
-close(F);
+if (! -e "toolchain") {
+	if ($kern_ver >= 4.1) {
+		$toolchain = "stbgcc-6.3-1.1";
+	} else {
+		$toolchain = "stbgcc-4.8-1.7";
+	}
+} else {
+	my $file = "<toolchain";
+
+	open(F, $file) or die "can't open toolchain file";
+	$toolchain = <F>;
+	close(F);
+}
 
 $toolchain =~ s/[\r\n]//g;
 my $path = $ENV{'PATH'};

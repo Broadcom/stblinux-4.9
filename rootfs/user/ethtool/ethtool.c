@@ -20,6 +20,10 @@
  *	Copyright 2009, 2010 Solarflare Communications
  * MDI-X set support by Jesse Brandeburg <jesse.brandeburg@intel.com>
  *	Copyright 2012 Intel Corporation
+ * vmxnet3 support by Shrikrishna Khare <skhare@vmware.com>
+ * Various features by Ben Hutchings <ben@decadent.org.uk>;
+ *	Copyright 2008-2010, 2013-2016 Ben Hutchings
+ * QSFP+/QSFP28 DOM support by Vidya Sagar Ravipati <vidya@cumulusnetworks.com>
  *
  * TODO:
  *   * show settings for all devices
@@ -31,6 +35,7 @@
 #include <sys/stat.h>
 #include <stdio.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <sys/utsname.h>
 #include <limits.h>
@@ -41,57 +46,11 @@
 #include <arpa/inet.h>
 
 #include <linux/sockios.h>
+#include <linux/netlink.h>
 
 #ifndef MAX_ADDR_LEN
 #define MAX_ADDR_LEN	32
 #endif
-
-#define ALL_ADVERTISED_MODES			\
-	(ADVERTISED_10baseT_Half |		\
-	 ADVERTISED_10baseT_Full |		\
-	 ADVERTISED_100baseT_Half |		\
-	 ADVERTISED_100baseT_Full |		\
-	 ADVERTISED_1000baseT_Half |		\
-	 ADVERTISED_1000baseT_Full |		\
-	 ADVERTISED_2500baseX_Full |		\
-	 ADVERTISED_10000baseKX4_Full |		\
-	 ADVERTISED_10000baseKR_Full |		\
-	 ADVERTISED_10000baseR_FEC |		\
-	 ADVERTISED_20000baseMLD2_Full |	\
-	 ADVERTISED_20000baseKR2_Full |		\
-	 ADVERTISED_40000baseKR4_Full |		\
-	 ADVERTISED_40000baseCR4_Full |		\
-	 ADVERTISED_40000baseSR4_Full |		\
-	 ADVERTISED_40000baseLR4_Full)
-
-#define ALL_ADVERTISED_FLAGS			\
-	(ADVERTISED_10baseT_Half |		\
-	 ADVERTISED_10baseT_Full |		\
-	 ADVERTISED_100baseT_Half |		\
-	 ADVERTISED_100baseT_Full |		\
-	 ADVERTISED_1000baseT_Half |		\
-	 ADVERTISED_1000baseT_Full |		\
-	 ADVERTISED_Autoneg |			\
-	 ADVERTISED_TP |			\
-	 ADVERTISED_AUI |			\
-	 ADVERTISED_MII |			\
-	 ADVERTISED_FIBRE |			\
-	 ADVERTISED_BNC |			\
-	 ADVERTISED_10000baseT_Full |		\
-	 ADVERTISED_Pause |			\
-	 ADVERTISED_Asym_Pause |		\
-	 ADVERTISED_2500baseX_Full |		\
-	 ADVERTISED_Backplane |			\
-	 ADVERTISED_1000baseKX_Full |		\
-	 ADVERTISED_10000baseKX4_Full |		\
-	 ADVERTISED_10000baseKR_Full |		\
-	 ADVERTISED_10000baseR_FEC |		\
-	 ADVERTISED_20000baseMLD2_Full |	\
-	 ADVERTISED_20000baseKR2_Full |		\
-	 ADVERTISED_40000baseKR4_Full |		\
-	 ADVERTISED_40000baseCR4_Full |		\
-	 ADVERTISED_40000baseSR4_Full |		\
-	 ADVERTISED_40000baseLR4_Full)
 
 #ifndef HAVE_NETIF_MSG
 enum {
@@ -111,6 +70,10 @@ enum {
 	NETIF_MSG_HW		= 0x2000,
 	NETIF_MSG_WOL		= 0x4000,
 };
+#endif
+
+#ifndef NETLINK_GENERIC
+#define NETLINK_GENERIC	16
 #endif
 
 #define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))
@@ -303,6 +266,43 @@ static void get_mac_addr(char *src, unsigned char *dest)
 	}
 }
 
+static int parse_hex_u32_bitmap(const char *s,
+				unsigned int nbits, u32 *result)
+{
+	const unsigned int nwords = __KERNEL_DIV_ROUND_UP(nbits, 32);
+	size_t slen = strlen(s);
+	size_t i;
+
+	/* ignore optional '0x' prefix */
+	if ((slen > 2) && (strncasecmp(s, "0x", 2) == 0)) {
+		slen -= 2;
+		s += 2;
+	}
+
+	if (slen > 8 * nwords)  /* up to 2 digits per byte */
+		return -1;
+
+	memset(result, 0, 4 * nwords);
+	for (i = 0; i < slen; ++i) {
+		const unsigned int shift = (slen - 1 - i) * 4;
+		u32 *dest = &result[shift / 32];
+		u32 nibble;
+
+		if ('a' <= s[i] && s[i] <= 'f')
+			nibble = 0xa + (s[i] - 'a');
+		else if ('A' <= s[i] && s[i] <= 'F')
+			nibble = 0xa + (s[i] - 'A');
+		else if ('0' <= s[i] && s[i] <= '9')
+			nibble = (s[i] - '0');
+		else
+			return -1;
+
+		*dest |= (nibble << (shift % 32));
+	}
+
+	return 0;
+}
+
 static void parse_generic_cmdline(struct cmd_context *ctx,
 				  int *changed,
 				  struct cmdline_info *info,
@@ -482,60 +482,211 @@ static int do_version(struct cmd_context *ctx)
 	return 0;
 }
 
-static void dump_link_caps(const char *prefix, const char *an_prefix, u32 mask,
-			   int link_mode_only);
+/* link mode routines */
 
-static void dump_supported(struct ethtool_cmd *ep)
+static ETHTOOL_DECLARE_LINK_MODE_MASK(all_advertised_modes);
+static ETHTOOL_DECLARE_LINK_MODE_MASK(all_advertised_flags);
+
+static void init_global_link_mode_masks(void)
 {
-	u32 mask = ep->supported;
+	static const enum ethtool_link_mode_bit_indices
+		all_advertised_modes_bits[] = {
+		ETHTOOL_LINK_MODE_10baseT_Half_BIT,
+		ETHTOOL_LINK_MODE_10baseT_Full_BIT,
+		ETHTOOL_LINK_MODE_100baseT_Half_BIT,
+		ETHTOOL_LINK_MODE_100baseT_Full_BIT,
+		ETHTOOL_LINK_MODE_1000baseT_Half_BIT,
+		ETHTOOL_LINK_MODE_1000baseT_Full_BIT,
+		ETHTOOL_LINK_MODE_1000baseKX_Full_BIT,
+		ETHTOOL_LINK_MODE_2500baseX_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseT_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseKX4_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseKR_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseR_FEC_BIT,
+		ETHTOOL_LINK_MODE_20000baseMLD2_Full_BIT,
+		ETHTOOL_LINK_MODE_20000baseKR2_Full_BIT,
+		ETHTOOL_LINK_MODE_40000baseKR4_Full_BIT,
+		ETHTOOL_LINK_MODE_40000baseCR4_Full_BIT,
+		ETHTOOL_LINK_MODE_40000baseSR4_Full_BIT,
+		ETHTOOL_LINK_MODE_40000baseLR4_Full_BIT,
+		ETHTOOL_LINK_MODE_56000baseKR4_Full_BIT,
+		ETHTOOL_LINK_MODE_56000baseCR4_Full_BIT,
+		ETHTOOL_LINK_MODE_56000baseSR4_Full_BIT,
+		ETHTOOL_LINK_MODE_56000baseLR4_Full_BIT,
+		ETHTOOL_LINK_MODE_25000baseCR_Full_BIT,
+		ETHTOOL_LINK_MODE_25000baseKR_Full_BIT,
+		ETHTOOL_LINK_MODE_25000baseSR_Full_BIT,
+		ETHTOOL_LINK_MODE_50000baseCR2_Full_BIT,
+		ETHTOOL_LINK_MODE_50000baseKR2_Full_BIT,
+		ETHTOOL_LINK_MODE_100000baseKR4_Full_BIT,
+		ETHTOOL_LINK_MODE_100000baseSR4_Full_BIT,
+		ETHTOOL_LINK_MODE_100000baseCR4_Full_BIT,
+		ETHTOOL_LINK_MODE_100000baseLR4_ER4_Full_BIT,
+		ETHTOOL_LINK_MODE_50000baseSR2_Full_BIT,
+		ETHTOOL_LINK_MODE_1000baseX_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseCR_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseSR_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseLR_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseLRM_Full_BIT,
+		ETHTOOL_LINK_MODE_10000baseER_Full_BIT,
+		ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
+		ETHTOOL_LINK_MODE_5000baseT_Full_BIT,
+	};
+	static const enum ethtool_link_mode_bit_indices
+		additional_advertised_flags_bits[] = {
+		ETHTOOL_LINK_MODE_Autoneg_BIT,
+		ETHTOOL_LINK_MODE_TP_BIT,
+		ETHTOOL_LINK_MODE_AUI_BIT,
+		ETHTOOL_LINK_MODE_MII_BIT,
+		ETHTOOL_LINK_MODE_FIBRE_BIT,
+		ETHTOOL_LINK_MODE_BNC_BIT,
+		ETHTOOL_LINK_MODE_Pause_BIT,
+		ETHTOOL_LINK_MODE_Asym_Pause_BIT,
+		ETHTOOL_LINK_MODE_Backplane_BIT,
+	};
+	unsigned int i;
 
+	ethtool_link_mode_zero(all_advertised_modes);
+	ethtool_link_mode_zero(all_advertised_flags);
+	for (i = 0; i < ARRAY_SIZE(all_advertised_modes_bits); ++i) {
+		ethtool_link_mode_set_bit(all_advertised_modes_bits[i],
+					  all_advertised_modes);
+		ethtool_link_mode_set_bit(all_advertised_modes_bits[i],
+					  all_advertised_flags);
+	}
+
+	for (i = 0; i < ARRAY_SIZE(additional_advertised_flags_bits); ++i) {
+		ethtool_link_mode_set_bit(
+			additional_advertised_flags_bits[i],
+			all_advertised_flags);
+	}
+}
+
+static void dump_link_caps(const char *prefix, const char *an_prefix,
+			   const u32 *mask, int link_mode_only);
+
+static void dump_supported(const struct ethtool_link_usettings *link_usettings)
+{
 	fprintf(stdout, "	Supported ports: [ ");
-	if (mask & SUPPORTED_TP)
+	if (ethtool_link_mode_test_bit(
+		    ETHTOOL_LINK_MODE_TP_BIT,
+		    link_usettings->link_modes.supported))
 		fprintf(stdout, "TP ");
-	if (mask & SUPPORTED_AUI)
+	if (ethtool_link_mode_test_bit(
+		    ETHTOOL_LINK_MODE_AUI_BIT,
+		    link_usettings->link_modes.supported))
 		fprintf(stdout, "AUI ");
-	if (mask & SUPPORTED_BNC)
+	if (ethtool_link_mode_test_bit(
+		    ETHTOOL_LINK_MODE_BNC_BIT,
+		    link_usettings->link_modes.supported))
 		fprintf(stdout, "BNC ");
-	if (mask & SUPPORTED_MII)
+	if (ethtool_link_mode_test_bit(
+		    ETHTOOL_LINK_MODE_MII_BIT,
+		    link_usettings->link_modes.supported))
 		fprintf(stdout, "MII ");
-	if (mask & SUPPORTED_FIBRE)
+	if (ethtool_link_mode_test_bit(
+		    ETHTOOL_LINK_MODE_FIBRE_BIT,
+		    link_usettings->link_modes.supported))
 		fprintf(stdout, "FIBRE ");
-	if (mask & SUPPORTED_Backplane)
+	if (ethtool_link_mode_test_bit(
+		    ETHTOOL_LINK_MODE_Backplane_BIT,
+		    link_usettings->link_modes.supported))
 		fprintf(stdout, "Backplane ");
 	fprintf(stdout, "]\n");
 
-	dump_link_caps("Supported", "Supports", mask, 0);
+	dump_link_caps("Supported", "Supports",
+		       link_usettings->link_modes.supported, 0);
 }
 
 /* Print link capability flags (supported, advertised or lp_advertised).
  * Assumes that the corresponding SUPPORTED and ADVERTISED flags are equal.
  */
-static void
-dump_link_caps(const char *prefix, const char *an_prefix, u32 mask,
-	       int link_mode_only)
+static void dump_link_caps(const char *prefix, const char *an_prefix,
+			   const u32 *mask, int link_mode_only)
 {
 	static const struct {
 		int same_line; /* print on same line as previous */
-		u32 value;
+		unsigned int bit_index;
 		const char *name;
 	} mode_defs[] = {
-		{ 0, ADVERTISED_10baseT_Half,       "10baseT/Half" },
-		{ 1, ADVERTISED_10baseT_Full,       "10baseT/Full" },
-		{ 0, ADVERTISED_100baseT_Half,      "100baseT/Half" },
-		{ 1, ADVERTISED_100baseT_Full,      "100baseT/Full" },
-		{ 0, ADVERTISED_1000baseT_Half,     "1000baseT/Half" },
-		{ 1, ADVERTISED_1000baseT_Full,     "1000baseT/Full" },
-		{ 0, ADVERTISED_1000baseKX_Full,    "1000baseKX/Full" },
-		{ 0, ADVERTISED_2500baseX_Full,     "2500baseX/Full" },
-		{ 0, ADVERTISED_10000baseT_Full,    "10000baseT/Full" },
-		{ 0, ADVERTISED_10000baseKX4_Full,  "10000baseKX4/Full" },
-		{ 0, ADVERTISED_10000baseKR_Full,   "10000baseKR/Full" },
-		{ 0, ADVERTISED_20000baseMLD2_Full, "20000baseMLD2/Full" },
-		{ 0, ADVERTISED_20000baseKR2_Full,  "20000baseKR2/Full" },
-		{ 0, ADVERTISED_40000baseKR4_Full,  "40000baseKR4/Full" },
-		{ 0, ADVERTISED_40000baseCR4_Full,  "40000baseCR4/Full" },
-		{ 0, ADVERTISED_40000baseSR4_Full,  "40000baseSR4/Full" },
-		{ 0, ADVERTISED_40000baseLR4_Full,  "40000baseLR4/Full" },
+		{ 0, ETHTOOL_LINK_MODE_10baseT_Half_BIT,
+		  "10baseT/Half" },
+		{ 1, ETHTOOL_LINK_MODE_10baseT_Full_BIT,
+		  "10baseT/Full" },
+		{ 0, ETHTOOL_LINK_MODE_100baseT_Half_BIT,
+		  "100baseT/Half" },
+		{ 1, ETHTOOL_LINK_MODE_100baseT_Full_BIT,
+		  "100baseT/Full" },
+		{ 0, ETHTOOL_LINK_MODE_1000baseT_Half_BIT,
+		  "1000baseT/Half" },
+		{ 1, ETHTOOL_LINK_MODE_1000baseT_Full_BIT,
+		  "1000baseT/Full" },
+		{ 0, ETHTOOL_LINK_MODE_1000baseKX_Full_BIT,
+		  "1000baseKX/Full" },
+		{ 0, ETHTOOL_LINK_MODE_2500baseX_Full_BIT,
+		  "2500baseX/Full" },
+		{ 0, ETHTOOL_LINK_MODE_10000baseT_Full_BIT,
+		  "10000baseT/Full" },
+		{ 0, ETHTOOL_LINK_MODE_10000baseKX4_Full_BIT,
+		  "10000baseKX4/Full" },
+		{ 0, ETHTOOL_LINK_MODE_10000baseKR_Full_BIT,
+		  "10000baseKR/Full" },
+		{ 0, ETHTOOL_LINK_MODE_20000baseMLD2_Full_BIT,
+		  "20000baseMLD2/Full" },
+		{ 0, ETHTOOL_LINK_MODE_20000baseKR2_Full_BIT,
+		  "20000baseKR2/Full" },
+		{ 0, ETHTOOL_LINK_MODE_40000baseKR4_Full_BIT,
+		  "40000baseKR4/Full" },
+		{ 0, ETHTOOL_LINK_MODE_40000baseCR4_Full_BIT,
+		  "40000baseCR4/Full" },
+		{ 0, ETHTOOL_LINK_MODE_40000baseSR4_Full_BIT,
+		  "40000baseSR4/Full" },
+		{ 0, ETHTOOL_LINK_MODE_40000baseLR4_Full_BIT,
+		  "40000baseLR4/Full" },
+		{ 0, ETHTOOL_LINK_MODE_56000baseKR4_Full_BIT,
+		  "56000baseKR4/Full" },
+		{ 0, ETHTOOL_LINK_MODE_56000baseCR4_Full_BIT,
+		  "56000baseCR4/Full" },
+		{ 0, ETHTOOL_LINK_MODE_56000baseSR4_Full_BIT,
+		  "56000baseSR4/Full" },
+		{ 0, ETHTOOL_LINK_MODE_56000baseLR4_Full_BIT,
+		  "56000baseLR4/Full" },
+		{ 0, ETHTOOL_LINK_MODE_25000baseCR_Full_BIT,
+		  "25000baseCR/Full" },
+		{ 0, ETHTOOL_LINK_MODE_25000baseKR_Full_BIT,
+		  "25000baseKR/Full" },
+		{ 0, ETHTOOL_LINK_MODE_25000baseSR_Full_BIT,
+		  "25000baseSR/Full" },
+		{ 0, ETHTOOL_LINK_MODE_50000baseCR2_Full_BIT,
+		  "50000baseCR2/Full" },
+		{ 0, ETHTOOL_LINK_MODE_50000baseKR2_Full_BIT,
+		  "50000baseKR2/Full" },
+		{ 0, ETHTOOL_LINK_MODE_100000baseKR4_Full_BIT,
+		  "100000baseKR4/Full" },
+		{ 0, ETHTOOL_LINK_MODE_100000baseSR4_Full_BIT,
+		  "100000baseSR4/Full" },
+		{ 0, ETHTOOL_LINK_MODE_100000baseCR4_Full_BIT,
+		  "100000baseCR4/Full" },
+		{ 0, ETHTOOL_LINK_MODE_100000baseLR4_ER4_Full_BIT,
+		  "100000baseLR4_ER4/Full" },
+		{ 0, ETHTOOL_LINK_MODE_50000baseSR2_Full_BIT,
+		  "50000baseSR2/Full" },
+		{ 0, ETHTOOL_LINK_MODE_1000baseX_Full_BIT,
+		  "1000baseX/Full" },
+		{ 0, ETHTOOL_LINK_MODE_10000baseCR_Full_BIT,
+		  "10000baseCR/Full" },
+		{ 0, ETHTOOL_LINK_MODE_10000baseSR_Full_BIT,
+		  "10000baseSR/Full" },
+		{ 0, ETHTOOL_LINK_MODE_10000baseLR_Full_BIT,
+		  "10000baseLR/Full" },
+		{ 0, ETHTOOL_LINK_MODE_10000baseLRM_Full_BIT,
+		  "10000baseLRM/Full" },
+		{ 0, ETHTOOL_LINK_MODE_10000baseER_Full_BIT,
+		  "10000baseER/Full" },
+                { 0, ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
+                  "2500baseT/Full" },
+                { 0, ETHTOOL_LINK_MODE_5000baseT_Full_BIT,
+                  "5000baseT/Full" },
 	};
 	int indent;
 	int did1, new_line_pend, i;
@@ -552,7 +703,8 @@ dump_link_caps(const char *prefix, const char *an_prefix, u32 mask,
 	for (i = 0; i < ARRAY_SIZE(mode_defs); i++) {
 		if (did1 && !mode_defs[i].same_line)
 			new_line_pend = 1;
-		if (mask & mode_defs[i].value) {
+		if (ethtool_link_mode_test_bit(mode_defs[i].bit_index,
+					       mask)) {
 			if (new_line_pend) {
 				fprintf(stdout, "\n");
 				fprintf(stdout, "	%*s", indent, "");
@@ -568,46 +720,52 @@ dump_link_caps(const char *prefix, const char *an_prefix, u32 mask,
 
 	if (!link_mode_only) {
 		fprintf(stdout, "	%s pause frame use: ", prefix);
-		if (mask & ADVERTISED_Pause) {
+		if (ethtool_link_mode_test_bit(
+			    ETHTOOL_LINK_MODE_Pause_BIT, mask)) {
 			fprintf(stdout, "Symmetric");
-			if (mask & ADVERTISED_Asym_Pause)
+			if (ethtool_link_mode_test_bit(
+				    ETHTOOL_LINK_MODE_Asym_Pause_BIT, mask))
 				fprintf(stdout, " Receive-only");
 			fprintf(stdout, "\n");
 		} else {
-			if (mask & ADVERTISED_Asym_Pause)
+			if (ethtool_link_mode_test_bit(
+				    ETHTOOL_LINK_MODE_Asym_Pause_BIT, mask))
 				fprintf(stdout, "Transmit-only\n");
 			else
 				fprintf(stdout, "No\n");
 		}
 
 		fprintf(stdout, "	%s auto-negotiation: ", an_prefix);
-		if (mask & ADVERTISED_Autoneg)
+		if (ethtool_link_mode_test_bit(
+			    ETHTOOL_LINK_MODE_Autoneg_BIT, mask))
 			fprintf(stdout, "Yes\n");
 		else
 			fprintf(stdout, "No\n");
 	}
 }
 
-static int dump_ecmd(struct ethtool_cmd *ep)
+static int
+dump_link_usettings(const struct ethtool_link_usettings *link_usettings)
 {
-	u32 speed;
-
-	dump_supported(ep);
-	dump_link_caps("Advertised", "Advertised", ep->advertising, 0);
-	if (ep->lp_advertising)
+	dump_supported(link_usettings);
+	dump_link_caps("Advertised", "Advertised",
+		       link_usettings->link_modes.advertising, 0);
+	if (!ethtool_link_mode_is_empty(
+		    link_usettings->link_modes.lp_advertising))
 		dump_link_caps("Link partner advertised",
-			       "Link partner advertised", ep->lp_advertising,
-			       0);
+			       "Link partner advertised",
+			       link_usettings->link_modes.lp_advertising, 0);
 
 	fprintf(stdout, "	Speed: ");
-	speed = ethtool_cmd_speed(ep);
-	if (speed == 0 || speed == (u16)(-1) || speed == (u32)(-1))
+	if (link_usettings->base.speed == 0
+	    || link_usettings->base.speed == (u16)(-1)
+	    || link_usettings->base.speed == (u32)(-1))
 		fprintf(stdout, "Unknown!\n");
 	else
-		fprintf(stdout, "%uMb/s\n", speed);
+		fprintf(stdout, "%uMb/s\n", link_usettings->base.speed);
 
 	fprintf(stdout, "	Duplex: ");
-	switch (ep->duplex) {
+	switch (link_usettings->base.duplex) {
 	case DUPLEX_HALF:
 		fprintf(stdout, "Half\n");
 		break;
@@ -615,12 +773,12 @@ static int dump_ecmd(struct ethtool_cmd *ep)
 		fprintf(stdout, "Full\n");
 		break;
 	default:
-		fprintf(stdout, "Unknown! (%i)\n", ep->duplex);
+		fprintf(stdout, "Unknown! (%i)\n", link_usettings->base.duplex);
 		break;
 	};
 
 	fprintf(stdout, "	Port: ");
-	switch (ep->port) {
+	switch (link_usettings->base.port) {
 	case PORT_TP:
 		fprintf(stdout, "Twisted Pair\n");
 		break;
@@ -646,13 +804,13 @@ static int dump_ecmd(struct ethtool_cmd *ep)
 		fprintf(stdout, "Other\n");
 		break;
 	default:
-		fprintf(stdout, "Unknown! (%i)\n", ep->port);
+		fprintf(stdout, "Unknown! (%i)\n", link_usettings->base.port);
 		break;
 	};
 
-	fprintf(stdout, "	PHYAD: %d\n", ep->phy_address);
+	fprintf(stdout, "	PHYAD: %d\n", link_usettings->base.phy_address);
 	fprintf(stdout, "	Transceiver: ");
-	switch (ep->transceiver) {
+	switch (link_usettings->deprecated.transceiver) {
 	case XCVR_INTERNAL:
 		fprintf(stdout, "internal\n");
 		break;
@@ -665,17 +823,18 @@ static int dump_ecmd(struct ethtool_cmd *ep)
 	};
 
 	fprintf(stdout, "	Auto-negotiation: %s\n",
-		(ep->autoneg == AUTONEG_DISABLE) ?
+		(link_usettings->base.autoneg == AUTONEG_DISABLE) ?
 		"off" : "on");
 
-	if (ep->port == PORT_TP) {
+	if (link_usettings->base.port == PORT_TP) {
 		fprintf(stdout, "	MDI-X: ");
-		if (ep->eth_tp_mdix_ctrl == ETH_TP_MDI) {
+		if (link_usettings->base.eth_tp_mdix_ctrl == ETH_TP_MDI) {
 			fprintf(stdout, "off (forced)\n");
-		} else if (ep->eth_tp_mdix_ctrl == ETH_TP_MDI_X) {
+		} else if (link_usettings->base.eth_tp_mdix_ctrl
+			   == ETH_TP_MDI_X) {
 			fprintf(stdout, "on (forced)\n");
 		} else {
-			switch (ep->eth_tp_mdix) {
+			switch (link_usettings->base.eth_tp_mdix) {
 			case ETH_TP_MDI:
 				fprintf(stdout, "off");
 				break;
@@ -686,7 +845,8 @@ static int dump_ecmd(struct ethtool_cmd *ep)
 				fprintf(stdout, "Unknown");
 				break;
 			}
-			if (ep->eth_tp_mdix_ctrl == ETH_TP_MDI_AUTO)
+			if (link_usettings->base.eth_tp_mdix_ctrl
+			    == ETH_TP_MDI_AUTO)
 				fprintf(stdout, " (auto)");
 			fprintf(stdout, "\n");
 		}
@@ -701,6 +861,7 @@ static int dump_drvinfo(struct ethtool_drvinfo *info)
 		"driver: %.*s\n"
 		"version: %.*s\n"
 		"firmware-version: %.*s\n"
+		"expansion-rom-version: %.*s\n"
 		"bus-info: %.*s\n"
 		"supports-statistics: %s\n"
 		"supports-test: %s\n"
@@ -710,6 +871,7 @@ static int dump_drvinfo(struct ethtool_drvinfo *info)
 		(int)sizeof(info->driver), info->driver,
 		(int)sizeof(info->version), info->version,
 		(int)sizeof(info->fw_version), info->fw_version,
+		(int)sizeof(info->erom_version), info->erom_version,
 		(int)sizeof(info->bus_info), info->bus_info,
 		info->n_stats ? "yes" : "no",
 		info->testinfo_len ? "yes" : "no",
@@ -878,6 +1040,74 @@ static char *unparse_rxfhashopts(u64 opts)
 	return buf;
 }
 
+static int convert_string_to_hashkey(char *rss_hkey, u32 key_size,
+				     const char *rss_hkey_string)
+{
+	u32 i = 0;
+	int hex_byte, len;
+
+	do {
+		if (i > (key_size - 1)) {
+			fprintf(stderr,
+				"Key is too long for device (%u > %u)\n",
+				i + 1, key_size);
+			goto err;
+		}
+
+		if (sscanf(rss_hkey_string, "%2x%n", &hex_byte, &len) < 1 ||
+		    len != 2) {
+			fprintf(stderr, "Invalid RSS hash key format\n");
+			goto err;
+		}
+
+		rss_hkey[i++] = hex_byte;
+		rss_hkey_string += 2;
+
+		if (*rss_hkey_string == ':') {
+			rss_hkey_string++;
+		} else if (*rss_hkey_string != '\0') {
+			fprintf(stderr, "Invalid RSS hash key format\n");
+			goto err;
+		}
+
+	} while (*rss_hkey_string);
+
+	if (i != key_size) {
+		fprintf(stderr, "Key is too short for device (%u < %u)\n",
+			i, key_size);
+		goto err;
+	}
+
+	return 0;
+err:
+	return 2;
+}
+
+static int parse_hkey(char **rss_hkey, u32 key_size,
+		      const char *rss_hkey_string)
+{
+	if (!key_size) {
+		fprintf(stderr,
+			"Cannot set RX flow hash configuration:\n"
+			" Hash key setting not supported\n");
+		return 1;
+	}
+
+	*rss_hkey = malloc(key_size);
+	if (!(*rss_hkey)) {
+		perror("Cannot allocate memory for RSS hash key");
+		return 1;
+	}
+
+	if (convert_string_to_hashkey(*rss_hkey, key_size,
+				      rss_hkey_string)) {
+		free(*rss_hkey);
+		*rss_hkey = NULL;
+		return 2;
+	}
+	return 0;
+}
+
 static const struct {
 	const char *name;
 	int (*func)(struct ethtool_drvinfo *info, struct ethtool_regs *regs);
@@ -911,6 +1141,8 @@ static const struct {
 	{ "st_gmac", st_gmac_dump_regs },
 	{ "et131x", et131x_dump_regs },
 	{ "altera_tse", altera_tse_dump_regs },
+	{ "vmxnet3", vmxnet3_dump_regs },
+	{ "fjes", fjes_dump_regs },
 #endif
 };
 
@@ -929,7 +1161,6 @@ void dump_hex(FILE *file, const u8 *data, int len, int offset)
 }
 
 static int dump_regs(int gregs_dump_raw, int gregs_dump_hex,
-		     const char *gregs_dump_file,
 		     struct ethtool_drvinfo *info, struct ethtool_regs *regs)
 {
 	int i;
@@ -937,22 +1168,6 @@ static int dump_regs(int gregs_dump_raw, int gregs_dump_hex,
 	if (gregs_dump_raw) {
 		fwrite(regs->data, regs->len, 1, stdout);
 		return 0;
-	}
-
-	if (gregs_dump_file) {
-		FILE *f = fopen(gregs_dump_file, "r");
-		struct stat st;
-
-		if (!f || fstat(fileno(f), &st) < 0) {
-			fprintf(stderr, "Can't open '%s': %s\n",
-				gregs_dump_file, strerror(errno));
-			return -1;
-		}
-
-		regs = realloc(regs, sizeof(*regs) + st.st_size);
-		regs->len = st.st_size;
-		fread(regs->data, regs->len, 1, f);
-		fclose(f);
 	}
 
 	if (!gregs_dump_hex)
@@ -1320,6 +1535,7 @@ static int dump_rxfhash(int fhash, u64 val)
 
 static void dump_eeecmd(struct ethtool_eee *ep)
 {
+	ETHTOOL_DECLARE_LINK_MODE_MASK(link_mode);
 
 	fprintf(stdout, "	EEE status: ");
 	if (!ep->supported) {
@@ -1341,9 +1557,16 @@ static void dump_eeecmd(struct ethtool_eee *ep)
 	else
 		fprintf(stdout, " disabled\n");
 
-	dump_link_caps("Supported EEE", "", ep->supported, 1);
-	dump_link_caps("Advertised EEE", "", ep->advertised, 1);
-	dump_link_caps("Link partner advertised EEE", "", ep->lp_advertised, 1);
+	ethtool_link_mode_zero(link_mode);
+
+	link_mode[0] = ep->supported;
+	dump_link_caps("Supported EEE", "", link_mode, 1);
+
+	link_mode[0] = ep->advertised;
+	dump_link_caps("Advertised EEE", "", link_mode, 1);
+
+	link_mode[0] = ep->lp_advertised;
+	dump_link_caps("Link partner advertised EEE", "", link_mode, 1);
 }
 
 #define N_SOTS 7
@@ -1499,8 +1722,10 @@ static struct feature_defs *get_feature_defs(struct cmd_context *ctx)
 	}
 
 	defs = malloc(sizeof(*defs) + sizeof(defs->def[0]) * n_features);
-	if (!defs)
+	if (!defs) {
+		free(names);
 		return NULL;
+	}
 
 	defs->n_features = n_features;
 	memset(defs->off_flag_matched, 0, sizeof(defs->off_flag_matched));
@@ -2017,10 +2242,13 @@ static int do_gfeatures(struct cmd_context *ctx)
 	features = get_features(ctx, defs);
 	if (!features) {
 		fprintf(stdout, "no feature info available\n");
+		free(defs);
 		return 1;
 	}
 
 	dump_features(defs, features, NULL);
+	free(features);
+	free(defs);
 	return 0;
 }
 
@@ -2034,7 +2262,7 @@ static int do_sfeatures(struct cmd_context *ctx)
 	struct cmdline_info *cmdline_features;
 	struct feature_state *old_state, *new_state;
 	struct ethtool_value eval;
-	int err;
+	int err, rc;
 	int i, j;
 
 	defs = get_feature_defs(ctx);
@@ -2048,7 +2276,8 @@ static int do_sfeatures(struct cmd_context *ctx)
 				   sizeof(efeatures->features[0]));
 		if (!efeatures) {
 			perror("Cannot parse arguments");
-			return 1;
+			rc = 1;
+			goto err;
 		}
 		efeatures->cmd = ETHTOOL_SFEATURES;
 		efeatures->size = FEATURE_BITS_TO_BLOCKS(defs->n_features);
@@ -2066,7 +2295,8 @@ static int do_sfeatures(struct cmd_context *ctx)
 				  sizeof(cmdline_features[0]));
 	if (!cmdline_features) {
 		perror("Cannot parse arguments");
-		return 1;
+		rc = 1;
+		goto err;
 	}
 	for (i = 0; i < ARRAY_SIZE(off_flag_def); i++)
 		flag_to_cmdline_info(off_flag_def[i].short_name,
@@ -2085,12 +2315,15 @@ static int do_sfeatures(struct cmd_context *ctx)
 
 	if (!any_changed) {
 		fprintf(stdout, "no features changed\n");
-		return 0;
+		rc = 0;
+		goto err;
 	}
 
 	old_state = get_features(ctx, defs);
-	if (!old_state)
-		return 1;
+	if (!old_state) {
+		rc = 1;
+		goto err;
+	}
 
 	if (efeatures) {
 		/* For each offload that the user specified, update any
@@ -2134,7 +2367,8 @@ static int do_sfeatures(struct cmd_context *ctx)
 		err = send_ioctl(ctx, efeatures);
 		if (err < 0) {
 			perror("Cannot set device feature settings");
-			return 1;
+			rc = 1;
+			goto err;
 		}
 	} else {
 		for (i = 0; i < ARRAY_SIZE(off_flag_def); i++) {
@@ -2149,7 +2383,8 @@ static int do_sfeatures(struct cmd_context *ctx)
 					fprintf(stderr,
 						"Cannot set device %s settings: %m\n",
 						off_flag_def[i].long_name);
-					return 1;
+					rc = 1;
+					goto err;
 				}
 			}
 		}
@@ -2163,15 +2398,18 @@ static int do_sfeatures(struct cmd_context *ctx)
 			err = send_ioctl(ctx, &eval);
 			if (err) {
 				perror("Cannot set device flag settings");
-				return 92;
+				rc = 92;
+				goto err;
 			}
 		}
 	}
 
 	/* Compare new state with requested state */
 	new_state = get_features(ctx, defs);
-	if (!new_state)
-		return 1;
+	if (!new_state) {
+		rc = 1;
+		goto err;
+	}
 	any_changed = new_state->off_flags != old_state->off_flags;
 	any_mismatch = (new_state->off_flags !=
 			((old_state->off_flags & ~off_flags_mask) |
@@ -2190,19 +2428,236 @@ static int do_sfeatures(struct cmd_context *ctx)
 		if (!any_changed) {
 			fprintf(stderr,
 				"Could not change any device features\n");
-			return 1;
+			rc = 1;
+			goto err;
 		}
 		printf("Actual changes:\n");
 		dump_features(defs, new_state, old_state);
 	}
 
-	return 0;
+	rc = 0;
+
+err:
+	free(defs);
+	if (efeatures)
+		free(efeatures);
+	return rc;
+}
+
+static struct ethtool_link_usettings *
+do_ioctl_glinksettings(struct cmd_context *ctx)
+{
+	int err;
+	struct {
+		struct ethtool_link_settings req;
+		__u32 link_mode_data[3 * ETHTOOL_LINK_MODE_MASK_MAX_KERNEL_NU32];
+	} ecmd;
+	struct ethtool_link_usettings *link_usettings;
+	unsigned int u32_offs;
+
+	/* Handshake with kernel to determine number of words for link
+	 * mode bitmaps. When requested number of bitmap words is not
+	 * the one expected by kernel, the latter returns the integer
+	 * opposite of what it is expecting. We request length 0 below
+	 * (aka. invalid bitmap length) to get this info.
+	 */
+	memset(&ecmd, 0, sizeof(ecmd));
+	ecmd.req.cmd = ETHTOOL_GLINKSETTINGS;
+	err = send_ioctl(ctx, &ecmd);
+	if (err < 0)
+		return NULL;
+
+	/* see above: we expect a strictly negative value from kernel.
+	 */
+	if (ecmd.req.link_mode_masks_nwords >= 0
+	    || ecmd.req.cmd != ETHTOOL_GLINKSETTINGS)
+		return NULL;
+
+	/* got the real ecmd.req.link_mode_masks_nwords,
+	 * now send the real request
+	 */
+	ecmd.req.cmd = ETHTOOL_GLINKSETTINGS;
+	ecmd.req.link_mode_masks_nwords = -ecmd.req.link_mode_masks_nwords;
+	err = send_ioctl(ctx, &ecmd);
+	if (err < 0)
+		return NULL;
+
+	if (ecmd.req.link_mode_masks_nwords <= 0
+	    || ecmd.req.cmd != ETHTOOL_GLINKSETTINGS)
+		return NULL;
+
+	/* Convert to usettings struct */
+	link_usettings = calloc(1, sizeof(*link_usettings));
+	if (link_usettings == NULL)
+		return NULL;
+
+	/* keep transceiver 0 */
+	memcpy(&link_usettings->base, &ecmd.req, sizeof(link_usettings->base));
+
+	/* copy link mode bitmaps */
+	u32_offs = 0;
+	memcpy(link_usettings->link_modes.supported,
+	       &ecmd.link_mode_data[u32_offs],
+	       4 * ecmd.req.link_mode_masks_nwords);
+
+	u32_offs += ecmd.req.link_mode_masks_nwords;
+	memcpy(link_usettings->link_modes.advertising,
+	       &ecmd.link_mode_data[u32_offs],
+	       4 * ecmd.req.link_mode_masks_nwords);
+
+	u32_offs += ecmd.req.link_mode_masks_nwords;
+	memcpy(link_usettings->link_modes.lp_advertising,
+	       &ecmd.link_mode_data[u32_offs],
+	       4 * ecmd.req.link_mode_masks_nwords);
+
+	return link_usettings;
+}
+
+static int
+do_ioctl_slinksettings(struct cmd_context *ctx,
+		       const struct ethtool_link_usettings *link_usettings)
+{
+	struct {
+		struct ethtool_link_settings req;
+		__u32 link_mode_data[3 * ETHTOOL_LINK_MODE_MASK_MAX_KERNEL_NU32];
+	} ecmd;
+	unsigned int u32_offs;
+
+	/* refuse to send ETHTOOL_SLINKSETTINGS ioctl if
+	 * link_usettings was retrieved with ETHTOOL_GSET
+	 */
+	if (link_usettings->base.cmd != ETHTOOL_GLINKSETTINGS)
+		return -1;
+
+	/* refuse to send ETHTOOL_SLINKSETTINGS ioctl if deprecated fields
+	 * were set
+	 */
+	if (link_usettings->deprecated.transceiver)
+		return -1;
+
+	if (link_usettings->base.link_mode_masks_nwords <= 0)
+		return -1;
+
+	memcpy(&ecmd.req, &link_usettings->base, sizeof(ecmd.req));
+	ecmd.req.cmd = ETHTOOL_SLINKSETTINGS;
+
+	/* copy link mode bitmaps */
+	u32_offs = 0;
+	memcpy(&ecmd.link_mode_data[u32_offs],
+	       link_usettings->link_modes.supported,
+	       4 * ecmd.req.link_mode_masks_nwords);
+
+	u32_offs += ecmd.req.link_mode_masks_nwords;
+	memcpy(&ecmd.link_mode_data[u32_offs],
+	       link_usettings->link_modes.advertising,
+	       4 * ecmd.req.link_mode_masks_nwords);
+
+	u32_offs += ecmd.req.link_mode_masks_nwords;
+	memcpy(&ecmd.link_mode_data[u32_offs],
+	       link_usettings->link_modes.lp_advertising,
+	       4 * ecmd.req.link_mode_masks_nwords);
+
+	return send_ioctl(ctx, &ecmd);
+}
+
+static struct ethtool_link_usettings *
+do_ioctl_gset(struct cmd_context *ctx)
+{
+	int err;
+	struct ethtool_cmd ecmd;
+	struct ethtool_link_usettings *link_usettings;
+
+	memset(&ecmd, 0, sizeof(ecmd));
+	ecmd.cmd = ETHTOOL_GSET;
+	err = send_ioctl(ctx, &ecmd);
+	if (err < 0)
+		return NULL;
+
+	link_usettings = calloc(1, sizeof(*link_usettings));
+	if (link_usettings == NULL)
+		return NULL;
+
+	/* remember that ETHTOOL_GSET was used */
+	link_usettings->base.cmd = ETHTOOL_GSET;
+
+	link_usettings->base.link_mode_masks_nwords = 1;
+	link_usettings->link_modes.supported[0] = ecmd.supported;
+	link_usettings->link_modes.advertising[0] = ecmd.advertising;
+	link_usettings->link_modes.lp_advertising[0] = ecmd.lp_advertising;
+	link_usettings->base.speed = ethtool_cmd_speed(&ecmd);
+	link_usettings->base.duplex = ecmd.duplex;
+	link_usettings->base.port = ecmd.port;
+	link_usettings->base.phy_address = ecmd.phy_address;
+	link_usettings->deprecated.transceiver = ecmd.transceiver;
+	link_usettings->base.autoneg = ecmd.autoneg;
+	link_usettings->base.mdio_support = ecmd.mdio_support;
+	/* ignored (fully deprecated): maxrxpkt, maxtxpkt */
+	link_usettings->base.eth_tp_mdix = ecmd.eth_tp_mdix;
+	link_usettings->base.eth_tp_mdix_ctrl = ecmd.eth_tp_mdix_ctrl;
+
+	return link_usettings;
+}
+
+static bool ethtool_link_mode_is_backward_compatible(const u32 *mask)
+{
+	unsigned int i;
+
+	for (i = 1; i < ETHTOOL_LINK_MODE_MASK_MAX_KERNEL_NU32; ++i)
+		if (mask[i])
+			return false;
+
+	return true;
+}
+
+static int
+do_ioctl_sset(struct cmd_context *ctx,
+	      const struct ethtool_link_usettings *link_usettings)
+{
+	struct ethtool_cmd ecmd;
+
+	/* refuse to send ETHTOOL_SSET ioctl if link_usettings was
+	 * retrieved with ETHTOOL_GLINKSETTINGS
+	 */
+	if (link_usettings->base.cmd != ETHTOOL_GSET)
+		return -1;
+
+	if (link_usettings->base.link_mode_masks_nwords <= 0)
+		return -1;
+
+	/* refuse to sset if any bit > 31 is set */
+	if (!ethtool_link_mode_is_backward_compatible(
+		    link_usettings->link_modes.supported))
+		return -1;
+	if (!ethtool_link_mode_is_backward_compatible(
+		    link_usettings->link_modes.advertising))
+		return -1;
+	if (!ethtool_link_mode_is_backward_compatible(
+		    link_usettings->link_modes.lp_advertising))
+		return -1;
+
+	memset(&ecmd, 0, sizeof(ecmd));
+	ecmd.cmd = ETHTOOL_SSET;
+
+	ecmd.supported = link_usettings->link_modes.supported[0];
+	ecmd.advertising = link_usettings->link_modes.advertising[0];
+	ecmd.lp_advertising = link_usettings->link_modes.lp_advertising[0];
+	ethtool_cmd_speed_set(&ecmd, link_usettings->base.speed);
+	ecmd.duplex = link_usettings->base.duplex;
+	ecmd.port = link_usettings->base.port;
+	ecmd.phy_address = link_usettings->base.phy_address;
+	ecmd.transceiver = link_usettings->deprecated.transceiver;
+	ecmd.autoneg = link_usettings->base.autoneg;
+	ecmd.mdio_support = link_usettings->base.mdio_support;
+	/* ignored (fully deprecated): maxrxpkt, maxtxpkt */
+	ecmd.eth_tp_mdix = link_usettings->base.eth_tp_mdix;
+	ecmd.eth_tp_mdix_ctrl = link_usettings->base.eth_tp_mdix_ctrl;
+	return send_ioctl(ctx, &ecmd);
 }
 
 static int do_gset(struct cmd_context *ctx)
 {
 	int err;
-	struct ethtool_cmd ecmd;
+	struct ethtool_link_usettings *link_usettings;
 	struct ethtool_wolinfo wolinfo;
 	struct ethtool_value edata;
 	int allfail = 1;
@@ -2212,10 +2667,12 @@ static int do_gset(struct cmd_context *ctx)
 
 	fprintf(stdout, "Settings for %s:\n", ctx->devname);
 
-	ecmd.cmd = ETHTOOL_GSET;
-	err = send_ioctl(ctx, &ecmd);
-	if (err == 0) {
-		err = dump_ecmd(&ecmd);
+	link_usettings = do_ioctl_glinksettings(ctx);
+	if (link_usettings == NULL)
+		link_usettings = do_ioctl_gset(ctx);
+	if (link_usettings != NULL) {
+		err = dump_link_usettings(link_usettings);
+		free(link_usettings);
 		if (err)
 			return err;
 		allfail = 0;
@@ -2274,8 +2731,10 @@ static int do_sset(struct cmd_context *ctx)
 	int autoneg_wanted = -1;
 	int phyad_wanted = -1;
 	int xcvr_wanted = -1;
-	int full_advertising_wanted = -1;
-	int advertising_wanted = -1;
+	u32 *full_advertising_wanted = NULL;
+	u32 *advertising_wanted = NULL;
+	ETHTOOL_DECLARE_LINK_MODE_MASK(mask_full_advertising_wanted);
+	ETHTOOL_DECLARE_LINK_MODE_MASK(mask_advertising_wanted);
 	int gset_changed = 0; /* did anything in GSET change? */
 	u32 wol_wanted = 0;
 	int wol_change = 0;
@@ -2289,7 +2748,7 @@ static int do_sset(struct cmd_context *ctx)
 	int argc = ctx->argc;
 	char **argp = ctx->argp;
 	int i;
-	int err;
+	int err = 0;
 
 	for (i = 0; i < ARRAY_SIZE(flags_msglvl); i++)
 		flag_to_cmdline_info(flags_msglvl[i].name,
@@ -2363,7 +2822,12 @@ static int do_sset(struct cmd_context *ctx)
 			i += 1;
 			if (i >= argc)
 				exit_bad_args();
-			full_advertising_wanted = get_int(argp[i], 16);
+			if (parse_hex_u32_bitmap(
+				    argp[i],
+				    ETHTOOL_LINK_MODE_MASK_MAX_KERNEL_NBITS,
+				    mask_full_advertising_wanted))
+				exit_bad_args();
+			full_advertising_wanted = mask_full_advertising_wanted;
 		} else if (!strcmp(argp[i], "phyad")) {
 			gset_changed = 1;
 			i += 1;
@@ -2420,75 +2884,89 @@ static int do_sset(struct cmd_context *ctx)
 		}
 	}
 
-	if (full_advertising_wanted < 0) {
+	if (full_advertising_wanted == NULL) {
 		/* User didn't supply a full advertisement bitfield:
 		 * construct one from the specified speed and duplex.
 		 */
+		int adv_bit = -1;
+
 		if (speed_wanted == SPEED_10 && duplex_wanted == DUPLEX_HALF)
-			advertising_wanted = ADVERTISED_10baseT_Half;
+			adv_bit = ETHTOOL_LINK_MODE_10baseT_Half_BIT;
 		else if (speed_wanted == SPEED_10 &&
 			 duplex_wanted == DUPLEX_FULL)
-			advertising_wanted = ADVERTISED_10baseT_Full;
+			adv_bit = ETHTOOL_LINK_MODE_10baseT_Full_BIT;
 		else if (speed_wanted == SPEED_100 &&
 			 duplex_wanted == DUPLEX_HALF)
-			advertising_wanted = ADVERTISED_100baseT_Half;
+			adv_bit = ETHTOOL_LINK_MODE_100baseT_Half_BIT;
 		else if (speed_wanted == SPEED_100 &&
 			 duplex_wanted == DUPLEX_FULL)
-			advertising_wanted = ADVERTISED_100baseT_Full;
+			adv_bit = ETHTOOL_LINK_MODE_100baseT_Full_BIT;
 		else if (speed_wanted == SPEED_1000 &&
 			 duplex_wanted == DUPLEX_HALF)
-			advertising_wanted = ADVERTISED_1000baseT_Half;
+			adv_bit = ETHTOOL_LINK_MODE_1000baseT_Half_BIT;
 		else if (speed_wanted == SPEED_1000 &&
 			 duplex_wanted == DUPLEX_FULL)
-			advertising_wanted = ADVERTISED_1000baseT_Full;
+			adv_bit = ETHTOOL_LINK_MODE_1000baseT_Full_BIT;
 		else if (speed_wanted == SPEED_2500 &&
 			 duplex_wanted == DUPLEX_FULL)
-			advertising_wanted = ADVERTISED_2500baseX_Full;
+			adv_bit = ETHTOOL_LINK_MODE_2500baseX_Full_BIT;
 		else if (speed_wanted == SPEED_10000 &&
 			 duplex_wanted == DUPLEX_FULL)
-			advertising_wanted = ADVERTISED_10000baseT_Full;
-		else
-			/* auto negotiate without forcing,
-			 * all supported speed will be assigned below
-			 */
-			advertising_wanted = 0;
+			adv_bit = ETHTOOL_LINK_MODE_10000baseT_Full_BIT;
+
+		if (adv_bit >= 0) {
+			advertising_wanted = mask_advertising_wanted;
+			ethtool_link_mode_zero(advertising_wanted);
+			ethtool_link_mode_set_bit(
+				adv_bit, advertising_wanted);
+		}
+		/* otherwise: auto negotiate without forcing,
+		 * all supported speed will be assigned below
+		 */
 	}
 
 	if (gset_changed) {
-		struct ethtool_cmd ecmd;
+		struct ethtool_link_usettings *link_usettings;
 
-		ecmd.cmd = ETHTOOL_GSET;
-		err = send_ioctl(ctx, &ecmd);
-		if (err < 0) {
+		link_usettings = do_ioctl_glinksettings(ctx);
+		if (link_usettings == NULL)
+			link_usettings = do_ioctl_gset(ctx);
+		if (link_usettings == NULL) {
 			perror("Cannot get current device settings");
+			err = -1;
 		} else {
 			/* Change everything the user specified. */
 			if (speed_wanted != -1)
-				ethtool_cmd_speed_set(&ecmd, speed_wanted);
+				link_usettings->base.speed = speed_wanted;
 			if (duplex_wanted != -1)
-				ecmd.duplex = duplex_wanted;
+				link_usettings->base.duplex = duplex_wanted;
 			if (port_wanted != -1)
-				ecmd.port = port_wanted;
+				link_usettings->base.port = port_wanted;
 			if (mdix_wanted != -1) {
 				/* check driver supports MDI-X */
-				if (ecmd.eth_tp_mdix_ctrl != ETH_TP_MDI_INVALID)
-					ecmd.eth_tp_mdix_ctrl = mdix_wanted;
+				if (link_usettings->base.eth_tp_mdix_ctrl
+				    != ETH_TP_MDI_INVALID)
+					link_usettings->base.eth_tp_mdix_ctrl
+						= mdix_wanted;
 				else
-					fprintf(stderr, "setting MDI not supported\n");
+					fprintf(stderr,
+						"setting MDI not supported\n");
 			}
 			if (autoneg_wanted != -1)
-				ecmd.autoneg = autoneg_wanted;
+				link_usettings->base.autoneg = autoneg_wanted;
 			if (phyad_wanted != -1)
-				ecmd.phy_address = phyad_wanted;
+				link_usettings->base.phy_address = phyad_wanted;
 			if (xcvr_wanted != -1)
-				ecmd.transceiver = xcvr_wanted;
+				link_usettings->deprecated.transceiver
+					= xcvr_wanted;
 			/* XXX If the user specified speed or duplex
 			 * then we should mask the advertised modes
 			 * accordingly.  For now, warn that we aren't
 			 * doing that.
 			 */
 			if ((speed_wanted != -1 || duplex_wanted != -1) &&
-			    ecmd.autoneg && advertising_wanted == 0) {
+			    link_usettings->base.autoneg &&
+			    advertising_wanted == NULL) {
 				fprintf(stderr, "Cannot advertise");
 				if (speed_wanted >= 0)
 					fprintf(stderr, " speed %d",
@@ -2500,37 +2978,56 @@ static int do_sset(struct cmd_context *ctx)
 				fprintf(stderr,	"\n");
 			}
 			if (autoneg_wanted == AUTONEG_ENABLE &&
-			    advertising_wanted == 0) {
+			    advertising_wanted == NULL &&
+			    full_advertising_wanted == NULL) {
+				unsigned int i;
+
 				/* Auto negotiation enabled, but with
 				 * unspecified speed and duplex: enable all
 				 * supported speeds and duplexes.
 				 */
-				ecmd.advertising =
-					(ecmd.advertising &
-					 ~ALL_ADVERTISED_MODES) |
-					(ALL_ADVERTISED_MODES & ecmd.supported);
+				ethtool_link_mode_for_each_u32(i) {
+					u32 sup = link_usettings->link_modes.supported[i];
+					u32 *adv = link_usettings->link_modes.advertising + i;
+
+					*adv = ((*adv & ~all_advertised_modes[i])
+						| (sup & all_advertised_modes[i]));
+				}
 
 				/* If driver supports unknown flags, we cannot
 				 * be sure that we enable all link modes.
 				 */
-				if ((ecmd.supported & ALL_ADVERTISED_FLAGS) !=
-				    ecmd.supported) {
-					fprintf(stderr, "Driver supports one "
-					        "or more unknown flags\n");
+				ethtool_link_mode_for_each_u32(i) {
+					u32 sup = link_usettings->link_modes.supported[i];
+
+					if ((sup & all_advertised_flags[i]) != sup) {
+						fprintf(stderr, "Driver supports one or more unknown flags\n");
+						break;
+					}
 				}
-			} else if (advertising_wanted > 0) {
+			} else if (advertising_wanted != NULL) {
+				unsigned int i;
+
 				/* Enable all requested modes */
-				ecmd.advertising =
-					(ecmd.advertising &
-					 ~ALL_ADVERTISED_MODES) |
-					advertising_wanted;
-			} else if (full_advertising_wanted > 0) {
-				ecmd.advertising = full_advertising_wanted;
+				ethtool_link_mode_for_each_u32(i) {
+					u32 *adv = link_usettings->link_modes.advertising + i;
+
+					*adv = ((*adv & ~all_advertised_modes[i])
+						| advertising_wanted[i]);
+				}
+			} else if (full_advertising_wanted != NULL) {
+				ethtool_link_mode_copy(
+					link_usettings->link_modes.advertising,
+					full_advertising_wanted);
 			}
 
 			/* Try to perform the update. */
-			ecmd.cmd = ETHTOOL_SSET;
-			err = send_ioctl(ctx, &ecmd);
+			if (link_usettings->base.cmd == ETHTOOL_GLINKSETTINGS)
+				err = do_ioctl_slinksettings(ctx,
+							     link_usettings);
+			else
+				err = do_ioctl_sset(ctx, link_usettings);
+			free(link_usettings);
 			if (err < 0)
 				perror("Cannot set new settings");
 		}
@@ -2643,7 +3140,31 @@ static int do_gregs(struct cmd_context *ctx)
 		free(regs);
 		return 74;
 	}
-	if (dump_regs(gregs_dump_raw, gregs_dump_hex, gregs_dump_file,
+
+	if (!gregs_dump_raw && gregs_dump_file != NULL) {
+		/* overwrite reg values from file dump */
+		FILE *f = fopen(gregs_dump_file, "r");
+		struct stat st;
+		size_t nread;
+
+		if (!f || fstat(fileno(f), &st) < 0) {
+			fprintf(stderr, "Can't open '%s': %s\n",
+				gregs_dump_file, strerror(errno));
+			free(regs);
+			return 75;
+		}
+
+		regs = realloc(regs, sizeof(*regs) + st.st_size);
+		regs->len = st.st_size;
+		nread = fread(regs->data, regs->len, 1, f);
+		fclose(f);
+		if (nread != 1) {
+			free(regs);
+			return 75;
+		}
+        }
+
+	if (dump_regs(gregs_dump_raw, gregs_dump_hex,
 		      &drvinfo, regs) < 0) {
 		fprintf(stderr, "Cannot dump registers\n");
 		free(regs);
@@ -2756,8 +3277,10 @@ static int do_seeprom(struct cmd_context *ctx)
 	if (seeprom_length == -1)
 		seeprom_length = drvinfo.eedump_len;
 
-	if (drvinfo.eedump_len < seeprom_offset + seeprom_length)
-		seeprom_length = drvinfo.eedump_len - seeprom_offset;
+	if (drvinfo.eedump_len < seeprom_offset + seeprom_length) {
+		fprintf(stderr, "offset & length out of bounds\n");
+		return 1;
+	}
 
 	eeprom = calloc(1, sizeof(*eeprom)+seeprom_length);
 	if (!eeprom) {
@@ -2772,8 +3295,18 @@ static int do_seeprom(struct cmd_context *ctx)
 	eeprom->data[0] = seeprom_value;
 
 	/* Multi-byte write: read input from stdin */
-	if (!seeprom_value_seen)
-		eeprom->len = fread(eeprom->data, 1, eeprom->len, stdin);
+	if (!seeprom_value_seen) {
+		if (fread(eeprom->data, eeprom->len, 1, stdin) != 1) {
+			fprintf(stderr, "not enough data from stdin\n");
+			free(eeprom);
+			return 75;
+		}
+		if ((fgetc(stdin) != EOF) || !feof(stdin)) {
+			fprintf(stderr, "too much data from stdin\n");
+			free(eeprom);
+			return 75;
+		}
+	}
 
 	err = send_ioctl(ctx, eeprom);
 	if (err < 0) {
@@ -2872,7 +3405,8 @@ static int do_phys_id(struct cmd_context *ctx)
 	return err;
 }
 
-static int do_gstats(struct cmd_context *ctx)
+static int do_gstats(struct cmd_context *ctx, int cmd, int stringset,
+		    const char *name)
 {
 	struct ethtool_gstrings *strings;
 	struct ethtool_stats *stats;
@@ -2882,7 +3416,7 @@ static int do_gstats(struct cmd_context *ctx)
 	if (ctx->argc != 0)
 		exit_bad_args();
 
-	strings = get_stringset(ctx, ETH_SS_STATS,
+	strings = get_stringset(ctx, stringset,
 				offsetof(struct ethtool_drvinfo, n_stats),
 				0);
 	if (!strings) {
@@ -2906,7 +3440,7 @@ static int do_gstats(struct cmd_context *ctx)
 		return 95;
 	}
 
-	stats->cmd = ETHTOOL_GSTATS;
+	stats->cmd = cmd;
 	stats->n_stats = n_stats;
 	err = send_ioctl(ctx, stats);
 	if (err < 0) {
@@ -2917,7 +3451,7 @@ static int do_gstats(struct cmd_context *ctx)
 	}
 
 	/* todo - pretty-print the strings per-driver */
-	fprintf(stdout, "NIC statistics:\n");
+	fprintf(stdout, "%s statistics:\n", name);
 	for (i = 0; i < n_stats; i++) {
 		fprintf(stdout, "     %.*s: %llu\n",
 			ETH_GSTRING_LEN,
@@ -2928,6 +3462,16 @@ static int do_gstats(struct cmd_context *ctx)
 	free(stats);
 
 	return 0;
+}
+
+static int do_gnicstats(struct cmd_context *ctx)
+{
+	return do_gstats(ctx, ETHTOOL_GSTATS, ETH_SS_STATS, "NIC");
+}
+
+static int do_gphystats(struct cmd_context *ctx)
+{
+	return do_gstats(ctx, ETHTOOL_GPHYSTATS, ETH_SS_PHY_STATS, "PHY");
 }
 
 static int do_srxntuple(struct cmd_context *ctx,
@@ -3042,92 +3586,160 @@ static int do_grxclass(struct cmd_context *ctx)
 	return err ? 1 : 0;
 }
 
-static int do_grxfhindir(struct cmd_context *ctx)
+static void print_indir_table(struct cmd_context *ctx,
+			      struct ethtool_rxnfc *ring_count,
+			      u32 indir_size, u32 *indir)
 {
-	struct ethtool_rxnfc ring_count;
+	u32 i;
+
+	printf("RX flow hash indirection table for %s with %llu RX ring(s):\n",
+	       ctx->devname, ring_count->data);
+
+	if (!indir_size)
+		printf("Operation not supported\n");
+
+	for (i = 0; i < indir_size; i++) {
+		if (i % 8 == 0)
+			printf("%5u: ", i);
+		printf(" %5u", indir[i]);
+		if (i % 8 == 7 || i == indir_size - 1)
+			fputc('\n', stdout);
+	}
+}
+
+static int do_grxfhindir(struct cmd_context *ctx,
+			 struct ethtool_rxnfc *ring_count)
+{
 	struct ethtool_rxfh_indir indir_head;
 	struct ethtool_rxfh_indir *indir;
-	u32 i;
+	int err;
+
+	indir_head.cmd = ETHTOOL_GRXFHINDIR;
+	indir_head.size = 0;
+	err = send_ioctl(ctx, &indir_head);
+	if (err < 0) {
+		perror("Cannot get RX flow hash indirection table size");
+		return 1;
+	}
+
+	indir = malloc(sizeof(*indir) +
+		       indir_head.size * sizeof(*indir->ring_index));
+	if (!indir) {
+		perror("Cannot allocate memory for indirection table");
+		return 1;
+	}
+
+	indir->cmd = ETHTOOL_GRXFHINDIR;
+	indir->size = indir_head.size;
+	err = send_ioctl(ctx, indir);
+	if (err < 0) {
+		perror("Cannot get RX flow hash indirection table");
+		free(indir);
+		return 1;
+	}
+
+	print_indir_table(ctx, ring_count, indir->size, indir->ring_index);
+
+	free(indir);
+	return 0;
+}
+
+static int do_grxfh(struct cmd_context *ctx)
+{
+	struct ethtool_gstrings *hfuncs = NULL;
+	struct ethtool_rxfh rss_head = {0};
+	struct ethtool_rxnfc ring_count;
+	struct ethtool_rxfh *rss;
+	u32 i, indir_bytes;
+	char *hkey;
 	int err;
 
 	ring_count.cmd = ETHTOOL_GRXRINGS;
 	err = send_ioctl(ctx, &ring_count);
 	if (err < 0) {
 		perror("Cannot get RX ring count");
-		return 102;
+		return 1;
 	}
 
-	indir_head.cmd = ETHTOOL_GRXFHINDIR;
-	indir_head.size = 0;
-	err = send_ioctl(ctx, &indir_head);
+	rss_head.cmd = ETHTOOL_GRSSH;
+	err = send_ioctl(ctx, &rss_head);
+	if (err < 0 && errno == EOPNOTSUPP) {
+		return do_grxfhindir(ctx, &ring_count);
+	} else if (err < 0) {
+		perror("Cannot get RX flow hash indir size and/or key size");
+		return 1;
+	}
+
+	rss = calloc(1, sizeof(*rss) +
+			rss_head.indir_size * sizeof(rss_head.rss_config[0]) +
+			rss_head.key_size);
+	if (!rss) {
+		perror("Cannot allocate memory for RX flow hash config");
+		return 1;
+	}
+
+	rss->cmd = ETHTOOL_GRSSH;
+	rss->indir_size = rss_head.indir_size;
+	rss->key_size = rss_head.key_size;
+	err = send_ioctl(ctx, rss);
 	if (err < 0) {
-		perror("Cannot get RX flow hash indirection table size");
-		return 103;
+		perror("Cannot get RX flow hash configuration");
+		free(rss);
+		return 1;
 	}
 
-	indir = malloc(sizeof(*indir) +
-		       indir_head.size * sizeof(*indir->ring_index));
-	indir->cmd = ETHTOOL_GRXFHINDIR;
-	indir->size = indir_head.size;
-	err = send_ioctl(ctx, indir);
-	if (err < 0) {
-		perror("Cannot get RX flow hash indirection table");
-		return 103;
+	print_indir_table(ctx, &ring_count, rss->indir_size, rss->rss_config);
+
+	indir_bytes = rss->indir_size * sizeof(rss->rss_config[0]);
+	hkey = ((char *)rss->rss_config + indir_bytes);
+
+	printf("RSS hash key:\n");
+	if (!rss->key_size)
+		printf("Operation not supported\n");
+
+	for (i = 0; i < rss->key_size; i++) {
+		if (i == (rss->key_size - 1))
+			printf("%02x\n", (u8) hkey[i]);
+		else
+			printf("%02x:", (u8) hkey[i]);
 	}
 
-	printf("RX flow hash indirection table for %s with %llu RX ring(s):\n",
-	       ctx->devname, ring_count.data);
-	for (i = 0; i < indir->size; i++) {
-		if (i % 8 == 0)
-			printf("%5u: ", i);
-		printf(" %5u", indir->ring_index[i]);
-		if (i % 8 == 7)
-			fputc('\n', stdout);
+	printf("RSS hash function:\n");
+	if (!rss->hfunc) {
+		printf("    Operation not supported\n");
+		goto out;
 	}
+
+	hfuncs = get_stringset(ctx, ETH_SS_RSS_HASH_FUNCS, 0, 1);
+	if (!hfuncs) {
+		perror("Cannot get hash functions names");
+		free(rss);
+		return 1;
+	}
+
+	for (i = 0; i < hfuncs->len; i++)
+		printf("    %s: %s\n",
+		       (const char *)hfuncs->data + i * ETH_GSTRING_LEN,
+		       (rss->hfunc & (1 << i)) ? "on" : "off");
+
+out:
+	free(hfuncs);
+	free(rss);
 	return 0;
 }
 
-static int do_srxfhindir(struct cmd_context *ctx)
+static int fill_indir_table(u32 *indir_size, u32 *indir, int rxfhindir_default,
+			    int rxfhindir_equal, char **rxfhindir_weight,
+			    u32 num_weights)
 {
-	int rxfhindir_equal = 0;
-	char **rxfhindir_weight = NULL;
-	struct ethtool_rxfh_indir indir_head;
-	struct ethtool_rxfh_indir *indir;
 	u32 i;
-	int err;
-
-	if (ctx->argc < 2)
-		exit_bad_args();
-	if (!strcmp(ctx->argp[0], "equal")) {
-		if (ctx->argc != 2)
-			exit_bad_args();
-		rxfhindir_equal = get_int_range(ctx->argp[1], 0, 1, INT_MAX);
-	} else if (!strcmp(ctx->argp[0], "weight")) {
-		rxfhindir_weight = ctx->argp + 1;
-	} else {
-		exit_bad_args();
-	}
-
-	indir_head.cmd = ETHTOOL_GRXFHINDIR;
-	indir_head.size = 0;
-	err = send_ioctl(ctx, &indir_head);
-	if (err < 0) {
-		perror("Cannot get RX flow hash indirection table size");
-		return 104;
-	}
-
-	indir = malloc(sizeof(*indir) +
-		       indir_head.size * sizeof(*indir->ring_index));
-	indir->cmd = ETHTOOL_SRXFHINDIR;
-	indir->size = indir_head.size;
-
 	if (rxfhindir_equal) {
-		for (i = 0; i < indir->size; i++)
-			indir->ring_index[i] = i % rxfhindir_equal;
-	} else {
+		for (i = 0; i < *indir_size; i++)
+			indir[i] = i % rxfhindir_equal;
+	} else if (rxfhindir_weight) {
 		u32 j, weight, sum = 0, partial = 0;
 
-		for (j = 0; rxfhindir_weight[j]; j++) {
+		for (j = 0; j < num_weights; j++) {
 			weight = get_u32(rxfhindir_weight[j], 0);
 			sum += weight;
 		}
@@ -3135,34 +3747,243 @@ static int do_srxfhindir(struct cmd_context *ctx)
 		if (sum == 0) {
 			fprintf(stderr,
 				"At least one weight must be non-zero\n");
-			exit(1);
+			return 2;
 		}
 
-		if (sum > indir->size) {
+		if (sum > *indir_size) {
 			fprintf(stderr,
 				"Total weight exceeds the size of the "
 				"indirection table\n");
-			exit(1);
+			return 2;
 		}
 
 		j = -1;
-		for (i = 0; i < indir->size; i++) {
-			while (i >= indir->size * partial / sum) {
+		for (i = 0; i < *indir_size; i++) {
+			while (i >= (*indir_size) * partial / sum) {
 				j += 1;
 				weight = get_u32(rxfhindir_weight[j], 0);
 				partial += weight;
 			}
-			indir->ring_index[i] = j;
+			indir[i] = j;
 		}
+	} else if (rxfhindir_default) {
+		/* "*indir_size == 0" ==> reset indir to default */
+		*indir_size = 0;
+	} else {
+		*indir_size = ETH_RXFH_INDIR_NO_CHANGE;
+	}
+
+	return 0;
+}
+
+static int do_srxfhindir(struct cmd_context *ctx, int rxfhindir_default,
+			 int rxfhindir_equal, char **rxfhindir_weight,
+			 u32 num_weights)
+{
+	struct ethtool_rxfh_indir indir_head;
+	struct ethtool_rxfh_indir *indir;
+	int err;
+
+	indir_head.cmd = ETHTOOL_GRXFHINDIR;
+	indir_head.size = 0;
+	err = send_ioctl(ctx, &indir_head);
+	if (err < 0) {
+		perror("Cannot get RX flow hash indirection table size");
+		return 1;
+	}
+
+	indir = malloc(sizeof(*indir) +
+		       indir_head.size * sizeof(*indir->ring_index));
+
+	if (!indir) {
+		perror("Cannot allocate memory for indirection table");
+		return 1;
+	}
+
+	indir->cmd = ETHTOOL_SRXFHINDIR;
+	indir->size = indir_head.size;
+
+	if (fill_indir_table(&indir->size, indir->ring_index,
+			     rxfhindir_default, rxfhindir_equal,
+			     rxfhindir_weight, num_weights)) {
+		free(indir);
+		return 1;
 	}
 
 	err = send_ioctl(ctx, indir);
 	if (err < 0) {
 		perror("Cannot set RX flow hash indirection table");
-		return 105;
+		free(indir);
+		return 1;
 	}
 
+	free(indir);
 	return 0;
+}
+
+static int do_srxfh(struct cmd_context *ctx)
+{
+	struct ethtool_rxfh rss_head = {0};
+	struct ethtool_rxfh *rss;
+	struct ethtool_rxnfc ring_count;
+	int rxfhindir_equal = 0, rxfhindir_default = 0;
+	struct ethtool_gstrings *hfuncs = NULL;
+	char **rxfhindir_weight = NULL;
+	char *rxfhindir_key = NULL;
+	char *req_hfunc_name = NULL;
+	char *hfunc_name = NULL;
+	char *hkey = NULL;
+	int err = 0;
+	int i;
+	u32 arg_num = 0, indir_bytes = 0;
+	u32 req_hfunc = 0;
+	u32 entry_size = sizeof(rss_head.rss_config[0]);
+	u32 num_weights = 0;
+
+	if (ctx->argc < 1)
+		exit_bad_args();
+
+	while (arg_num < ctx->argc) {
+		if (!strcmp(ctx->argp[arg_num], "equal")) {
+			++arg_num;
+			rxfhindir_equal = get_int_range(ctx->argp[arg_num],
+							0, 1, INT_MAX);
+			++arg_num;
+		} else if (!strcmp(ctx->argp[arg_num], "weight")) {
+			++arg_num;
+			rxfhindir_weight = ctx->argp + arg_num;
+			while (arg_num < ctx->argc &&
+			       isdigit((unsigned char)ctx->argp[arg_num][0])) {
+				++arg_num;
+				++num_weights;
+			}
+			if (!num_weights)
+				exit_bad_args();
+		} else if (!strcmp(ctx->argp[arg_num], "hkey")) {
+			++arg_num;
+			rxfhindir_key = ctx->argp[arg_num];
+			if (!rxfhindir_key)
+				exit_bad_args();
+			++arg_num;
+		} else if (!strcmp(ctx->argp[arg_num], "default")) {
+			++arg_num;
+			rxfhindir_default = 1;
+		} else if (!strcmp(ctx->argp[arg_num], "hfunc")) {
+			++arg_num;
+			req_hfunc_name = ctx->argp[arg_num];
+			if (!req_hfunc_name)
+				exit_bad_args();
+			++arg_num;
+		} else {
+			exit_bad_args();
+		}
+	}
+
+	if (rxfhindir_equal && rxfhindir_weight) {
+		fprintf(stderr,
+			"Equal and weight options are mutually exclusive\n");
+		return 1;
+	}
+
+	if (rxfhindir_equal && rxfhindir_default) {
+		fprintf(stderr,
+			"Equal and default options are mutually exclusive\n");
+		return 1;
+	}
+
+	if (rxfhindir_weight && rxfhindir_default) {
+		fprintf(stderr,
+			"Weight and default options are mutually exclusive\n");
+		return 1;
+	}
+
+	ring_count.cmd = ETHTOOL_GRXRINGS;
+	err = send_ioctl(ctx, &ring_count);
+	if (err < 0) {
+		perror("Cannot get RX ring count");
+		return 1;
+	}
+
+	rss_head.cmd = ETHTOOL_GRSSH;
+	err = send_ioctl(ctx, &rss_head);
+	if (err < 0 && errno == EOPNOTSUPP && !rxfhindir_key &&
+	    !req_hfunc_name) {
+		return do_srxfhindir(ctx, rxfhindir_default, rxfhindir_equal,
+				     rxfhindir_weight, num_weights);
+	} else if (err < 0) {
+		perror("Cannot get RX flow hash indir size and key size");
+		return 1;
+	}
+
+	if (rxfhindir_key) {
+		err = parse_hkey(&hkey, rss_head.key_size,
+				 rxfhindir_key);
+		if (err)
+			return err;
+	}
+
+	if (rxfhindir_equal || rxfhindir_weight)
+		indir_bytes = rss_head.indir_size * entry_size;
+
+	if (rss_head.hfunc && req_hfunc_name) {
+		hfuncs = get_stringset(ctx, ETH_SS_RSS_HASH_FUNCS, 0, 1);
+		if (!hfuncs) {
+			perror("Cannot get hash functions names");
+			return 1;
+		}
+
+		for (i = 0; i < hfuncs->len && !req_hfunc ; i++) {
+			hfunc_name = (char *)(hfuncs->data +
+					      i * ETH_GSTRING_LEN);
+			if (!strncmp(hfunc_name, req_hfunc_name,
+				     ETH_GSTRING_LEN))
+				req_hfunc = (u32)1 << i;
+		}
+
+		if (!req_hfunc) {
+			fprintf(stderr,
+				"Unknown hash function: %s\n", req_hfunc_name);
+			free(hfuncs);
+			return 1;
+		}
+	}
+
+	rss = calloc(1, sizeof(*rss) + indir_bytes + rss_head.key_size);
+	if (!rss) {
+		perror("Cannot allocate memory for RX flow hash config");
+		err = 1;
+		goto free;
+	}
+	rss->cmd = ETHTOOL_SRSSH;
+	rss->indir_size = rss_head.indir_size;
+	rss->key_size = rss_head.key_size;
+	rss->hfunc = req_hfunc;
+
+	if (fill_indir_table(&rss->indir_size, rss->rss_config, rxfhindir_default,
+			     rxfhindir_equal, rxfhindir_weight, num_weights)) {
+		err = 1;
+		goto free;
+	}
+
+	if (hkey)
+		memcpy((char *)rss->rss_config + indir_bytes,
+		       hkey, rss->key_size);
+	else
+		rss->key_size = 0;
+
+	err = send_ioctl(ctx, rss);
+	if (err < 0) {
+		perror("Cannot set RX flow hash configuration");
+		err = 1;
+	}
+
+free:
+	if (hkey)
+		free(hkey);
+
+	free(rss);
+	free(hfuncs);
+	return err;
 }
 
 static int do_flash(struct cmd_context *ctx)
@@ -3209,6 +4030,11 @@ static int do_permaddr(struct cmd_context *ctx)
 	struct ethtool_perm_addr *epaddr;
 
 	epaddr = malloc(sizeof(struct ethtool_perm_addr) + MAX_ADDR_LEN);
+	if (!epaddr) {
+		perror("Cannot allocate memory for operation");
+		return 1;
+	}
+
 	epaddr->cmd = ETHTOOL_GPERMADDR;
 	epaddr->size = MAX_ADDR_LEN;
 
@@ -3225,6 +4051,22 @@ static int do_permaddr(struct cmd_context *ctx)
 	free(epaddr);
 
 	return err;
+}
+
+static bool flow_type_is_ntuple_supported(__u32 flow_type)
+{
+	switch (flow_type) {
+	case TCP_V4_FLOW:
+	case UDP_V4_FLOW:
+	case SCTP_V4_FLOW:
+	case AH_V4_FLOW:
+	case ESP_V4_FLOW:
+	case IPV4_USER_FLOW:
+	case ETHER_FLOW:
+		return true;
+	default:
+		return false;
+	}
 }
 
 static int flow_spec_to_ntuple(struct ethtool_rx_flow_spec *fsp,
@@ -3248,6 +4090,10 @@ static int flow_spec_to_ntuple(struct ethtool_rx_flow_spec *fsp,
 	if ((fsp->flow_type & FLOW_EXT) &&
 	    (fsp->m_ext.data[0] || fsp->m_ext.data[1]) &&
 	    fsp->m_ext.vlan_etype)
+		return -1;
+
+	/* IPv6 flow types are not supported by ntuple */
+	if (!flow_type_is_ntuple_supported(fsp->flow_type & ~FLOW_EXT))
 		return -1;
 
 	/* Set entire ntuple to ~0 to guarantee all masks are set */
@@ -3448,7 +4294,7 @@ static int do_gprivflags(struct cmd_context *ctx)
 	struct ethtool_gstrings *strings;
 	struct ethtool_value flags;
 	unsigned int i;
-	int max_len = 0, cur_len;
+	int max_len = 0, cur_len, rc;
 
 	if (ctx->argc != 0)
 		exit_bad_args();
@@ -3462,7 +4308,8 @@ static int do_gprivflags(struct cmd_context *ctx)
 	}
 	if (strings->len == 0) {
 		fprintf(stderr, "No private flags defined\n");
-		return 1;
+		rc = 1;
+		goto err;
 	}
 	if (strings->len > 32) {
 		/* ETHTOOL_GPFLAGS can only cover 32 flags */
@@ -3473,7 +4320,8 @@ static int do_gprivflags(struct cmd_context *ctx)
 	flags.cmd = ETHTOOL_GPFLAGS;
 	if (send_ioctl(ctx, &flags)) {
 		perror("Cannot get private flags");
-		return 1;
+		rc = 1;
+		goto err;
 	}
 
 	/* Find longest string and align all strings accordingly */
@@ -3491,7 +4339,11 @@ static int do_gprivflags(struct cmd_context *ctx)
 		       (const char *)strings->data + i * ETH_GSTRING_LEN,
 		       (flags.data & (1U << i)) ? "on" : "off");
 
-	return 0;
+	rc = 0;
+
+err:
+	free(strings);
+	return rc;
 }
 
 static int do_sprivflags(struct cmd_context *ctx)
@@ -3500,7 +4352,7 @@ static int do_sprivflags(struct cmd_context *ctx)
 	struct cmdline_info *cmdline;
 	struct ethtool_value flags;
 	u32 wanted_flags = 0, seen_flags = 0;
-	int any_changed;
+	int any_changed, rc;
 	unsigned int i;
 
 	strings = get_stringset(ctx, ETH_SS_PRIV_FLAGS,
@@ -3512,7 +4364,8 @@ static int do_sprivflags(struct cmd_context *ctx)
 	}
 	if (strings->len == 0) {
 		fprintf(stderr, "No private flags defined\n");
-		return 1;
+		rc = 1;
+		goto err;
 	}
 	if (strings->len > 32) {
 		/* ETHTOOL_{G,S}PFLAGS can only cover 32 flags */
@@ -3523,7 +4376,8 @@ static int do_sprivflags(struct cmd_context *ctx)
 	cmdline = calloc(strings->len, sizeof(*cmdline));
 	if (!cmdline) {
 		perror("Cannot parse arguments");
-		return 1;
+		rc = 1;
+		goto err;
 	}
 	for (i = 0; i < strings->len; i++) {
 		cmdline[i].name = ((const char *)strings->data +
@@ -3539,17 +4393,22 @@ static int do_sprivflags(struct cmd_context *ctx)
 	flags.cmd = ETHTOOL_GPFLAGS;
 	if (send_ioctl(ctx, &flags)) {
 		perror("Cannot get private flags");
-		return 1;
+		rc = 1;
+		goto err;
 	}
 
 	flags.cmd = ETHTOOL_SPFLAGS;
 	flags.data = (flags.data & ~seen_flags) | wanted_flags;
 	if (send_ioctl(ctx, &flags)) {
 		perror("Cannot set private flags");
-		return 1;
+		rc = 1;
+		goto err;
 	}
 
-	return 0;
+	rc = 0;
+err:
+	free(strings);
+	return rc;
 }
 
 static int do_tsinfo(struct cmd_context *ctx)
@@ -3650,6 +4509,11 @@ static int do_getmodule(struct cmd_context *ctx)
 				sff8079_show_all(eeprom->data);
 				sff8472_show_all(eeprom->data);
 				break;
+			case ETH_MODULE_SFF_8436:
+			case ETH_MODULE_SFF_8636:
+				sff8636_show_all(eeprom->data,
+						 modinfo.eeprom_len);
+				break;
 #endif
 			default:
 				geeprom_dump_hex = 1;
@@ -3721,6 +4585,146 @@ static int do_seee(struct cmd_context *ctx)
 	}
 
 	return 0;
+}
+
+static int do_get_phy_tunable(struct cmd_context *ctx)
+{
+	int argc = ctx->argc;
+	char **argp = ctx->argp;
+	int err, i;
+	u8 downshift_changed = 0;
+
+	if (argc < 1)
+		exit_bad_args();
+	for (i = 0; i < argc; i++) {
+		if (!strcmp(argp[i], "downshift")) {
+			downshift_changed = 1;
+			i += 1;
+			if (i < argc)
+				exit_bad_args();
+		} else  {
+			exit_bad_args();
+		}
+	}
+
+	if (downshift_changed) {
+		struct ethtool_tunable ds;
+		u8 count = 0;
+
+		ds.cmd = ETHTOOL_PHY_GTUNABLE;
+		ds.id = ETHTOOL_PHY_DOWNSHIFT;
+		ds.type_id = ETHTOOL_TUNABLE_U8;
+		ds.len = 1;
+		ds.data[0] = &count;
+		err = send_ioctl(ctx, &ds);
+		if (err < 0) {
+			perror("Cannot Get PHY downshift count");
+			return 87;
+		}
+		count = *((u8 *)&ds.data[0]);
+		if (count)
+			fprintf(stdout, "Downshift count: %d\n", count);
+		else
+			fprintf(stdout, "Downshift disabled\n");
+	}
+
+	return err;
+}
+
+static int parse_named_bool(struct cmd_context *ctx, const char *name, u8 *on)
+{
+	if (ctx->argc < 2)
+		return 0;
+
+	if (strcmp(*ctx->argp, name))
+		return 0;
+
+	if (!strcmp(*(ctx->argp + 1), "on")) {
+		*on = 1;
+	} else if (!strcmp(*(ctx->argp + 1), "off")) {
+		*on = 0;
+	} else {
+		fprintf(stderr, "Invalid boolean\n");
+		exit_bad_args();
+	}
+
+	ctx->argc -= 2;
+	ctx->argp += 2;
+
+	return 1;
+}
+
+static int parse_named_u8(struct cmd_context *ctx, const char *name, u8 *val)
+{
+	if (ctx->argc < 2)
+		return 0;
+
+	if (strcmp(*ctx->argp, name))
+		return 0;
+
+	*val = get_uint_range(*(ctx->argp + 1), 0, 0xff);
+
+	ctx->argc -= 2;
+	ctx->argp += 2;
+
+	return 1;
+}
+
+static int do_set_phy_tunable(struct cmd_context *ctx)
+{
+	int err = 0;
+	u8 ds_cnt = DOWNSHIFT_DEV_DEFAULT_COUNT;
+	u8 ds_changed = 0, ds_has_cnt = 0, ds_enable = 0;
+
+	if (ctx->argc == 0)
+		exit_bad_args();
+
+	/* Parse arguments */
+	while (ctx->argc) {
+		if (parse_named_bool(ctx, "downshift", &ds_enable)) {
+			ds_changed = 1;
+			ds_has_cnt = parse_named_u8(ctx, "count", &ds_cnt);
+		} else {
+			exit_bad_args();
+		}
+	}
+
+	/* Validate parameters */
+	if (ds_changed) {
+		if (!ds_enable && ds_has_cnt) {
+			fprintf(stderr, "'count' may not be set when downshift "
+				        "is off.\n");
+			exit_bad_args();
+		}
+
+		if (ds_enable && ds_has_cnt && ds_cnt == 0) {
+			fprintf(stderr, "'count' may not be zero.\n");
+			exit_bad_args();
+		}
+
+		if (!ds_enable)
+			ds_cnt = DOWNSHIFT_DEV_DISABLE;
+	}
+
+	/* Do it */
+	if (ds_changed) {
+		struct ethtool_tunable ds;
+		u8 count;
+
+		ds.cmd = ETHTOOL_PHY_STUNABLE;
+		ds.id = ETHTOOL_PHY_DOWNSHIFT;
+		ds.type_id = ETHTOOL_TUNABLE_U8;
+		ds.len = 1;
+		ds.data[0] = &count;
+		*((u8 *)&ds.data[0]) = ds_cnt;
+		err = send_ioctl(ctx, &ds);
+		if (err < 0) {
+			perror("Cannot Set PHY downshift count");
+			err = 87;
+		}
+	}
+
+	return err;
 }
 
 #ifndef TEST_ETHTOOL
@@ -3812,7 +4816,9 @@ static const struct option {
 	  "               [ TIME-IN-SECONDS ]\n" },
 	{ "-t|--test", 1, do_test, "Execute adapter self test",
 	  "               [ online | offline | external_lb ]\n" },
-	{ "-S|--statistics", 1, do_gstats, "Show adapter statistics" },
+	{ "-S|--statistics", 1, do_gnicstats, "Show adapter statistics" },
+	{ "--phy-statistics", 1, do_gphystats,
+	  "Show phy statistics" },
 	{ "-n|-u|--show-nfc|--show-ntuple", 1, do_grxclass,
 	  "Show Rx network flow classification options or rules",
 	  "		[ rx-flow-hash tcp4|udp4|ah4|esp4|sctp4|"
@@ -3822,13 +4828,15 @@ static const struct option {
 	  "Configure Rx network flow classification options or rules",
 	  "		rx-flow-hash tcp4|udp4|ah4|esp4|sctp4|"
 	  "tcp6|udp6|ah6|esp6|sctp6 m|v|t|s|d|f|n|r... |\n"
-	  "		flow-type ether|ip4|tcp4|udp4|sctp4|ah4|esp4\n"
+	  "		flow-type ether|ip4|tcp4|udp4|sctp4|ah4|esp4|"
+	  "ip6|tcp6|udp6|ah6|esp6|sctp6\n"
 	  "			[ src %x:%x:%x:%x:%x:%x [m %x:%x:%x:%x:%x:%x] ]\n"
 	  "			[ dst %x:%x:%x:%x:%x:%x [m %x:%x:%x:%x:%x:%x] ]\n"
 	  "			[ proto %d [m %x] ]\n"
-	  "			[ src-ip %d.%d.%d.%d [m %d.%d.%d.%d] ]\n"
-	  "			[ dst-ip %d.%d.%d.%d [m %d.%d.%d.%d] ]\n"
+	  "			[ src-ip IP-ADDRESS [m IP-ADDRESS] ]\n"
+	  "			[ dst-ip IP-ADDRESS [m IP-ADDRESS] ]\n"
 	  "			[ tos %d [m %x] ]\n"
+	  "			[ tclass %d [m %x] ]\n"
 	  "			[ l4proto %d [m %x] ]\n"
 	  "			[ src-port %d [m %x] ]\n"
 	  "			[ dst-port %d [m %x] ]\n"
@@ -3842,11 +4850,13 @@ static const struct option {
 	  "		delete %d\n" },
 	{ "-T|--show-time-stamping", 1, do_tsinfo,
 	  "Show time stamping capabilities" },
-	{ "-x|--show-rxfh-indir", 1, do_grxfhindir,
-	  "Show Rx flow hash indirection" },
-	{ "-X|--set-rxfh-indir", 1, do_srxfhindir,
-	  "Set Rx flow hash indirection",
-	  "		equal N | weight W0 W1 ...\n" },
+	{ "-x|--show-rxfh-indir|--show-rxfh", 1, do_grxfh,
+	  "Show Rx flow hash indirection table and/or RSS hash key" },
+	{ "-X|--set-rxfh-indir|--rxfh", 1, do_srxfh,
+	  "Set Rx flow hash indirection table and/or RSS hash key",
+	  "		[ equal N | weight W0 W1 ... | default ]\n"
+	  "		[ hkey %x:%x:%x:%x:%x:.... ]\n"
+	  "		[ hfunc FUNC ]\n" },
 	{ "-f|--flash", 1, do_flash,
 	  "Flash firmware image from the specified file to a region on the device",
 	  "               FILENAME [ REGION-NUMBER-TO-FLASH ]\n" },
@@ -3879,6 +4889,10 @@ static const struct option {
 	  "		[ advertise %x ]\n"
 	  "		[ tx-lpi on|off ]\n"
 	  "		[ tx-timer %d ]\n"},
+	{ "--set-phy-tunable", 1, do_set_phy_tunable, "Set PHY tunable",
+	  "		[ downshift on|off [count N] ]\n"},
+	{ "--get-phy-tunable", 1, do_get_phy_tunable, "Get PHY tunable",
+	  "		[ downshift ]\n"},
 	{ "-h|--help", 0, show_usage, "Show this help" },
 	{ "--version", 0, do_version, "Show version number" },
 	{}
@@ -3913,6 +4927,8 @@ int main(int argc, char **argp)
 	int want_device;
 	struct cmd_context ctx;
 	int k;
+
+	init_global_link_mode_masks();
 
 	/* Skip command name */
 	argp++;
@@ -3964,6 +4980,8 @@ opt_found:
 
 		/* Open control socket. */
 		ctx.fd = socket(AF_INET, SOCK_DGRAM, 0);
+		if (ctx.fd < 0)
+			ctx.fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_GENERIC);
 		if (ctx.fd < 0) {
 			perror("Cannot get control socket");
 			return 70;

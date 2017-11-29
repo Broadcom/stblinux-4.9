@@ -270,10 +270,13 @@ release:
 		export STBLINUX=`basename $$LINK`; \
 		tar -C .. -jcf ../stblinux-$(DOTVERSION).tar.bz2 $$STBLINUX
 	tar -C .. -c -f ../rootfs-$(DOTVERSION).tar \
-		--exclude=rootfs/misc/release_builds rootfs
+		--exclude=rootfs/misc/release_builds \
+		--exclude=rootfs/toolchain \
+		rootfs
 	# Take care of special files
 	tar -C .. -r -f ../rootfs-$(DOTVERSION).tar -h \
-		rootfs/misc/release_builds
+		rootfs/misc/release_builds \
+		rootfs/toolchain
 	-rm -f ../rootfs-$(DOTVERSION).tar.bz2
 	bzip2 ../rootfs-$(DOTVERSION).tar
 	# build all platforms

@@ -26,32 +26,59 @@
 
 #include "8250.h"
 
-struct brcmuart_priv {
-	int			line;
-	struct clk		*baud_mux_clk;
-	unsigned long		default_mux_rate;
-};
-
-
 #define KHZ    1000
 #define MHZ(x) ((x) * KHZ * KHZ)
 
-static const unsigned long brcmstb_rate_table[] = {
+static const u32 brcmstb_rate_table[] = {
 	MHZ(81),
 	MHZ(108),
 	MHZ(64),		/* Actually 64285715 for some chips */
 	MHZ(48),
 };
 
+struct brcmuart_priv {
+	int		line;
+	struct clk	*baud_mux_clk;
+	unsigned long	default_mux_rate;
+	u32		real_rates[ARRAY_SIZE(brcmstb_rate_table)];
+};
+
+
+/*
+ * Not all clocks run at the exact specified rate, so set each requested
+ * rate and then get the actual rate.
+ */
+static void init_real_clk_rates(struct device *dev, struct brcmuart_priv *priv)
+{
+	int x;
+	int rc;
+
+	priv->default_mux_rate = clk_get_rate(priv->baud_mux_clk);
+	dev_dbg(dev, "Default BAUD MUX Clock rate is %lu\n",
+		priv->default_mux_rate);
+
+	for (x = 0; x < ARRAY_SIZE(priv->real_rates); x++) {
+		rc = clk_set_rate(priv->baud_mux_clk, brcmstb_rate_table[x]);
+		if (rc) {
+			dev_err(dev, "Error selecting BAUD MUX clock for %u\n",
+				brcmstb_rate_table[x]);
+			priv->real_rates[x] = brcmstb_rate_table[x];
+		} else {
+			priv->real_rates[x] = clk_get_rate(priv->baud_mux_clk);
+		}
+	}
+	 clk_set_rate(priv->baud_mux_clk, priv->default_mux_rate);
+}
+
 static void set_clock_mux(struct uart_port *up, struct brcmuart_priv *priv,
 			u32 baud)
 {
-	unsigned long best_err = ULONG_MAX;
-	unsigned long percent;
-	unsigned long err;
-	unsigned long quot;
-	unsigned long rate;
-	int best_index = 0;
+	u32 percent;
+	u32 best_percent = UINT_MAX;
+	u32 quot;
+	u32 best_quot = 1;
+	u32 rate;
+	int best_index = -1;
 	u64 hires_rate;
 	u64 hires_baud;
 	u64 hires_err;
@@ -63,9 +90,11 @@ static void set_clock_mux(struct uart_port *up, struct brcmuart_priv *priv,
 		return;
 
 	/* Find the closest match for specified baud */
-	for (i = 0; i < ARRAY_SIZE(brcmstb_rate_table); i++) {
-		rate = brcmstb_rate_table[i] / 16;
+	for (i = 0; i < ARRAY_SIZE(priv->real_rates); i++) {
+		rate = priv->real_rates[i] / 16;
 		quot = DIV_ROUND_CLOSEST(rate, baud);
+		if (!quot)
+			continue;
 
 		/* increase resolution to get xx.xx percent */
 		hires_rate = (u64)rate * 10000;
@@ -75,29 +104,35 @@ static void set_clock_mux(struct uart_port *up, struct brcmuart_priv *priv,
 
 		/* get the delta */
 		if (hires_err > hires_baud)
-			err = (hires_err - hires_baud);
+			hires_err = (hires_err - hires_baud);
 		else
-			err = (hires_baud - hires_err);
+			hires_err = (hires_baud - hires_err);
 
-		percent = DIV_ROUND_CLOSEST(err, baud);
+		percent = (unsigned long)DIV_ROUND_CLOSEST_ULL(hires_err, baud);
 		dev_dbg(up->dev,
-			"Baud rate: %d, MUX Clk: %ld, Error: %ld.%ld%%\n",
-			baud, brcmstb_rate_table[i], percent / 100,
+			"Baud rate: %u, MUX Clk: %u, Error: %u.%u%%\n",
+			baud, priv->real_rates[i], percent / 100,
 			percent % 100);
-		if (err < best_err) {
-			best_err = err;
+		if (percent < best_percent) {
+			best_percent = percent;
 			best_index = i;
+			best_quot = quot;
 		}
 	}
-	rc = clk_set_rate(priv->baud_mux_clk, brcmstb_rate_table[best_index]);
+	if (best_index == -1) {
+		dev_err(up->dev, "Error, %d BAUD rate is too fast.\n", baud);
+		return;
+	}
+	rate = priv->real_rates[best_index];
+	rc = clk_set_rate(priv->baud_mux_clk, rate);
 	if (rc)
 		dev_err(up->dev, "Error selecting BAUD MUX clock\n");
-	rate = clk_get_rate(priv->baud_mux_clk);
-	dev_dbg(up->dev,
-		"For baud %d, Selecting BAUD MUX rate: %ld, actual rate: %ld\n",
-		baud, brcmstb_rate_table[best_index], rate);
 
-	up->uartclk = brcmstb_rate_table[best_index];
+	dev_dbg(up->dev, "Selecting BAUD MUX rate: %u\n", rate);
+	dev_dbg(up->dev, "Requested baud: %u, Actual baud: %u\n",
+		baud, rate / 16 / best_quot);
+
+	up->uartclk = rate;
 }
 
 static void brcmstb_set_termios(struct uart_port *up,
@@ -152,10 +187,8 @@ static int brcmuart_probe(struct platform_device *pdev)
 		if (ret)
 			return ret;
 		priv->baud_mux_clk = baud_mux_clk;
-		clk_rate = clk_get_rate(baud_mux_clk);
-		priv->default_mux_rate = clk_rate;
-		dev_dbg(&pdev->dev, "Default BAUD MUX Clock rate is %u\n",
-			clk_rate);
+		init_real_clk_rates(&pdev->dev, priv);
+		clk_rate = priv->default_mux_rate;
 	}
 
 	if (clk_rate == 0) {

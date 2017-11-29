@@ -611,7 +611,8 @@ static struct sk_buff *bcm_sysport_rx_refill(struct bcm_sysport_priv *priv,
 	dma_addr_t mapping;
 
 	/* Allocate a new SKB for a new packet */
-	skb = netdev_alloc_skb(priv->netdev, RX_BUF_LENGTH);
+	skb = __netdev_alloc_skb(priv->netdev, RX_BUF_LENGTH,
+				 GFP_ATOMIC | __GFP_NOWARN);
 	if (!skb) {
 		priv->mib.alloc_rx_buff_failed++;
 		netif_err(priv, rx_err, ndev, "SKB alloc failed\n");
@@ -1372,8 +1373,12 @@ static int bcm_sysport_init_tx_ring(struct bcm_sysport_priv *priv,
 	/* Configure QID and port mapping */
 	reg = tdma_readl(priv, TDMA_DESC_RING_MAPPING(index));
 	reg &= ~(RING_QID_MASK | RING_PORT_ID_MASK << RING_PORT_ID_SHIFT);
-	reg |= ring->switch_queue & RING_QID_MASK;
-	reg |= ring->switch_port << RING_PORT_ID_SHIFT;
+	if (ring->inspect) {
+		reg |= ring->switch_queue & RING_QID_MASK;
+		reg |= ring->switch_port << RING_PORT_ID_SHIFT;
+	} else {
+		reg |= RING_IGNORE_STATUS;
+	}
 	tdma_writel(priv, reg, TDMA_DESC_RING_MAPPING(index));
 	tdma_writel(priv, 0, TDMA_DESC_RING_PCP_DEI_VID(index));
 
@@ -1755,15 +1760,17 @@ static inline void bcm_sysport_mask_all_intrs(struct bcm_sysport_priv *priv)
 
 static inline void gib_set_pad_extension(struct bcm_sysport_priv *priv)
 {
-	u32 __maybe_unused reg;
+	u32 reg;
 
-	/* Include Broadcom tag in pad extension */
+	reg = gib_readl(priv, GIB_CONTROL);
+	/* Include Broadcom tag in pad extension and fix up IPG_LENGTH */
 	if (netdev_uses_dsa(priv->netdev)) {
-		reg = gib_readl(priv, GIB_CONTROL);
 		reg &= ~(GIB_PAD_EXTENSION_MASK << GIB_PAD_EXTENSION_SHIFT);
 		reg |= ENET_BRCM_TAG_LEN << GIB_PAD_EXTENSION_SHIFT;
-		gib_writel(priv, reg, GIB_CONTROL);
 	}
+	reg &= ~(GIB_IPG_LEN_MASK << GIB_IPG_LEN_SHIFT);
+	reg |= 12 << GIB_IPG_LEN_SHIFT;
+	gib_writel(priv, reg, GIB_CONTROL);
 }
 
 static int bcm_sysport_open(struct net_device *dev)
@@ -1981,6 +1988,9 @@ static u16 bcm_sysport_select_queue(struct net_device *dev, struct sk_buff *skb,
 	port = BRCM_TAG_GET_PORT(queue);
 	tx_ring = priv->ring_map[q + port * priv->per_port_num_tx_queues];
 
+	if (unlikely(!tx_ring))
+		return fallback(dev, skb);
+
 	return tx_ring->index;
 }
 
@@ -2019,6 +2029,7 @@ static int bcm_sysport_map_queues(struct bcm_sysport_priv *priv,
 		 */
 		ring->switch_queue = q;
 		ring->switch_port = port;
+		ring->inspect = true;
 		priv->ring_map[q + port * num_tx_queues] = ring;
 
 		/* Set all queues as being used now */

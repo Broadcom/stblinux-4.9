@@ -9,27 +9,11 @@
 
 #include <stdio.h>
 #include "internal.h"
+#include "sff-common.h"
 
 static void sff8079_show_identifier(const __u8 *id)
 {
-	printf("\t%-41s : 0x%02x", "Identifier", id[0]);
-	switch (id[0]) {
-	case 0x00:
-		printf(" (no module present, unknown, or unspecified)\n");
-		break;
-	case 0x01:
-		printf(" (GBIC)\n");
-		break;
-	case 0x02:
-		printf(" (module soldered to motherboard)\n");
-		break;
-	case 0x03:
-		printf(" (SFP)\n");
-		break;
-	default:
-		 printf(" (reserved or unknown)\n");
-		break;
-	}
+	sff8024_show_identifier(id, 0);
 }
 
 static void sff8079_show_ext_identifier(const __u8 *id)
@@ -47,60 +31,7 @@ static void sff8079_show_ext_identifier(const __u8 *id)
 
 static void sff8079_show_connector(const __u8 *id)
 {
-	printf("\t%-41s : 0x%02x", "Connector", id[2]);
-	switch (id[2]) {
-	case 0x00:
-		printf(" (unknown or unspecified)\n");
-		break;
-	case 0x01:
-		printf(" (SC)\n");
-		break;
-	case 0x02:
-		printf(" (Fibre Channel Style 1 copper)\n");
-		break;
-	case 0x03:
-		printf(" (Fibre Channel Style 2 copper)\n");
-		break;
-	case 0x04:
-		printf(" (BNC/TNC)\n");
-		break;
-	case 0x05:
-		printf(" (Fibre Channel coaxial headers)\n");
-		break;
-	case 0x06:
-		printf(" (FibreJack)\n");
-		break;
-	case 0x07:
-		printf(" (LC)\n");
-		break;
-	case 0x08:
-		printf(" (MT-RJ)\n");
-		break;
-	case 0x09:
-		printf(" (MU)\n");
-		break;
-	case 0x0a:
-		printf(" (SG)\n");
-		break;
-	case 0x0b:
-		printf(" (Optical pigtail)\n");
-		break;
-	case 0x0c:
-		printf(" (MPO Parallel Optic)\n");
-		break;
-	case 0x20:
-		printf(" (HSSDC II)\n");
-		break;
-	case 0x21:
-		printf(" (Copper pigtail)\n");
-		break;
-	case 0x22:
-		printf(" (RJ45)\n");
-		break;
-	default:
-		printf(" (reserved or unknown)\n");
-		break;
-	}
+	sff8024_show_connector(id, 2);
 }
 
 static void sff8079_show_transceiver(const __u8 *id)
@@ -206,9 +137,9 @@ static void sff8079_show_transceiver(const __u8 *id)
 	if (id[8] & (1 << 4))
 		printf("%s FC: Longwave laser (LL)\n", pfx);
 	if (id[8] & (1 << 3))
-		printf("%s FC: Copper Active\n", pfx);
+		printf("%s Active Cable\n", pfx);
 	if (id[8] & (1 << 2))
-		printf("%s FC: Copper Passive\n", pfx);
+		printf("%s Passive Cable\n", pfx);
 	if (id[8] & (1 << 1))
 		printf("%s FC: Copper FC-BaseT\n", pfx);
 	/* Fibre Channel transmission media */
@@ -241,33 +172,7 @@ static void sff8079_show_transceiver(const __u8 *id)
 
 static void sff8079_show_encoding(const __u8 *id)
 {
-	printf("\t%-41s : 0x%02x", "Encoding", id[11]);
-	switch (id[11]) {
-	case 0x00:
-		printf(" (unspecified)\n");
-		break;
-	case 0x01:
-		printf(" (8B/10B)\n");
-		break;
-	case 0x02:
-		printf(" (4B/5B)\n");
-		break;
-	case 0x03:
-		printf(" (NRZ)\n");
-		break;
-	case 0x04:
-		printf(" (Manchester)\n");
-		break;
-	case 0x05:
-		printf(" (SONET Scrambled)\n");
-		break;
-	case 0x06:
-		printf(" (64B/66B)\n");
-		break;
-	default:
-		printf(" (reserved or unknown)\n");
-		break;
-	}
+	sff8024_show_encoding(id, 11, ETH_MODULE_SFF_8472);
 }
 
 static void sff8079_show_rate_identifier(const __u8 *id)
@@ -355,6 +260,8 @@ static void sff8079_show_ascii(const __u8 *id, unsigned int first_reg,
 	unsigned int reg, val;
 
 	printf("\t%-41s : ", name);
+	while (first_reg <= last_reg && id[last_reg] == ' ')
+		last_reg--;
 	for (reg = first_reg; reg <= last_reg; reg++) {
 		val = id[reg];
 		putchar(((val >= 32) && (val <= 126)) ? val : '_');
@@ -362,10 +269,44 @@ static void sff8079_show_ascii(const __u8 *id, unsigned int first_reg,
 	printf("\n");
 }
 
+static void sff8079_show_options(const __u8 *id)
+{
+	static const char *pfx =
+		"\tOption                                    :";
+
+	printf("\t%-41s : 0x%02x 0x%02x\n", "Option values", id[64], id[65]);
+	if (id[65] & (1 << 1))
+		printf("%s RX_LOS implemented\n", pfx);
+	if (id[65] & (1 << 2))
+		printf("%s RX_LOS implemented, inverted\n", pfx);
+	if (id[65] & (1 << 3))
+		printf("%s TX_FAULT implemented\n", pfx);
+	if (id[65] & (1 << 4))
+		printf("%s TX_DISABLE implemented\n", pfx);
+	if (id[65] & (1 << 5))
+		printf("%s RATE_SELECT implemented\n", pfx);
+	if (id[65] & (1 << 6))
+		printf("%s Tunable transmitter technology\n", pfx);
+	if (id[65] & (1 << 7))
+		printf("%s Receiver decision threshold implemented\n", pfx);
+	if (id[64] & (1 << 0))
+		printf("%s Linear receiver output implemented\n", pfx);
+	if (id[64] & (1 << 1))
+		printf("%s Power level 2 requirement\n", pfx);
+	if (id[64] & (1 << 2))
+		printf("%s Cooled transceiver implemented\n", pfx);
+	if (id[64] & (1 << 3))
+		printf("%s Retimer or CDR implemented\n", pfx);
+	if (id[64] & (1 << 4))
+		printf("%s Paging implemented\n", pfx);
+	if (id[64] & (1 << 5))
+		printf("%s Power level 3 requirement\n", pfx);
+}
+
 void sff8079_show_all(const __u8 *id)
 {
 	sff8079_show_identifier(id);
-	if ((id[0] == 0x03) && (id[1] == 0x04)) {
+	if (((id[0] == 0x02) || (id[0] == 0x03)) && (id[1] == 0x04)) {
 		sff8079_show_ext_identifier(id);
 		sff8079_show_connector(id);
 		sff8079_show_transceiver(id);
@@ -385,5 +326,10 @@ void sff8079_show_all(const __u8 *id)
 		sff8079_show_oui(id);
 		sff8079_show_ascii(id, 40, 55, "Vendor PN");
 		sff8079_show_ascii(id, 56, 59, "Vendor rev");
+		sff8079_show_options(id);
+		sff8079_show_value_with_unit(id, 66, "BR margin, max", 1, "%");
+		sff8079_show_value_with_unit(id, 67, "BR margin, min", 1, "%");
+		sff8079_show_ascii(id, 68, 83, "Vendor SN");
+		sff8079_show_ascii(id, 84, 91, "Date code");
 	}
 }

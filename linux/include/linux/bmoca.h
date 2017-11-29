@@ -241,7 +241,7 @@ typedef void (*write32)(void *hw_priv, uintptr_t addr, u32 data);
 typedef void (*hw_reset)(void *hw_priv);
 typedef void (*hw_init)(void *hw_priv, int action, int *enabled,
 			int bonded_mode);
-typedef void (*write_mem)(void *hw_priv, uintptr_t dst, void *src,
+typedef int (*write_mem)(void *hw_priv, uintptr_t dst, void *src,
 			  unsigned int len);
 typedef void (*read_mem)(void *hw_priv, void *dst, uintptr_t src,
 			 unsigned int len);

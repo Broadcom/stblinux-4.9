@@ -214,7 +214,7 @@ static void bcm_sf2_gphy_enable_set(struct dsa_switch *ds, bool enable)
 	reg = reg_readl(priv, REG_SPHY_CNTRL);
 	if (enable) {
 		reg |= PHY_RESET;
-		reg &= ~(EXT_PWR_DOWN | IDDQ_BIAS | CK25_DIS);
+		reg &= ~(EXT_PWR_DOWN | IDDQ_BIAS | IDDQ_GLOBAL_PWR | CK25_DIS);
 		reg_writel(priv, reg, REG_SPHY_CNTRL);
 		udelay(21);
 		reg = reg_readl(priv, REG_SPHY_CNTRL);
@@ -1183,6 +1183,9 @@ static const struct of_device_id bcm_sf2_of_match[] = {
 	{ .compatible = "brcm,bcm7278-switch-v4.0",
 	  .data = &bcm_sf2_7278_data
 	},
+	{ .compatible = "brcm,bcm7278-switch-v4.8",
+	  .data = &bcm_sf2_7278_data
+	},
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, bcm_sf2_of_match);
@@ -1279,6 +1282,7 @@ static int bcm_sf2_sw_probe(struct platform_device *pdev)
 	 * permanently used
 	 */
 	set_bit(0, priv->cfp.used);
+	set_bit(0, priv->cfp.unique);
 
 	bcm_sf2_identify_ports(priv, dn->child);
 

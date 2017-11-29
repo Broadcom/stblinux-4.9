@@ -703,6 +703,9 @@ bool 'setpci'			CONFIG_USER_PCIUTILS_SETPCI
 comment 'MMC utilities'
 bool 'mmcutils'			CONFIG_USER_MMCUTILS
 
+comment 'RNG utilities'
+bool 'rng-tools'		CONFIG_USER_RNG_TOOLS
+
 endmenu
 
 

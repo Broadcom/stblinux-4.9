@@ -113,6 +113,7 @@ static const char *b53_mach_compat[] = {
 	"brcm,bcm7268b0",
 	"brcm,bcm7271b0",
 	"brcm,bcm7278a0",
+	"brcm,bcm7278b0",
 };
 
 static void __init mcp_b53_set(void)

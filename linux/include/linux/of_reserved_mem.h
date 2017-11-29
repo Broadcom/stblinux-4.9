@@ -63,7 +63,7 @@ static inline int __reserved_mem_get_count(void)
 {
 	return -ENOSYS;
 }
-struct inline reserved_mem *__reserved_mem_get_entry(int pos)
+inline struct reserved_mem *__reserved_mem_get_entry(int pos)
 {
 	return NULL;
 }

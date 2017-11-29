@@ -348,10 +348,11 @@ struct brcm_pcie {
 	resource_size_t		reg_start; /* needed for 7278a0 quirk */
 };
 
+struct of_pci_range *dma_ranges;
+int num_dma_ranges;
+
 static struct list_head brcm_pcie = LIST_HEAD_INIT(brcm_pcie);
 static phys_addr_t scb_size[BRCM_MAX_SCB];
-static struct of_pci_range *dma_ranges;
-static int num_dma_ranges;
 static unsigned int brcm_pcie_used;
 static int num_memc;
 static DEFINE_MUTEX(brcm_pcie_lock);
@@ -370,19 +371,28 @@ static u64 roundup_pow_of_two_64(u64 n)
 
 static int brcm_pcie_add_controller(struct brcm_pcie *pcie)
 {
+	int ret = 0;
+
 	mutex_lock(&brcm_pcie_lock);
 	pcie->id = (int)ffz(brcm_pcie_used);
 	if (pcie->id >= MAX_PCIE) {
-		mutex_unlock(&brcm_pcie_lock);
-		return -ENODEV;
+		ret = -ENODEV;
+		goto done;
+	}
+	if (list_empty(&brcm_pcie)) {
+		ret = brcm_register_notifier();
+		if (ret) {
+			dev_err(pcie->dev, "failed to register pcie notifier");
+			goto done;
+		}
 	}
 	snprintf(pcie->name, sizeof(pcie->name)-1, "PCIe%d", pcie->id);
 	brcm_pcie_used |= (1 << pcie->id);
-	if (list_empty(&brcm_pcie))
-		bus_register_notifier(&pci_bus_type, &brcmstb_platform_nb);
 	list_add_tail(&pcie->list, &brcm_pcie);
+
+done:
 	mutex_unlock(&brcm_pcie_lock);
-	return 0;
+	return ret;
 }
 
 static void brcm_pcie_remove_controller(struct brcm_pcie *pcie)
@@ -397,8 +407,11 @@ static void brcm_pcie_remove_controller(struct brcm_pcie *pcie)
 			brcm_pcie_used &= ~(1 << pcie->id);
 			list_del(pos);
 			if (list_empty(&brcm_pcie)) {
-				bus_unregister_notifier(&pci_bus_type,
-							&brcmstb_platform_nb);
+				int ret = brcm_unregister_notifier();
+
+				if (ret)
+					dev_err(pcie->dev,
+						"failed to unreg pci notifier");
 				kfree(dma_ranges);
 				dma_ranges = NULL;
 				num_dma_ranges = 0;
@@ -425,35 +438,6 @@ int encode_ibar_size(u64 size)
 		return log2_in - 15;
 	/* Something is awry so disable */
 	return 0;
-}
-
-dma_addr_t brcm_to_pci(dma_addr_t addr)
-{
-	struct of_pci_range *p;
-
-	if (!num_dma_ranges)
-		return addr;
-
-	for (p = dma_ranges; p < &dma_ranges[num_dma_ranges]; p++) {
-		if (addr >= p->cpu_addr
-		    && addr < p->cpu_addr + p->size)
-			return addr - p->cpu_addr + p->pci_addr;
-	}
-	return BRCMSTB_ERROR_CODE;
-}
-
-dma_addr_t brcm_to_cpu(dma_addr_t addr)
-{
-	struct of_pci_range *p;
-
-	if (!num_dma_ranges)
-		return addr;
-	for (p = dma_ranges; p < &dma_ranges[num_dma_ranges]; p++) {
-		if (addr >= p->pci_addr
-		    && addr < p->pci_addr + p->size)
-			return addr - p->pci_addr + p->cpu_addr;
-	}
-	return addr;
 }
 
 static u32 mdio_form_pkt(int port, int regad, int cmd)

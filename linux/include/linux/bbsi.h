@@ -18,22 +18,22 @@
 
 /* Kernel API: */
 
-int bbsi_read(struct spi_device *spi_device, unsigned long addr,
-	      unsigned long *data, unsigned long nbits);
+int bbsi_read(struct spi_device *spi_device, u32 addr,
+	      u32 *data, unsigned long nbits);
 
-int bbsi_write(struct spi_device *spi_device, unsigned long addr,
-	       unsigned long data, unsigned long nbits);
+int bbsi_write(struct spi_device *spi_device, u32 addr,
+	       u32 data, unsigned long nbits);
 
-int bbsi_writebuf(struct spi_device *spi_device, unsigned long addr,
-		  unsigned long *data, unsigned long len);
+int bbsi_writebuf(struct spi_device *spi_device, u32 addr,
+		  u32 *data, unsigned long len);
 
-int bbsi_readbuf(struct spi_device *spi_device, unsigned long addr,
-		 unsigned long *data, unsigned long len);
+int bbsi_readbuf(struct spi_device *spi_device, u32 addr,
+		 u32 *data, unsigned long len);
 
-unsigned long bbsi_read32(struct spi_device *spi_device, unsigned long addr);
+u32 bbsi_read32(struct spi_device *spi_device, u32 addr);
 
-void bbsi_write32(struct spi_device *spi_device, unsigned long addr,
-		  unsigned long data);
+void bbsi_write32(struct spi_device *spi_device, u32 addr,
+		  u32 data);
 
 
 #endif

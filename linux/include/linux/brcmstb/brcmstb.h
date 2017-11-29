@@ -47,19 +47,6 @@
 #include <spaces.h>
 #endif
 
-#if defined(CONFIG_MIPS)
-
-#include <asm/bmips.h>
-#define BCHP_PHYSICAL_OFFSET	0x10000000
-
-#elif defined(CONFIG_ARM)
-#define BCHP_PHYSICAL_OFFSET	0xf0000000
-
-#elif defined(CONFIG_ARM64)
-#define BCHP_PHYSICAL_OFFSET                               0xd0000000
-
-#endif
-
 #if defined(CONFIG_BRCMSTB_PM) && !defined(CONFIG_MIPS)
 /*
  * Exclude a given memory range from the MAC authentication process during S3

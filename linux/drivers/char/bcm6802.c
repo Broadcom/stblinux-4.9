@@ -205,7 +205,7 @@ struct moca_6802c0_clock_params
 };
 
 int bcm6802_writebuf(void *hw_priv, unsigned long addr,
-		     unsigned long *data, unsigned long len)
+		     u32 *data, unsigned long len)
 {
 	struct bcm6802_priv *priv = hw_priv;
 	int rc;
@@ -218,7 +218,7 @@ int bcm6802_writebuf(void *hw_priv, unsigned long addr,
 }
 
 int bcm6802_readbuf(void *hw_priv, unsigned long addr,
-		    unsigned long *data, unsigned long len)
+		    u32 *data, unsigned long len)
 {
 	struct bcm6802_priv *priv = hw_priv;
 	int rc;
@@ -582,8 +582,8 @@ void bcm6802_hw_init(void *hw_priv, int action, int *enabled, int bonded_mode)
 		*enabled = 0;
 }
 
-void bcm6802_write_mem(void *hw_priv, uintptr_t dst_offset, void *src,
-		       unsigned int len)
+int bcm6802_write_mem(void *hw_priv, uintptr_t dst_offset, void *src,
+		      unsigned int len)
 {
 	uintptr_t addr;
 	struct bcm6802_priv *priv = hw_priv;
@@ -591,6 +591,8 @@ void bcm6802_write_mem(void *hw_priv, uintptr_t dst_offset, void *src,
 	addr = MOCA_DATA_MEM + dst_offset;
 
 	REG_WR_BLOCK(addr, src, len);
+
+	return 0;
 }
 
 void bcm6802_read_mem(void *hw_priv, void *dst, uintptr_t src_offset,

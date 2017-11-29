@@ -11,4 +11,12 @@ if [ "$OPTIONHOST" = "(none)" -a -d $DT_DIR ]; then
 	OPTIONHOST="$(cat $DT_DIR/model | sed 's/^Broadcom\ //')"
 	[ ! -z $serial ] && OPTIONHOST="$OPTIONHOST-$serial"
 fi
-udhcpc -i $iface -p /tmp/udhcpc.$iface.pid -x hostname:"$OPTIONHOST" >& /dev/null &
+
+# Check if this is a SYSTEMPORT interface, if so, do not spawn
+# a DHCP client since those interfaces are DSA conduit devices that
+# should not transmit directly packets.
+grep -q "systemport" /sys/class/net/$iface/device/modalias
+ret=$?
+if [ $ret = 1 ]; then
+	udhcpc -i $iface -p /tmp/udhcpc.$iface.pid -x hostname:"$OPTIONHOST" >& /dev/null &
+fi

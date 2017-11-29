@@ -1281,6 +1281,7 @@ static void *brcmstb_memory_vmap(struct page **pages, unsigned int count,
 
 	if (map_vm_area(area, prot, pages)) {
 		vunmap(area->addr);
+		vm_unmap_aliases();
 		return NULL;
 	}
 
@@ -1380,6 +1381,7 @@ int brcmstb_memory_kva_unmap(const void *kva)
 	}
 
 	vunmap(kva);
+	vm_unmap_aliases();
 
 	return 0;
 }

@@ -1,3 +1,76 @@
+Version 4.11 - June 2, 2017
+	* Feature: Support for configurable RSS hash function
+	* Feature: support queue and VF fields for rxclass filters
+	* Feature: Add support for 2500baseT/5000baseT link modes
+	* Fix: Fix SFF 8079 cable technology bit parsing
+	* Fix: sync help output for -x/-X with man page
+
+Version 4.10 - March 24, 2017
+
+	* Fix: Fix the "advertise" parameter logic.
+	* Feature: Implement ETHTOOL_PHY_GTUNABLE/ETHTOOL_PHY_STUNABLE and PHY downshift
+	* Feature: add register dump support for fjes driver (-d option)
+
+
+Version 4.8 - October 3, 2016
+
+	* Feature: QSFP Plus/QSFP28 Diagnostics Information Support
+	* Feature: Enhancing link mode bits to support 25G/50G/100G
+	* Feature: add support for 1000BaseX and missing 10G link mode
+	* Fixes: address Coverity issues 1363118 - 1363125
+
+Version 4.6 - June 26, 2016
+
+	* Feature: Support register dump on Intel X550 NICs (-d option)
+	* Fix: Correct some reported register offsets on Intel 10GbE NICs
+	  (-d option)
+	* Feature: Add IPv6 support to NFC (-n, -N, -u and -U options)
+	* Feature: Add support for ETHTOOL_xLINKSETTINGS ioctls (no option
+	  and -s option)
+	* Feature: Use netlink socket when AF_INET not available
+
+Version 4.5 - March 14, 2016
+
+	* Tests: Fix missing function declarations when building tests
+	* Tests: Fix return type of test_free() prorotype
+	* Feature: Add PHY statistics support (--phy-statistics option)
+	* Doc: Properly indent sub-options in man page
+	* Feature: Support setting default Rx flow indirection table
+	  (-X option)
+	* Fix: Use 'sane' kernel type definitions on 64-bit architectures
+	* Fix: Don't ignore fread() return value (-d option)
+	* Fix: Heap corruption when dumping registers from a file (-d option)
+	* Fix: Stricter input validation for EEPROM setting (-E option)
+	* Fix: Fix strict-aliasing compiler warnings in marvell.c
+	* Tests: Fix use of uninitialised variable in test_realloc()
+	* Tests: Fix compiler warning in test-features.c
+
+Version 4.2 - October 9, 2015
+
+	* Feature: Support soldered-on modules in module EEPROM dump (-m option)
+	* Feature: Add register dump support for VMware vmxnet3 (-d option)
+	* Feature: Update register dump support for IBM EMAC (-d option)
+	  (requires Linux 4.3 or a future stable update to 4.1 or 4.2)
+	* Doc: Fix typo in man page
+
+Version 4.0 - May 31, 2015
+
+	* Fix: Formatting of RX flow hash indirection table when size not
+	  divisible by 8 (-x option)
+	* Fix: Add missing Advertised speeds (no option and -s option)
+	* Feature: Add support to get expansion ROM version (-i option)
+	* Feature: Include SFP serial number and date in EEPROM dump
+	  (-m option)
+
+Version 3.18 - December 14, 2014
+
+	* Fix: Lookup of SFP Tx bias in SFF-8472 module diagnostics (-m option)
+	* Fix: Build with musl by using more common typedefs
+
+Version 3.16 - September 22, 2014
+
+	* Feature: Support for configurable RSS hash key (-x/-X options)
+
 Version 3.15 - July 20, 2014
 
 	* Feature: Add register dump support for Altera Triple Speed Ethernet

@@ -408,7 +408,8 @@ static int brcmstb_gpio_irq_setup(struct platform_device *pdev,
 		hw_int = bank->id * MAX_GPIO_PER_BANK;
 		gc = irq_get_domain_generic_chip(priv->irq_domain, hw_int);
 		gc->reg_base = priv->reg_base + bank->id * GIO_BANK_SIZE;
-		gc->unused = -(1 << bank->width);
+		if (bank->width < sizeof(gc->unused) * 8)
+			gc->unused = -((typeof(gc->unused))1 << bank->width);
 		gc->private = bank;
 		ct = gc->chip_types;
 		ct->regs.mask = GIO_MASK(0);

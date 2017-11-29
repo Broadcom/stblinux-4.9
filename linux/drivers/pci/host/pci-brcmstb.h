@@ -25,10 +25,11 @@ struct brcm_msi;
 struct brcm_info;
 struct platform_device;
 
-dma_addr_t brcm_to_pci(dma_addr_t addr);
-dma_addr_t brcm_to_cpu(dma_addr_t addr);
+extern struct of_pci_range *dma_ranges;
+extern int num_dma_ranges;
 
-extern struct notifier_block brcmstb_platform_nb;
+int brcm_register_notifier(void);
+int brcm_unregister_notifier(void);
 
 #ifdef CONFIG_PCI_MSI
 int brcm_msi_probe(struct platform_device *pdev, struct brcm_info *info);

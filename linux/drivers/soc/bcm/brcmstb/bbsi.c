@@ -81,11 +81,11 @@
 
 static int bbsi_is_done(struct spi_device *spi_device)
 {
-	uint8_t read_status[2] = {
+	u8 read_status[2] = {
 		BBSI_COMMAND_BYTE,	/* | 0x1,  Do a Read */
 		STATUS_REGISTER_ADDR
 	};
-	uint8_t read_rx[1];
+	u8 read_rx[1];
 	int status;
 	int i;
 	int ret = 0;
@@ -118,10 +118,10 @@ static int bbsi_is_done(struct spi_device *spi_device)
 	return ret;
 }
 
-int bbsi_read(struct spi_device *spi_device, unsigned long addr,
-	      unsigned long *data, unsigned long nbits)
+int bbsi_read(struct spi_device *spi_device, u32 addr,
+	      u32 *data, unsigned long nbits)
 {
-	uint8_t buf[12];
+	u8 buf[12];
 	int status;
 
 	buf[0] = BBSI_COMMAND_BYTE | 0x1;
@@ -145,7 +145,7 @@ int bbsi_read(struct spi_device *spi_device, unsigned long addr,
 
 	if (!bbsi_is_done(spi_device)) {
 		dev_err(&spi_device->dev,
-			"bbsi_read: read to addr:0x%lx failed\n", addr);
+			"bbsi_read: read to addr:0x%x failed\n", addr);
 		return (-1);
 	}
 
@@ -166,10 +166,10 @@ int bbsi_read(struct spi_device *spi_device, unsigned long addr,
 }
 EXPORT_SYMBOL(bbsi_read);
 
-int bbsi_write(struct spi_device *spi_device, unsigned long addr,
-	       unsigned long data, unsigned long nbits)
+int bbsi_write(struct spi_device *spi_device, u32 addr,
+	       u32 data, unsigned long nbits)
 {
-	uint8_t buf[12];
+	u8 buf[12];
 	int status;
 
 	data <<= (8 * (4 - nbits));
@@ -199,7 +199,7 @@ int bbsi_write(struct spi_device *spi_device, unsigned long addr,
 
 	if (!bbsi_is_done(spi_device)) {
 		dev_err(&spi_device->dev,
-			"bbsi_write: write to addr:0x%lx failed\n", addr);
+			"bbsi_write: write to addr:0x%x failed\n", addr);
 		return (-1);
 	}
 
@@ -209,10 +209,10 @@ int bbsi_write(struct spi_device *spi_device, unsigned long addr,
 EXPORT_SYMBOL(bbsi_write);
 
 static int bbsi_do_read_buffer(struct spi_device *spi_device,
-			       unsigned long addr, unsigned long *data,
+			       u32 addr, u32 *data,
 			       unsigned long len)
 {
-	uint8_t buf[12];
+	u8 buf[12];
 	int status;
 
 	buf[0] = BBSI_COMMAND_BYTE | 0x1;
@@ -241,7 +241,7 @@ static int bbsi_do_read_buffer(struct spi_device *spi_device,
 
 	if (!bbsi_is_done(spi_device)) {
 		dev_err(&spi_device->dev,
-			"SPI Slave Read: read to addr:0x%lx failed\n", addr);
+			"SPI Slave Read: read to addr:0x%x failed\n", addr);
 		return (-1);
 	}
 
@@ -263,7 +263,7 @@ static int bbsi_do_read_buffer(struct spi_device *spi_device,
 
 		if (!bbsi_is_done(spi_device)) {
 			dev_err(&spi_device->dev,
-				"SPI Slave Read: read to addr:0x%lx failed\n",
+				"SPI Slave Read: read to addr:0x%x failed\n",
 				addr);
 			return (-1);
 		}
@@ -276,16 +276,16 @@ static int bbsi_do_read_buffer(struct spi_device *spi_device,
 }
 
 static int bbsi_do_write_buffer(struct spi_device *spi_device,
-				unsigned long addr, unsigned long *data,
+				u32 addr, u32 *data,
 				unsigned long len)
 {
-	uint8_t buf[512 + 7];
+	u8 buf[512 + 7];
 	int status;
 
 	/* 7 bytes are used for addressing and BBSI protocol */
 	if (len > sizeof(buf) - 7) {
 		dev_err(&spi_device->dev,
-			"SPI Slave Write: write to addr:0x%lx failed. Len (%ld) too long.\n",
+			"SPI Slave Write: write to addr:0x%x failed. Len (%ld) too long.\n",
 			addr, len);
 		return (-1);
 	}
@@ -309,14 +309,14 @@ static int bbsi_do_write_buffer(struct spi_device *spi_device,
 
 	if (!bbsi_is_done(spi_device)) {
 		dev_err(&spi_device->dev,
-			"SPI Slave Write: write to addr:0x%lx failed\n", addr);
+			"SPI Slave Write: write to addr:0x%x failed\n", addr);
 		return (-1);
 	}
 	return 0;
 }
 
-int bbsi_readbuf(struct spi_device *spi_device, unsigned long addr,
-		 unsigned long *data, unsigned long len)
+int bbsi_readbuf(struct spi_device *spi_device, u32 addr,
+		 u32 *data, unsigned long len)
 {
 	int ret = -1;
 
@@ -328,8 +328,8 @@ int bbsi_readbuf(struct spi_device *spi_device, unsigned long addr,
 }
 EXPORT_SYMBOL(bbsi_readbuf);
 
-int bbsi_writebuf(struct spi_device *spi_device, unsigned long addr,
-		  unsigned long *data, unsigned long len)
+int bbsi_writebuf(struct spi_device *spi_device, u32 addr,
+		  u32 *data, unsigned long len)
 {
 	int ret = -1;
 	int count = 0;
@@ -345,38 +345,37 @@ int bbsi_writebuf(struct spi_device *spi_device, unsigned long addr,
 
 		len -= count;
 		addr += count;
-		data += count / sizeof(unsigned long);
+		data += count / sizeof(*data);
 	}
 
 	return ret;
 }
 EXPORT_SYMBOL(bbsi_writebuf);
 
-unsigned long bbsi_read32(struct spi_device *spi_device, unsigned long addr)
+u32 bbsi_read32(struct spi_device *spi_device, u32 addr)
 {
-	unsigned long data = 0;
+	u32 data = 0;
 
 	addr &= 0x1fffffff;
 
 	if (bbsi_read(spi_device, addr, &data, 4) < 0) {
 		dev_err(&spi_device->dev,
-			"bbsi_read32: can't read %08x\n",
-			(unsigned int)addr);
+			"bbsi_read32: can't read %08x\n", addr);
 	}
 
 	return data;
 }
 EXPORT_SYMBOL(bbsi_read32);
 
-void bbsi_write32(struct spi_device *spi_device, unsigned long addr,
-		  unsigned long data)
+void bbsi_write32(struct spi_device *spi_device, u32 addr,
+		  u32 data)
 {
 	addr &= 0x1fffffff;
 
 	if (bbsi_write(spi_device, addr, data, 4) < 0) {
 		dev_err(&spi_device->dev,
 			"bbsi_write32: can't write %08x (data %08x)\n",
-			(unsigned int)addr, (unsigned int)data);
+			addr, data);
 	}
 }
 EXPORT_SYMBOL(bbsi_write32);

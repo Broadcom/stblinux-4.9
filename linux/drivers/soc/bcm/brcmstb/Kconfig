@@ -101,6 +101,13 @@ config BRCMSTB_NEXUS_API
 	   Provides APIs for Nexus kernel-mode driver to facilitate
 	   sharing of resources: IRQs, GPIOs, Pinmuxing etc.
 
+config BRCMSTB_BBSI
+	tristate "Support for BBSI chips"
+	default y
+	depends on SPI_MASTER
+	help
+	    Provides APIs for accessing BBSI devices over SPI.
+
 endif # SOC_BRCMSTB
 
 #####################################################################
