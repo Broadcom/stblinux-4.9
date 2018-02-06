@@ -1,0 +1,15 @@
+diff --git a/Makefile b/Makefile
+index 9e9a4b4..7fdf4ec 100644
+--- a/Makefile
++++ b/Makefile
+@@ -7,7 +7,7 @@
+ # if you disagree. See `man 3 syslog' for examples. Some syslog versions
+ # do not provide this flexibility.
+
+-FACILITY=LOG_DAEMON
++FACILITY?=	LOG_DAEMON
+
+ # To disable tcp-wrapper style access control, comment out the following
+ # macro definitions.  Access control can also be turned off by providing
+--
+2.7.4

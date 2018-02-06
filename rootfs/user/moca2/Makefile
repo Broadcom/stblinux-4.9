@@ -5,7 +5,9 @@
 #
 
 # "include" needs to be conditional, so buildroot doesn't fail.
--include $(ROOTDIR)/config.arch
+ifeq ($(MACHINE),)
+include $(ROOTDIR)/config.arch
+endif
 
 MOCA_BINS=	mocad mocap
 MOCA_FW=	moca20core-gen21.bin moca20core-gen22.bin \
@@ -26,16 +28,18 @@ all clean distclean:
 # buildroot install target
 install: all
 	@for f in $(MOCA_BINS); do \
+		echo "Installing $(MOCA_DIR)/$$f..."; \
 		install -D -p -m 0755 -t $(DESTDIR)/bin $(MOCA_DIR)/$$f; \
 	done
 
-	rm -f $(DESTDIR)/bin/mocactl
-	ln -s mocap $(DESTDIR)/bin/mocactl
+	@rm -f $(DESTDIR)/bin/mocactl
+	@ln -s mocap $(DESTDIR)/bin/mocactl
 
 	# Older versions of "install" don't create the directory, but error
 	# out instead.
-	test -d $(DESTDIR)/etc/moca || mkdir $(DESTDIR)/etc/moca
+	@test -d $(DESTDIR)/etc/moca || mkdir $(DESTDIR)/etc/moca
 	@for f in $(MOCA_FW); do \
+		echo "Installing fw/$$f..."; \
 		install -D -p -m 0644 -t $(DESTDIR)/etc/moca fw/$$f; \
 	done
 

@@ -1,0 +1,43 @@
+--- a/Makefile	2017-06-21 10:45:30.960259600 -0700
++++ b/Makefile	2017-06-21 10:46:03.872651647 -0700
+@@ -115,7 +115,7 @@
+ WARNINGS += $(call cc-supports,-Wdeclaration-after-statement)
+ WARNINGS += -Wshadow
+ 
+-CPPFLAGS += -DVERSION=\"$(VERSION)\" -DPACKAGE=\"$(PACKAGE)\" \
++override CPPFLAGS += -DVERSION=\"$(VERSION)\" -DPACKAGE=\"$(PACKAGE)\" \
+ 		-DPACKAGE_BUGREPORT=\"$(PACKAGE_BUGREPORT)\" -D_GNU_SOURCE
+ 
+ UTIL_SRC = 	utils/info.c utils/set.c utils/aperf.c utils/cpuid.h
+@@ -128,19 +128,19 @@
+ ifeq ($(strip $(PROC)),true)
+ 	LIB_OBJS += lib/proc.o
+ 	LIB_SRC += lib/proc.c
+-	CPPFLAGS += -DINTERFACE_PROC
++	override CPPFLAGS += -DINTERFACE_PROC
+ endif
+ 
+ ifeq ($(strip $(SYSFS)),true)
+ 	LIB_OBJS += lib/sysfs.o
+ 	LIB_SRC += lib/sysfs.c
+-	CPPFLAGS += -DINTERFACE_SYSFS
++	override CPPFLAGS += -DINTERFACE_SYSFS
+ endif
+ 
+ ifeq ($(strip $(NLS)),true)
+ 	INSTALL_NLS += install-gmo
+ 	COMPILE_NLS += update-gmo
+-	CPPFLAGS += -DNLS
++	override CPPFLAGS += -DNLS
+ endif
+ 
+ ifeq ($(strip $(CPUFRQ_BENCH)),true)
+@@ -161,7 +161,7 @@
+ # if DEBUG is enabled, then we do not strip or optimize
+ ifeq ($(strip $(DEBUG)),true)
+ 	CFLAGS += -O1 -g
+-	CPPFLAGS += -DDEBUG
++	override CPPFLAGS += -DDEBUG
+ 	STRIPCMD = /bin/true -Since_we_are_debugging
+ else
+ 	CFLAGS += $(OPTIMIZATION) -fomit-frame-pointer

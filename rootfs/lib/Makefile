@@ -117,8 +117,8 @@ ifeq ($(findstring y,$(CONFIG_LIB_LIBSTDCXX_FORCE)$(CONFIG_LIB_LIBSTDCXX)),y)
 	-$(RM) -f $(ROMFSDIR)/lib/$(OSLIB)/libstdc++.*
 	-cp -af $(GCCLIB)/libstdc++.so $(GCCLIB)/libstdc++.so*[0-9] \
 		$(ROMFSDIR)/lib/$(OSLIB)/
-	-cp -af --remove-destination $(GCCSYSROOT)/lib/libstdc++.so \
-		$(GCCSYSROOT)/lib/libstdc++.so*[0-9] \
+	-cp -af --remove-destination $(GCCSYSROOT_LIB)/libstdc++.so \
+		$(GCCSYSROOT_LIB)/libstdc++.so*[0-9] \
 		$(ROMFSDIR)/lib/$(OSLIB)/
 	$(STRIP) $(ROMFSDIR)/lib/$(OSLIB)/libstdc++.so
 endif
@@ -127,8 +127,8 @@ ifeq ($(findstring y,$(CONFIG_LIB_LIBGCC_FORCE)$(CONFIG_LIB_LIBGCC)),y)
 	-$(RM) -f $(ROMFSDIR)/lib/$(OSLIB)/libgcc_s.so*
 	-cp -af $(GCCLIB)/libgcc_s.so $(GCCLIB)/libgcc_s.so*[0-9] \
 		$(ROMFSDIR)/lib/$(OSLIB)/
-	-cp -af --remove-destination $(GCCSYSROOT)/lib/libgcc_s.so \
-		$(GCCSYSROOT)/lib/libgcc_s.so*[0-9] \
+	-cp -af --remove-destination $(GCCSYSROOT_LIB)/libgcc_s.so \
+		$(GCCSYSROOT_LIB)/libgcc_s.so*[0-9] \
 		$(ROMFSDIR)/lib/$(OSLIB)/
 	$(STRIP) $(ROMFSDIR)/lib/$(OSLIB)/libgcc_s.so.1
 endif
@@ -137,19 +137,19 @@ ifeq ($(findstring y,$(CONFIG_LIB_LIBSSP_FORCE)$(CONFIG_LIB_LIBSSP)),y)
 	-$(RM) -f $(ROMFSDIR)/lib/$(OSLIB)/libssp.so*
 	-cp -af $(GCCLIB)/libssp.so $(GCCLIB)/libssp.so*[0-9] \
 		$(ROMFSDIR)/lib/$(OSLIB)/
-	-cp -af --remove-destination $(GCCSYSROOT)/lib/libssp.so \
-		$(GCCSYSROOT)/lib/libssp.so*[0-9] \
+	-cp -af --remove-destination $(GCCSYSROOT_LIB)/libssp.so \
+		$(GCCSYSROOT_LIB)/libssp.so*[0-9] \
 		$(ROMFSDIR)/lib/$(OSLIB)/
 	$(STRIP) $(ROMFSDIR)/lib/$(OSLIB)/libssp.so.0.0.0
 endif
 ifeq ($(findstring y,$(CONFIG_LIB_LIBUTIL_FORCE)$(CONFIG_LIB_LIBUTIL)),y)
 	-$(RM) -f $(ROMFSDIR)/lib/$(OSLIB)/libutil.so*
-	cp -af $(GCCSYSROOT)/lib/$(OSLIB)/libutil* $(ROMFSDIR)/lib/$(OSLIB)/
+	cp -af $(GCCSYSROOT_LIB)/libutil* $(ROMFSDIR)/lib/$(OSLIB)/
 	$(STRIP) $(ROMFSDIR)/lib/$(OSLIB)/libutil.so.[0-9]
 endif
 ifeq ($(findstring y,$(CONFIG_LIB_LIBCRYPT_FORCE)$(CONFIG_LIB_LIBCRYPT)),y)
 	-$(RM) -f $(ROMFSDIR)/lib/$(OSLIB)/libcrypt.so*
-	cp -af $(GCCSYSROOT)/lib/$(OSLIB)/libcrypt* $(ROMFSDIR)/lib/$(OSLIB)/
+	cp -af $(GCCSYSROOT_LIB)/libcrypt* $(ROMFSDIR)/lib/$(OSLIB)/
 	$(STRIP) $(ROMFSDIR)/lib/$(OSLIB)/libcrypt.so.[0-9]
 endif
 endif

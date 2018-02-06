@@ -602,6 +602,14 @@ static int bdc_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static int bdc_suspend(struct platform_device *pdev, pm_message_t mesg)
+{
+	struct bdc *bdc = platform_get_drvdata(pdev);
+
+	/* Halt the controller */
+	return bdc_stop(bdc);
+}
+
 static int bdc_resume(struct platform_device *pdev)
 {
 	struct bdc *bdc = platform_get_drvdata(pdev);
@@ -631,6 +639,7 @@ static struct platform_driver bdc_driver = {
 	},
 	.probe		= bdc_probe,
 	.remove		= bdc_remove,
+	.suspend	= bdc_suspend,
 	.resume		= bdc_resume,
 };
 

@@ -295,8 +295,7 @@ config DB8500_CPUFREQ_COOLING
 config INTEL_POWERCLAMP
 	tristate "Intel PowerClamp idle injection driver"
 	depends on THERMAL
-	depends on X86
-	depends on CPU_SUP_INTEL
+	depends on (X86 && CPU_SUP_INTEL) || ARM || ARM64
 	help
 	  Enable this to enable Intel PowerClamp idle injection driver. This
 	  enforce idle time which results in more package C-state residency. The

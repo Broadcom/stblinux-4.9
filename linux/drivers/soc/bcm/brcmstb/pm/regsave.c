@@ -21,6 +21,8 @@
 #include <linux/io.h>
 #include <linux/slab.h>
 
+#include <linux/soc/brcmstb/aon_defs.h>
+
 struct brcmstb_reg_group {
 	void __iomem *regs;
 	unsigned int count;
@@ -43,76 +45,176 @@ unsigned int dtu_cfg_offs[] = {
 static const unsigned int dtu_cfg_count = ARRAY_SIZE(dtu_cfg_offs);
 
 struct regsave_data {
+	/* For reg_save */
 	struct brcmstb_reg_group *reg_groups;
-	u32 *dtu_map_mem;
-	u32 *dtu_config_mem;
+	unsigned num_reg_groups;
 	u32 *reg_mem;
-	void __iomem *dtu_config;
-	void __iomem *dtu_map;
-	resource_size_t config_size;
-	resource_size_t map_size;
-	int num_reg_groups;
+
+	/* For dtu_save */
+	void __iomem **dtu_map;
+	void __iomem **dtu_config;
+	resource_size_t *map_size;
+	unsigned num_dtu_entries;
+	u32 **dtu_map_mem;
+	u32 **dtu_config_mem;
 };
 
 static struct regsave_data priv;
 
 int dtu_save(void)
 {
-	int i;
+	unsigned i, j;
 
-	for (i = 0; i < priv.map_size / sizeof(u32); i++)
-		priv.dtu_map_mem[i] =
-			__raw_readl(priv.dtu_map + i * sizeof(u32));
+	for (i = 0; i < priv.num_dtu_entries; i++) {
+		for (j = 0; j < priv.map_size[i] / sizeof(u32); j++) {
+			priv.dtu_map_mem[i][j] =
+				__raw_readl(priv.dtu_map[i] + j * sizeof(u32));
+		}
+	}
 
-	if (priv.dtu_config) {
-		for (i = 0; i < dtu_cfg_count; i++)
-			priv.dtu_config_mem[i] =
-				__raw_readl(priv.dtu_config +
-					    dtu_cfg_offs[i]);
+	if (!priv.dtu_config)
+		return 0;
+
+	for (i = 0; i < priv.num_dtu_entries; i++) {
+		for (j = 0; j < dtu_cfg_count; j++) {
+			priv.dtu_config_mem[i][j] =
+				__raw_readl(priv.dtu_config[i] +
+					    dtu_cfg_offs[j]);
+		}
 	}
 
 	return 0;
 }
 
-int brcmstb_dtusave_init(u32 *map_buffer, u32 *config_buffer)
+int brcmstb_dtusave_init(struct brcmstb_bootloader_dtu_table *tbl)
 {
-	struct device_node *dn;
+	unsigned int num_maps, num_configs, i;
+	struct device_node *dn, *prev;
 	struct resource res;
 	int ret = 0;
 
-	dn = of_find_compatible_node(NULL, NULL, "brcm,brcmstb-memc-dtu-map");
-	if (!dn)
+	/* Count dtu-map nodes */
+	for (prev = NULL, num_maps = 0; ; prev = dn, num_maps++) {
+		dn = of_find_compatible_node(prev, NULL,
+					     "brcm,brcmstb-memc-dtu-map");
+		if (!dn)
+			break;
+	}
+
+	/* No dtu-map nodes means we don't need DTU support. */
+	if (num_maps == 0)
 		return 0;
 
-	priv.dtu_map = of_iomap(dn, 0);
-	if (!priv.dtu_map) {
-		ret = -EIO;
+	/* Count dtu-config nodes */
+	for (prev = NULL, num_configs = 0; ; prev = dn, num_configs++) {
+		dn = of_find_compatible_node(prev, NULL,
+					     "brcm,brcmstb-memc-dtu-config");
+		if (!dn)
+			break;
+	}
+
+	/*
+	 * Having no dtu-config nodes is allowed. But if they exist, there must
+	 * be the same number of dtu-config nodes as there are dtu-map nodes.
+	 */
+	if (num_maps != num_configs && num_configs > 0) {
+		pr_err("%s: MISMATCH: you have %u DTU map%s and %u DTU "
+			"config%s\n", __func__, num_maps,
+			(num_maps != 1) ? "s" : "", num_configs,
+			(num_configs != 1) ? "s" : "");
+		ret = -EINVAL;
+		goto out;
+
+	}
+
+	priv.num_dtu_entries = num_maps;
+
+	priv.dtu_map = kmalloc(num_maps * sizeof(*priv.dtu_map), GFP_KERNEL);
+	priv.map_size = kmalloc(num_maps * sizeof(*priv.map_size), GFP_KERNEL);
+	priv.dtu_map_mem = kmalloc(num_maps * sizeof(*priv.dtu_map_mem),
+				   GFP_KERNEL);
+
+	if (!priv.dtu_map || !priv.map_size || !priv.dtu_map_mem) {
+		if (priv.dtu_map)
+			kfree(priv.dtu_map);
+		if (priv.map_size)
+			kfree(priv.map_size);
+		if (priv.dtu_map_mem)
+			kfree(priv.dtu_map_mem);
+		ret = -ENOMEM;
 		goto out;
 	}
-	if (of_address_to_resource(dn, 0 , &res)) {
-		ret = -EIO;
-		goto out;
+
+	if (num_configs > 0) {
+		priv.dtu_config = kmalloc(
+					num_configs * sizeof(*priv.dtu_config),
+					GFP_KERNEL);
+		priv.dtu_config_mem = kmalloc(num_configs *
+					sizeof(*priv.dtu_config_mem),
+					GFP_KERNEL);
+		if (!priv.dtu_config || !priv.dtu_config_mem) {
+			if (priv.dtu_config)
+				kfree(priv.dtu_config);
+			if (priv.dtu_config_mem)
+				kfree(priv.dtu_config_mem);
+			ret = -ENOMEM;
+			goto free_map_mem;
+		}
 	}
-	of_node_put(dn);
 
-	priv.map_size = resource_size(&res);
-	priv.dtu_map_mem = map_buffer;
-
-	dn = of_find_compatible_node(NULL, NULL,
-				     "brcm,brcmstb-memc-dtu-config");
-	if (dn) {
-		priv.dtu_config = of_iomap(dn, 0);
-		if (!priv.dtu_config) {
+	for (prev = NULL, i = 0; i < num_maps; prev = dn, i++) {
+		dn = of_find_compatible_node(prev, NULL,
+					     "brcm,brcmstb-memc-dtu-map");
+		priv.dtu_map[i] = of_iomap(dn, 0);
+		if (!priv.dtu_map[i]) {
 			ret = -EIO;
-			goto out;
+			goto free_config_mem;
 		}
 		if (of_address_to_resource(dn, 0 , &res)) {
 			ret = -EIO;
-			goto out;
+			goto free_config_mem;
 		}
-		priv.config_size = resource_size(&res);
-		priv.dtu_config_mem = config_buffer;
+
+		priv.map_size[i] = resource_size(&res);
+		priv.dtu_map_mem[i] = tbl[i].dtu_state_map;
 	}
+	of_node_put(dn);
+
+	for (prev = NULL, i = 0; i < num_configs; prev = dn, i++) {
+		resource_size_t size;
+		unsigned int last_offset = dtu_cfg_offs[dtu_cfg_count - 1];
+		unsigned int min_size = last_offset + sizeof(u32);
+
+		dn = of_find_compatible_node(prev, NULL,
+				     "brcm,brcmstb-memc-dtu-config");
+		priv.dtu_config[i] = of_iomap(dn, 0);
+		if (!priv.dtu_config[i]) {
+			ret = -EIO;
+			goto free_config_mem;
+		}
+		if (of_address_to_resource(dn, 0 , &res)) {
+			ret = -EIO;
+			goto free_config_mem;
+		}
+		size = resource_size(&res);
+		if (size < min_size) {
+			pr_err("%s: dtu-config area must be at least %u bytes "
+				"(is only %llu bytes)\n", __func__, min_size,
+				size);
+		}
+		priv.dtu_config_mem[i] = tbl[i].dtu_config;
+	}
+
+	goto out;
+
+free_config_mem:
+	kfree(priv.dtu_config);
+	kfree(priv.dtu_config_mem);
+
+free_map_mem:
+	kfree(priv.dtu_map);
+	kfree(priv.map_size);
+	kfree(priv.dtu_map_mem);
 
 out:
 	if (likely(dn))

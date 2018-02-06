@@ -1,0 +1,8 @@
+config BR2_PACKAGE_BRCM_PM
+	bool "Broadcom Power Management Tools"
+	help
+
+	  Broadcom power management tools allow easy access to power management
+	  features.
+
+	  Say Y, if you are using Broadcom hardware.

@@ -52,12 +52,18 @@
 #include <linux/seq_file.h>
 #include <linux/sched/rt.h>
 
+#include <asm/hardirq.h>
+#ifdef CONFIG_X86
 #include <asm/nmi.h>
 #include <asm/msr.h>
 #include <asm/mwait.h>
 #include <asm/cpu_device_id.h>
 #include <asm/idle.h>
-#include <asm/hardirq.h>
+
+static unsigned int target_mwait;
+#elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+#include <asm/proc-fns.h>
+#endif
 
 #define MAX_TARGET_RATIO (50U)
 /* For each undisturbed clamping period (no extra wake ups during idle time),
@@ -71,7 +77,6 @@
  */
 #define DEFAULT_DURATION_JIFFIES (6)
 
-static unsigned int target_mwait;
 static struct dentry *debug_dir;
 
 /* user selected target */
@@ -178,6 +183,7 @@ MODULE_PARM_DESC(window_size, "sliding window in number of clamping cycles\n"
 	"\twindow size results in slower response time but more smooth\n"
 	"\tclamping results. default to 2.");
 
+#ifdef CONFIG_X86
 static void find_target_mwait(void)
 {
 	unsigned int eax, ebx, ecx, edx;
@@ -261,6 +267,7 @@ static u64 pkg_state_counter(void)
 
 	return count;
 }
+#endif
 
 static void noop_timer(unsigned long foo)
 {
@@ -331,6 +338,28 @@ static void adjust_compensation(int target_ratio, unsigned int win)
 	}
 }
 
+#ifdef CONFIG_X86
+static void inline powerclamp_get_cstate_inform(u64 *msr_now, u64 *tsc_now)
+{
+	*msr_now = pkg_state_counter();
+	rdtscll(*tsc_now);
+}
+#elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+static void inline powerclamp_get_cstate_inform(u64 *idle, u64 *wall)
+{
+	u64 _wall;
+	int cpu;
+
+	*idle = 0;
+	*wall = 0;
+
+	for_each_online_cpu(cpu) {
+		*idle += get_cpu_idle_time_us(cpu, &_wall);
+		*wall += _wall;
+	}
+}
+#endif
+
 static bool powerclamp_adjust_controls(unsigned int target_ratio,
 				unsigned int guard, unsigned int win)
 {
@@ -339,8 +368,7 @@ static bool powerclamp_adjust_controls(unsigned int target_ratio,
 	u64 val64;
 
 	/* check result for the last window */
-	msr_now = pkg_state_counter();
-	tsc_now = rdtsc();
+	powerclamp_get_cstate_inform(&msr_now, &tsc_now);
 
 	/* calculate pkg cstate vs tsc ratio */
 	if (!msr_last || !tsc_last)
@@ -367,6 +395,32 @@ static bool powerclamp_adjust_controls(unsigned int target_ratio,
 	/* if we are above target+guard, skip */
 	return set_target_ratio + guard <= current_ratio;
 }
+
+#ifdef CONFIG_X86
+static void powerclamp_enter_idle(void)
+{
+	unsigned long ecx = 1;
+	unsigned long eax = target_mwait;
+
+	/*
+	 * REVISIT: may call enter_idle() to notify drivers who
+	 * can save power during cpu idle. same for exit_idle()
+	 */
+	local_touch_nmi();
+	stop_critical_timings();
+	mwait_idle_with_hints(eax, ecx);
+	start_critical_timings();
+	atomic_inc(&idle_wakeup_counter);
+}
+#elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+static void  powerclamp_enter_idle(void)
+{
+	stop_critical_timings();
+	cpu_do_idle();
+	start_critical_timings();
+	atomic_inc(&idle_wakeup_counter);
+}
+#endif
 
 static int clamp_thread(void *arg)
 {
@@ -445,20 +499,8 @@ static int clamp_thread(void *arg)
 		 */
 		preempt_disable();
 		/* mwait until target jiffies is reached */
-		while (time_before(jiffies, target_jiffies)) {
-			unsigned long ecx = 1;
-			unsigned long eax = target_mwait;
-
-			/*
-			 * REVISIT: may call enter_idle() to notify drivers who
-			 * can save power during cpu idle. same for exit_idle()
-			 */
-			local_touch_nmi();
-			stop_critical_timings();
-			mwait_idle_with_hints(eax, ecx);
-			start_critical_timings();
-			atomic_inc(&idle_wakeup_counter);
-		}
+		while (time_before(jiffies, target_jiffies))
+			powerclamp_enter_idle();
 		preempt_enable();
 	}
 	del_timer_sync(&wakeup_timer);
@@ -479,13 +521,12 @@ static void poll_pkg_cstate(struct work_struct *dummy)
 	static u64 tsc_last;
 	static unsigned long jiffies_last;
 
-	u64 msr_now;
+	u64 msr_now = 0;
 	unsigned long jiffies_now;
-	u64 tsc_now;
+	u64 tsc_now = 0;
 	u64 val64;
 
-	msr_now = pkg_state_counter();
-	tsc_now = rdtsc();
+	powerclamp_get_cstate_inform(&msr_now, &tsc_now);
 	jiffies_now = jiffies;
 
 	/* calculate pkg cstate vs tsc ratio */
@@ -512,6 +553,14 @@ static int start_power_clamp(void)
 {
 	unsigned long cpu;
 	struct task_struct *thread;
+
+#ifdef CONFIG_X86
+	/* check if pkg cstate counter is completely 0, abort in this case */
+	if (!has_pkg_state_counter()) {
+		pr_err("pkg cstate counter not functional, abort\n");
+		return -EINVAL;
+	}
+#endif
 
 	set_target_ratio = clamp(set_target_ratio, 0U, MAX_TARGET_RATIO - 1);
 	/* prevent cpu hotplug */
@@ -669,15 +718,17 @@ static struct thermal_cooling_device_ops powerclamp_cooling_ops = {
 	.set_cur_state = powerclamp_set_cur_state,
 };
 
+#ifdef CONFIG_X86
 static const struct x86_cpu_id __initconst intel_powerclamp_ids[] = {
 	{ X86_VENDOR_INTEL, X86_FAMILY_ANY, X86_MODEL_ANY, X86_FEATURE_MWAIT },
 	{}
 };
 MODULE_DEVICE_TABLE(x86cpu, intel_powerclamp_ids);
+#endif
 
 static int __init powerclamp_probe(void)
 {
-
+#ifdef CONFIG_X86
 	if (!x86_match_cpu(intel_powerclamp_ids)) {
 		pr_err("CPU does not support MWAIT");
 		return -ENODEV;
@@ -691,7 +742,7 @@ static int __init powerclamp_probe(void)
 
 	/* find the deepest mwait value */
 	find_target_mwait();
-
+#endif
 	return 0;
 }
 

@@ -45,7 +45,7 @@
 #define INA2XX_MAX_REGISTERS            8
 
 /* settings - depend on use case */
-#define INA219_CONFIG_DEFAULT           0x399F	/* PGA=8 */
+#define INA219_CONFIG_DEFAULT           0x07FF	/* PGA=1 */
 #define INA226_CONFIG_DEFAULT           0x4327
 #define INA226_DEFAULT_AVG              4
 #define INA226_DEFAULT_IT		1110
@@ -361,7 +361,7 @@ static ssize_t ina2xx_allow_async_readout_store(struct device *dev,
 static int ina2xx_set_calibration(struct ina2xx_chip_info *chip)
 {
 	u16 regval = DIV_ROUND_CLOSEST(chip->config->calibration_factor,
-				   chip->shunt_resistor);
+				   chip->shunt_resistor / 10);
 
 	return regmap_write(chip->regmap, INA2XX_CALIBRATION, regval);
 }

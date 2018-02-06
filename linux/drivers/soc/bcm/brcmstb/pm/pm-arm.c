@@ -7,7 +7,7 @@
  * S5: (a.k.a. S3 cold boot) much like S3, except DDR is powered down, so we
  *     treat this mode like a soft power-off, with wakeup allowed from AON
  *
- * Copyright © 2014-2015 Broadcom Corporation
+ * Copyright © 2014-2017 Broadcom
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -59,7 +59,6 @@
 #include <linux/soc/brcmstb/brcmstb.h>
 
 #include "pm.h"
-#include "aon_defs.h"
 #include "xpt_dma.h"
 
 #define SHIMPHY_DDR_PAD_CNTRL		0x8c
@@ -1270,6 +1269,10 @@ static const struct of_device_id brcmstb_memc_of_match[] = {
 		.data = &ddr_seq_b22,
 	},
 	{
+		.compatible = "brcm,brcmstb-memc-ddr-rev-b.3.0",
+		.data = &ddr_seq_b22,
+	},
+	{
 		.compatible = "brcm,brcmstb-memc-ddr",
 		.data = &ddr_seq,
 	},
@@ -1457,8 +1460,7 @@ static int brcmstb_pm_probe(struct platform_device *pdev)
 	 * Should this ever change, we'll have to do something more elaborate
 	 * here.
 	 */
-	ret = brcmstb_dtusave_init(ctrl.s3_params->dtu[0].dtu_state_map,
-				   ctrl.s3_params->dtu[0].dtu_config);
+	ret = brcmstb_dtusave_init(ctrl.s3_params->dtu);
 	if (ret)
 		goto out2;
 

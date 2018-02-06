@@ -22,6 +22,7 @@
 #define PHY_ID_BCM57780			0x03625d90
 
 #define PHY_ID_BCM7250			0xae025280
+#define PHY_ID_BCM7255			0xae025120
 #define PHY_ID_BCM7260			0xae025190
 #define PHY_ID_BCM7268			0xae025090
 #define PHY_ID_BCM7271			0xae0253b0

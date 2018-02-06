@@ -36,6 +36,7 @@ OSLIB		   = $(shell $(CC) -print-multi-os-directory)
 GCCTOOL_DIR_PREFIX = $(shell dirname $(shell which $(CC)))/..
 GCCLIB             = $(GCCTOOL_DIR_PREFIX)/$(shell $(CC) -dumpmachine)/lib/$(OSLIB)
 GCCSYSROOT         = $(GCCTOOL_DIR_PREFIX)/$(shell $(CC) -dumpmachine)/sys-root
+GCCSYSROOT_LIB     = $(GCCSYSROOT)/lib/$(OSLIB)
 
 LIBCDIR = @CONFIG_PL_LIBCDIR@
 

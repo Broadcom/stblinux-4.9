@@ -1,0 +1,8 @@
+config BR2_PACKAGE_CMATOOL
+	bool "cmatool"
+	help
+
+	  Broadcom CMA tools allow userspace access to Broadcom CMA, which is
+	  a contiguous memory area reserved for use by Broadcom middleware.
+
+	  Say Y, if you are using Broadcom middleware.

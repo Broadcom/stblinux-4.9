@@ -1,0 +1,7 @@
+config BR2_PACKAGE_MOCA2
+	bool "MOCA2"
+	help
+
+	  Broadcom STB MOCA2 tools.
+
+	  Say Y, if you are using Broadcom set-top box hardware.

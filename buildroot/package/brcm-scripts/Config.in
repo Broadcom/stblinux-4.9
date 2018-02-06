@@ -1,0 +1,7 @@
+config BR2_PACKAGE_BRCM_SCRIPTS
+	bool "Broadcom Scripts"
+	help
+
+	  Broadcom scripts for power management and other tasks.
+
+	  Say Y, if you are using Broadcom STB.

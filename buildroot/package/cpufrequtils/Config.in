@@ -1,0 +1,8 @@
+config BR2_PACKAGE_CPUFREQUTILS
+	bool "cpufrequtils"
+	help
+		cpufrequtils is a package of user space commands that
+		allow easy interaction with the CPUfreq sub-system,
+		such as setting or checking the current governor.
+
+		https://packages.debian.org/wheezy/cpufrequtils

@@ -1,12 +1,14 @@
 #ifndef __BRCMSTB_SOC_H
 #define __BRCMSTB_SOC_H
 
+#include "aon_defs.h"
+
 #define BRCM_ID(reg)	((u32)reg >> 28 ? (u32)reg >> 16 : (u32)reg >> 8)
 #define BRCM_REV(reg)	((u32)reg & 0xff)
 
 bool soc_is_brcmstb(void);
 int dtu_save(void);
-int brcmstb_dtusave_init(u32 *map_buffer, u32 *config_buffer);
+int brcmstb_dtusave_init(struct brcmstb_bootloader_dtu_table *tbl);
 int brcmstb_regsave_init(void);
 
 /*

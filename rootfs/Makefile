@@ -254,10 +254,21 @@ images-%:
 	$(MAKE) $(MAKEOPTS) defaults-$*
 	$(MAKE) $(MAKEOPTS) images
 
-.PHONY: release
-release:
-	# make sure this is a clean view
-	@if [ -e .dirty -o -e images -o -e release ]; then \
+.PHONY: release release-classic release-buildroot
+
+# We declare release to depend on release-classic and release-classic to
+# depend on release-buildroot, rather than have release depend on
+# release-classic and release-buildroot directly, which would be more
+# logical. This ensures that parallel builds don't attempt to build
+# release-classic and release-buildroot in parallel.
+release: release-classic
+
+release-classic: release-buildroot
+
+release-classic:
+	# make sure this is a clean view; release/ will likely exist due to
+	# buildroot, but release/$(VERSION) shouldn't be there
+	@if [ -e .dirty -o -e images -o -e release/$(VERSION) ]; then \
 		echo "ERROR: \"make release\" must be run on a pristine view"; \
 		exit 1 ; \
 	fi
@@ -279,18 +290,78 @@ release:
 		rootfs/toolchain
 	-rm -f ../rootfs-$(DOTVERSION).tar.bz2
 	bzip2 ../rootfs-$(DOTVERSION).tar
+	@echo "MAKEFLAGS=$(MAKEFLAGS)"
 	# build all platforms
 	for x in $(shell cat misc/release_builds); do \
-		$(MAKE) $(RELOPTS) images-$$x || exit 1; \
+		$(MAKE) $(MAKEFLAGS) $(RELOPTS) images-$$x || exit 1; \
 	done
 	# move files into the release directory
-	mkdir -p release/src
+	test -d release/src || mkdir -p release/src
 	mv ../stblinux-$(DOTVERSION).tar.bz2 \
 		../rootfs-$(DOTVERSION).tar.bz2 \
 		../delta-*.patch* \
 		release/src/
 	mkdir release/$(VERSION)
 	mv images/* release/$(VERSION)/
+
+release-buildroot:
+	@if [ ! -d ../buildroot ]; then \
+		echo "Buildroot doesn't exist. Skipping."; \
+		exit 1 ; \
+	fi
+	@echo "Wiping any existing buildroot builds..."
+	rm -rf ../buildroot/output
+	@echo "Creating tar-ball (without downloads)..."
+	tar -C .. -c -f ../buildroot-$(DOTVERSION).tar \
+		--exclude buildroot/dl \
+		--exclude buildroot/output \
+		buildroot
+	@echo "Generating buildroot diffs..."
+	test -d release/src || mkdir -p release/src
+	( \
+		uclinux=`pwd`; \
+		dest="$$uclinux/release/src"; \
+		cd ../buildroot; \
+		git_log=`git log --oneline | grep 'Update for 20' | head -1`; \
+		base_sha=`echo "$$git_log" | cut -d' ' -f1`; \
+		rel=`echo "$$git_log" | cut -d' ' -f4-`; \
+		echo "Base SHA is $$base_sha, release is $$rel"; \
+		git diff --diff-filter=M $${base_sha}..HEAD | bzip2 \
+			>$$dest/buildroot-delta-$$rel-brcm-changed.patch.bz2; \
+		git diff --diff-filter=A $${base_sha}..HEAD | bzip2 \
+			>$$dest/buildroot-delta-$$rel-brcm-new.patch.bz2; \
+	)
+	@echo "Generating ucrootfs tar-ball for buildroot..."
+	rm -rf ../buildroot/dl/ucrootfs
+	mkdir -p ../buildroot/dl/ucrootfs
+	git archive --format tar master | tar -C ../buildroot/dl/ucrootfs -x -f -
+	( \
+		cd ../buildroot/dl; \
+		ucrootfs_sha=`grep '^BRCMROOT_VERSION' \
+			../package/cmatool/cmatool.mk | cut -d' ' -f3`; \
+		tarball="uclinux-rootfs-$$ucrootfs_sha.tar.gz"; \
+		rm -f "$$tarball"; \
+		tar cfz $$tarball ucrootfs; \
+	)
+	rm -rf ../buildroot/dl/ucrootfs
+	mkdir -p release/buildroot-$(VERSION)
+	# The output directory is called 'mips' for buildroot
+	for x in $(shell cat misc/release_builds); do \
+		y=`echo "$$x" | sed -e 's/^bmips/mips/'`; \
+		echo "Building buildroot for $$x..."; \
+		( \
+			pwd=`pwd`; \
+			toplevel=`dirname "$$pwd"`; \
+			cd ../buildroot; \
+			./bin/br_config.pl -L "$$toplevel/linux" -i $$x \
+		); \
+		mv ../buildroot/output/$$y/images/* release/buildroot-$(VERSION); \
+	done
+	@echo "Adding downloaded sources to tar-ball..."
+	tar -C .. -r -f ../buildroot-$(DOTVERSION).tar buildroot/dl
+	bzip2 ../buildroot-$(DOTVERSION).tar
+	mkdir -p release/src
+	mv ../buildroot-$(DOTVERSION).tar.bz2 release/src/
 
 #############################################################################
 # MISC CHECKS

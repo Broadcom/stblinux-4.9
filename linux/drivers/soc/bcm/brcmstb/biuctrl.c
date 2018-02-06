@@ -110,6 +110,8 @@ static int __init mcp_write_pairing_set(void)
 }
 
 static const char *b53_mach_compat[] = {
+	"brcm,bcm7255a0",
+	"brcm,bcm7260b0",
 	"brcm,bcm7268b0",
 	"brcm,bcm7271b0",
 	"brcm,bcm7278a0",
