@@ -199,8 +199,8 @@ int brcmstb_dtusave_init(struct brcmstb_bootloader_dtu_table *tbl)
 		size = resource_size(&res);
 		if (size < min_size) {
 			pr_err("%s: dtu-config area must be at least %u bytes "
-				"(is only %llu bytes)\n", __func__, min_size,
-				size);
+				"(is only %pa bytes)\n", __func__, min_size,
+				&res);
 		}
 		priv.dtu_config_mem[i] = tbl[i].dtu_config;
 	}

@@ -18,7 +18,7 @@
 
 #include <asm/cachetype.h>
 
-#define L1_CACHE_SHIFT		7
+#define L1_CACHE_SHIFT		CONFIG_ARM64_L1_CACHE_SHIFT
 #define L1_CACHE_BYTES		(1 << L1_CACHE_SHIFT)
 
 /*

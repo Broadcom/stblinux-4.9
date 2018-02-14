@@ -187,6 +187,7 @@ config ARCH_SPRD
 
 config ARCH_THUNDER
 	bool "Cavium Inc. Thunder SoC Family"
+	select ARM64_L1_CACHE_SHIFT_7
 	help
 	  This enables support for Cavium's Thunder Family of SoCs.
 
