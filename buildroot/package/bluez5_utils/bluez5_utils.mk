@@ -4,7 +4,7 @@
 #
 ################################################################################
 
-BLUEZ5_UTILS_VERSION = 5.47
+BLUEZ5_UTILS_VERSION = 5.48
 BLUEZ5_UTILS_SOURCE = bluez-$(BLUEZ5_UTILS_VERSION).tar.xz
 BLUEZ5_UTILS_SITE = $(BR2_KERNEL_MIRROR)/linux/bluetooth
 BLUEZ5_UTILS_INSTALL_STAGING = YES
@@ -116,7 +116,7 @@ define BLUEZ5_UTILS_INSTALL_INIT_SYSTEMD
 	mkdir -p $(TARGET_DIR)/etc/systemd/system/bluetooth.target.wants
 	ln -fs ../../../../usr/lib/systemd/system/bluetooth.service \
 		$(TARGET_DIR)/etc/systemd/system/bluetooth.target.wants/bluetooth.service
-	ln -fs ../../../../usr/lib/systemd/system/bluetooth.service \
+	ln -fs ../../../usr/lib/systemd/system/bluetooth.service \
 		$(TARGET_DIR)/etc/systemd/system/dbus-org.bluez.service
 endef
 

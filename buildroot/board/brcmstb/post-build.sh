@@ -21,10 +21,20 @@ else
 		--wildcards --strip-components=2 '*/skel'
 fi
 
+if [ ! -e ${TARGET_DIR}/bin/sh ]; then
+	echo "Symlinking /bin/bash -> /bin/sh..."
+	ln -s bash ${TARGET_DIR}/bin/sh
+fi
+
+if ! grep /bin/sh ${TARGET_DIR}/etc/shells >/dev/null; then
+	echo "Adding /bin/sh to /etc/shells..."
+	echo "/bin/sh" >>${TARGET_DIR}/etc/shells
+fi
+
 # Auto-login on serial console
 if [ -e ${TARGET_DIR}/etc/inittab ]; then
 	echo "Enabling auto-login on serial console..."
-	sed -ie 's|.* # GENERIC_SERIAL$|::respawn:/bin/cttyhack /bin/sh -l|' \
+	sed -i 's|.* # GENERIC_SERIAL$|::respawn:/bin/cttyhack /bin/sh -l|' \
 		${TARGET_DIR}/etc/inittab
 fi
 
@@ -38,3 +48,44 @@ if ls board/brcmstb/dropbear_*_host_key >/dev/null 2>&1; then
 		install -D -p -m 0600 -t ${TARGET_DIR}/etc/dropbear ${key}
 	done
 fi
+
+# Enabling dropbear (rcS file inherited from the classic rootfs for now)
+rcS="${TARGET_DIR}/etc/init.d/rcS"
+if grep 'if [ -e /sbin/dropbear ]' "$rcS" >/dev/null; then
+	echo "Enabling dropbear rcS..."
+	sed -i 's| -e /sbin/dropbear | -e /usr/sbin/dropbear |' ${rcS}
+fi
+
+# Add SSH key for root
+sshdir="${TARGET_DIR}/root/.ssh"
+if [ -r board/brcmstb/brcmstb_root ]; then
+	echo "Installing SSH key for root..."
+	rm -rf "${sshdir}"
+	mkdir "${sshdir}"
+	chmod go= "${sshdir}"
+	cp board/brcmstb/brcmstb_root.pub "${sshdir}/authorized_keys"
+	echo "Setting lock password for root..."
+	sed -i 's|^root::|root:*:|' ${TARGET_DIR}/etc/passwd
+	sed -i 's|^root::|root:*:|' ${TARGET_DIR}/etc/shadow
+fi
+
+# Create mount points
+echo "Creating mount points..."
+rm -r ${TARGET_DIR}/mnt
+mkdir ${TARGET_DIR}/mnt
+for d in flash hd nfs usb; do
+	mkdir ${TARGET_DIR}/mnt/${d}
+done
+
+# Generate brcmstb.conf
+echo "Generating /etc/brcmstb.conf..."
+arch=`basename ${BASE_DIR}`
+# The Linux directory can be "linux-custom" or "linux-$tag"
+linux_dir=`ls -drt ${BUILD_DIR}/linux-* | grep -v linux-tools | head -1`
+linux_ver=`./bin/linuxver.sh $linux_dir`
+cat >${TARGET_DIR}/etc/brcmstb.conf <<EOF
+TFTPHOST=`hostname -f`
+TFTPPATH=$linux_ver
+PLAT=$arch
+VERSION=$linux_ver
+EOF

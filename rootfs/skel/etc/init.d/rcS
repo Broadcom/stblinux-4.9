@@ -38,7 +38,7 @@ fi
 echo -1 > /proc/sys/kernel/sched_rt_runtime_us
 
 # By default, switch to conservative governor on SoCs with AVS CPUfreq only
-cpufreq-info -d | grep 'brcm.*avs' >/dev/null
+cpufreq-info -d | egrep '(brcm.*avs|scmi)' >/dev/null
 if [ $? = 0 ]; then
 	# Check if system supports the conservative governor and enable it
 	cpufreq-info -g | grep conservative >/dev/null

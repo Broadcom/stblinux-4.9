@@ -300,9 +300,13 @@ static void __iomem * __arm_ioremap_pfn_caller(unsigned long pfn,
 	 * Don't allow RAM to be mapped with mismatched attributes - this
 	 * causes problems with ARMv6+
 	 */
+#if defined(CONFIG_ARCH_BRCMSTB) && defined(CONFIG_ARM_SCMI_PROTOCOL)
+	if (pfn_valid(pfn) && mtype != MT_MEMORY_RW)
+		pr_warn("ARM ioremap() warning has been disabled!\n");
+#else
 	if (WARN_ON(pfn_valid(pfn) && mtype != MT_MEMORY_RW))
 		return NULL;
-
+#endif
 	area = get_vm_area_caller(size, VM_IOREMAP, caller);
  	if (!area)
  		return NULL;

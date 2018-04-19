@@ -27,6 +27,7 @@
 #define BRCMSTB_DT_CPU_CLK_CTRL	"brcm,brcmstb-cpu-clk-div"
 #define BRCMSTB_DT_MEMC_DDR	"brcm,brcmstb-memc-ddr"
 #define BRCM_AVS_CPU_DATA	"brcm,avs-cpu-data-mem"
+#define ARM_SCMI_COMPAT		"arm,scmi"
 
 /* We also need a few clocks in device tree. These are node names. */
 #define BRCMSTB_CLK_MDIV_CH0	"cpu_mdiv_ch0"
@@ -243,9 +244,19 @@ static int brcmstb_prepare_init(struct platform_device *pdev)
 	struct device *dev;
 
 	/*
-	 * If the BRCM STB AVS CPUfreq driver is supported, we bail, so that
-	 * the more modern approach implementing DVFS in firmware can be used.
+	 * If either of the BRCM STB AVS CPUfreq or the SCMI drivers
+	 * is supported, we bail, so that the more modern approach
+	 * implementing DVFS can be used.
 	 */
+	if (IS_ENABLED(CONFIG_ARM_SCMI_PROTOCOL)) {
+		struct device_node *np;
+
+		np = of_find_compatible_node(NULL, NULL, ARM_SCMI_COMPAT);
+		if (np) {
+			of_node_put(np);
+			return -ENXIO;
+		}
+	}
 	if (IS_ENABLED(CONFIG_ARM_BRCMSTB_AVS_CPUFREQ)) {
 		struct device_node *np;
 

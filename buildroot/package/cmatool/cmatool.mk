@@ -4,13 +4,12 @@
 #
 ################################################################################
 
-BRCMROOT_VERSION = e301a2d729cbc11f7052fdbf2b4d3297950eb16c
+BRCMROOT_VERSION = c38822d042bd729481f2cea6b2fd138b5e190fa8
 
 CMATOOL_VERSION = master
 CMATOOL_SITE = git://stbgit.broadcom.com/mm940762/uclinux-rootfs.git
 CMATOOL_SOURCE = uclinux-rootfs-$(BRCMROOT_VERSION).tar.gz
-CMATOOL_LICENSE = GPL-2.0
-CMATOOL_LICENSE_FILES = COPYING
+CMATOOL_LICENSE = LGPL-2.1
 
 # We only need the kernel to be extracted, not actually built
 CMATOOL_PATCH_DEPENDENCIES = linux

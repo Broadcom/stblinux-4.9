@@ -102,6 +102,7 @@
 #define MSPI_MSPI_STATUS			0x020
 #define MSPI_CPTQP				0x024
 #define MSPI_SPCR3				0x028
+#define MSPI_REV				0x02c
 #define MSPI_TXRAM				0x040
 #define MSPI_RXRAM				0x0c0
 #define MSPI_CDRAM				0x140
@@ -123,7 +124,6 @@
 #define INTR_COUNT				0x07
 
 #define NUM_CHIPSELECT				4
-#define QSPI_SPBR_MIN				8U
 #define QSPI_SPBR_MAX				255U
 #define MSPI_BASE_FREQ                         27000000UL
 
@@ -229,11 +229,32 @@ struct bcm_qspi {
 	struct bcm_qspi_dev_id *dev_ids;
 	struct completion mspi_done;
 	struct completion bspi_done;
+	u8 mspi_maj_rev;
+	u8 mspi_min_rev;
 };
 
 static inline bool has_bspi(struct bcm_qspi *qspi)
 {
 	return qspi->bspi_mode;
+}
+
+/* hardware supports fast baud-rate? */
+static inline bool bcm_qspi_has_fastbr(struct bcm_qspi *qspi)
+{
+	if ((qspi->mspi_maj_rev > 1) ||
+	    ((qspi->mspi_maj_rev == 1) &&
+	     (qspi->mspi_min_rev >= 5)))
+	     return true;
+
+	return false;
+}
+
+static inline int bcm_qspi_spbr_min(struct bcm_qspi *qspi)
+{
+	if (bcm_qspi_has_fastbr(qspi))
+		return 1;
+	else
+		return 8;
 }
 
 /* Read qspi controller register*/
@@ -568,7 +589,7 @@ static void bcm_qspi_hw_set_parms(struct bcm_qspi *qspi,
 	if (xp->speed_hz)
 		spbr = qspi->base_clk / (2 * xp->speed_hz);
 
-	spcr = clamp_val(spbr, QSPI_SPBR_MIN, QSPI_SPBR_MAX);
+	spcr = clamp_val(spbr, bcm_qspi_spbr_min(qspi), QSPI_SPBR_MAX);
 	bcm_qspi_write(qspi, MSPI, MSPI_SPCR0_LSB, spcr);
 
 	spcr = MSPI_MASTER_BIT;
@@ -1198,6 +1219,9 @@ static void bcm_qspi_hw_init(struct bcm_qspi *qspi)
 	bcm_qspi_write(qspi, MSPI, MSPI_ENDQP, 0);
 	bcm_qspi_write(qspi, MSPI, MSPI_SPCR2, 0x20);
 
+	if (bcm_qspi_has_fastbr(qspi))
+		bcm_qspi_write(qspi, MSPI, MSPI_SPCR3, 0x1);
+
 	parms.mode = SPI_MODE_3;
 	parms.bits_per_word = 8;
 	parms.speed_hz = qspi->max_speed_hz;
@@ -1230,6 +1254,7 @@ int bcm_qspi_probe(struct platform_device *pdev,
 	struct resource *res;
 	int irq, ret = 0, num_ints = 0;
 	u32 val;
+	u32 rev;
 	const char *name = NULL;
 	int num_irqs = ARRAY_SIZE(qspi_irq_tab);
 
@@ -1279,7 +1304,7 @@ int bcm_qspi_probe(struct platform_device *pdev,
 			goto qspi_probe_err;
 		}
 	} else {
-		goto qspi_probe_err;
+		goto qspi_resource_err;
 	}
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "bspi");
@@ -1301,7 +1326,7 @@ int bcm_qspi_probe(struct platform_device *pdev,
 		qspi->base[CHIP_SELECT]  = devm_ioremap_resource(dev, res);
 		if (IS_ERR(qspi->base[CHIP_SELECT])) {
 			ret = PTR_ERR(qspi->base[CHIP_SELECT]);
-			goto qspi_probe_err;
+			goto qspi_resource_err;
 		}
 	}
 
@@ -1309,7 +1334,7 @@ int bcm_qspi_probe(struct platform_device *pdev,
 				GFP_KERNEL);
 	if (!qspi->dev_ids) {
 		ret = -ENOMEM;
-		goto qspi_probe_err;
+		goto qspi_resource_err;
 	}
 
 	for (val = 0; val < num_irqs; val++) {
@@ -1376,7 +1401,16 @@ int bcm_qspi_probe(struct platform_device *pdev,
 		qspi->base_clk = MSPI_BASE_FREQ;
 	}
 
-	qspi->max_speed_hz = qspi->base_clk / (QSPI_SPBR_MIN * 2);
+	rev = bcm_qspi_read(qspi, MSPI, MSPI_REV);
+
+	/* some older revs do not have a MSPI_REV register */
+	if ((rev & 0xff) == 0xff)
+		rev = 0;
+
+	qspi->mspi_maj_rev = (rev >> 4) & 0xf;
+	qspi->mspi_min_rev = rev & 0xf;
+
+	qspi->max_speed_hz = qspi->base_clk / (bcm_qspi_spbr_min(qspi) * 2);
 
 	bcm_qspi_hw_init(qspi);
 	init_completion(&qspi->mspi_done);
@@ -1401,8 +1435,9 @@ qspi_reg_err:
 	bcm_qspi_hw_uninit(qspi);
 	clk_disable_unprepare(qspi->clk);
 qspi_probe_err:
-	spi_master_put(master);
 	kfree(qspi->dev_ids);
+qspi_resource_err:
+	spi_master_put(master);
 	return ret;
 }
 /* probe function to be called by SoC specific platform driver probe */

@@ -17,14 +17,14 @@ NTP_CONF_OPTS = \
 	--disable-tickadj \
 	--disable-debugging \
 	--with-yielding-select=yes \
-	--disable-local-libevent \
+	--disable-local-libevent
 
 # 0002-ntp-syscalls-fallback.patch
 # 0003-ntpq-fpic.patch
 NTP_AUTORECONF = YES
 
 ifeq ($(BR2_PACKAGE_LIBOPENSSL),y)
-NTP_CONF_OPTS += --with-crypto
+NTP_CONF_OPTS += --with-crypto --enable-openssl-random
 NTP_DEPENDENCIES += openssl
 else
 NTP_CONF_OPTS += --without-crypto --disable-openssl-random

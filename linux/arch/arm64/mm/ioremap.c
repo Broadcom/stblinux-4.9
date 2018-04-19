@@ -55,8 +55,13 @@ static void __iomem *__ioremap_caller(phys_addr_t phys_addr, size_t size,
 	/*
 	 * Don't allow RAM to be mapped.
 	 */
+#if defined(CONFIG_ARCH_BRCMSTB) && defined(CONFIG_ARM_SCMI_PROTOCOL)
+	if (pfn_valid(__phys_to_pfn(phys_addr)))
+		pr_warn("ARM64 ioremap() warning has been disabled!\n");
+#else
 	if (WARN_ON(pfn_valid(__phys_to_pfn(phys_addr))))
 		return NULL;
+#endif
 
 	area = get_vm_area_caller(size, VM_IOREMAP, caller);
 	if (!area)

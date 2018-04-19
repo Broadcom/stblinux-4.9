@@ -131,8 +131,13 @@ endif
 UBOOT_MAKE_OPTS += \
 	CROSS_COMPILE="$(TARGET_CROSS)" \
 	ARCH=$(UBOOT_ARCH) \
-	HOSTCC="$(HOSTCC) $(HOST_CFLAGS)" \
+	HOSTCC="$(HOSTCC) $(subst -I/,-isystem /,$(subst -I /,-isystem /,$(HOST_CFLAGS)))" \
 	HOSTLDFLAGS="$(HOST_LDFLAGS)"
+
+ifeq ($(BR2_TARGET_UBOOT_NEEDS_ATF_BL31),y)
+UBOOT_DEPENDENCIES += arm-trusted-firmware
+UBOOT_MAKE_OPTS += BL31=$(BINARIES_DIR)/bl31.bin
+endif
 
 ifeq ($(BR2_TARGET_UBOOT_NEEDS_DTC),y)
 UBOOT_DEPENDENCIES += host-dtc
@@ -182,13 +187,6 @@ define UBOOT_APPLY_LOCAL_PATCHES
 	done
 endef
 UBOOT_POST_PATCH_HOOKS += UBOOT_APPLY_LOCAL_PATCHES
-
-# Bug: https://patchwork.ozlabs.org/patch/833760/
-define UBOOT_FIX_LIBFDT_SYSTEM_PATH
-	[ ! -e $(@D)/tools/fdtgrep.c ] || \
-	$(SED) 's%<../include/libfdt.h>%"../include/libfdt.h"%' $(@D)/tools/fdtgrep.c
-endef
-UBOOT_POST_PATCH_HOOKS += UBOOT_FIX_LIBFDT_SYSTEM_PATH
 
 ifeq ($(BR2_TARGET_UBOOT_BUILD_SYSTEM_LEGACY),y)
 define UBOOT_CONFIGURE_CMDS

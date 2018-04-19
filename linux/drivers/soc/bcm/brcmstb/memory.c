@@ -1041,6 +1041,19 @@ static void unmap(phys_addr_t start, phys_addr_t size)
 	flush_tlb_kernel_range(va_start, va_start + (unsigned long)size);
 }
 
+void put_automap_page(struct page *page)
+{
+	int count;
+
+	spin_lock(&automap_lock);
+	count = page_ref_dec_return(page);
+	WARN_ON(!count);
+	if (count == 1)
+		unmap(page_to_phys(page), PAGE_SIZE);
+	spin_unlock(&automap_lock);
+}
+EXPORT_SYMBOL(put_automap_page);
+
 static void inc_automap_pages(struct page *page, int nr)
 {
 	phys_addr_t end, start = 0;

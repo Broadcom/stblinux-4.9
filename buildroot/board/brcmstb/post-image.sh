@@ -48,6 +48,16 @@ bzip2 -f "$nfs_tar"
 linux_image=`ls "$image_path"/*Image 2>/dev/null`
 
 echo "Creating initrd image..."
-mv "$linux_image" "$image_path/vmlinuz-initrd-$arch"
+if [ "$arch" = "arm64" ]; then
+	gzip -9 "$linux_image"
+	mv "$linux_image.gz" "$image_path/vmlinuz-initrd-$arch"
+else
+	mv "$linux_image" "$image_path/vmlinuz-initrd-$arch"
+fi
 echo "Creating plain kernel image..."
-mv "$linux_image.norootfs" "$image_path/vmlinuz-$arch"
+if [ "$arch" = "arm64" ]; then
+	gzip -9 "$linux_image.norootfs"
+	mv "$linux_image.norootfs.gz" "$image_path/vmlinuz-$arch"
+else
+	mv "$linux_image.norootfs" "$image_path/vmlinuz-$arch"
+fi

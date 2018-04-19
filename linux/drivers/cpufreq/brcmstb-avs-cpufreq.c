@@ -48,6 +48,7 @@
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/semaphore.h>
+#include <linux/brcmstb/avs_dvfs.h>
 
 #ifdef CONFIG_ARM_BRCMSTB_AVS_CPUFREQ_DEBUG
 #include <linux/ctype.h>
@@ -84,23 +85,6 @@
 #define AVS_MBOX_PV1		0x48
 #define AVS_MBOX_MV1		0x4c
 #define AVS_MBOX_FREQUENCY	0x50
-
-/* AVS Commands */
-#define AVS_CMD_AVAILABLE	0x00
-#define AVS_CMD_DISABLE		0x10
-#define AVS_CMD_ENABLE		0x11
-#define AVS_CMD_S2_ENTER	0x12
-#define AVS_CMD_S2_EXIT		0x13
-#define AVS_CMD_BBM_ENTER	0x14
-#define AVS_CMD_BBM_EXIT	0x15
-#define AVS_CMD_S3_ENTER	0x16
-#define AVS_CMD_S3_EXIT		0x17
-#define AVS_CMD_BALANCE		0x18
-/* PMAP and P-STATE commands */
-#define AVS_CMD_GET_PMAP	0x30
-#define AVS_CMD_SET_PMAP	0x31
-#define AVS_CMD_GET_PSTATE	0x40
-#define AVS_CMD_SET_PSTATE	0x41
 
 /* Different modes AVS supports (for GET_PMAP/SET_PMAP) */
 #define AVS_MODE_AVS		0x0
@@ -171,6 +155,8 @@
 #define BRCM_AVS_CPU_DATA	"brcm,avs-cpu-data-mem"
 #define BRCM_AVS_CPU_INTR	"brcm,avs-cpu-l2-intr"
 #define BRCM_AVS_HOST_INTR	"sw_intr"
+
+#define ARM_SCMI_COMPAT		"arm,scmi"
 
 struct pmap {
 	unsigned int mode;
@@ -284,7 +270,8 @@ static void __iomem *__map_region(const char *name)
 	return ptr;
 }
 
-static int __issue_avs_command(struct private_data *priv, int cmd, bool is_send,
+static int __issue_avs_command(struct private_data *priv, unsigned int cmd,
+			       unsigned int num_in, unsigned int num_out,
 			       u32 args[])
 {
 	unsigned long time_left = msecs_to_jiffies(AVS_TIMEOUT);
@@ -314,11 +301,9 @@ static int __issue_avs_command(struct private_data *priv, int cmd, bool is_send,
 	/* Clear status before we begin. */
 	writel(AVS_STATUS_CLEAR, base + AVS_MBOX_STATUS);
 
-	/* We need to send arguments for this command. */
-	if (args && is_send) {
-		for (i = 0; i < AVS_MAX_CMD_ARGS; i++)
-			writel(args[i], base + AVS_MBOX_PARAM(i));
-	}
+	/* Provide input parameters */
+	for (i = 0; i < num_in; i++)
+		writel(args[i], base + AVS_MBOX_PARAM(i));
 
 	/* Protect from spurious interrupts. */
 	reinit_completion(&priv->done);
@@ -345,11 +330,9 @@ static int __issue_avs_command(struct private_data *priv, int cmd, bool is_send,
 		goto out;
 	}
 
-	/* This command returned arguments, so we read them back. */
-	if (args && !is_send) {
-		for (i = 0; i < AVS_MAX_CMD_ARGS; i++)
-			args[i] = readl(base + AVS_MBOX_PARAM(i));
-	}
+	/* Process returned values */
+	for (i = 0; i < num_out; i++)
+		args[i] = readl(base + AVS_MBOX_PARAM(i));
 
 	/* Clear status to tell AVS co-processor we are done. */
 	writel(AVS_STATUS_CLEAR, base + AVS_MBOX_STATUS);
@@ -377,6 +360,17 @@ out:
 	up(&priv->sem);
 
 	return ret;
+}
+
+int brcmstb_issue_avs_command(struct platform_device *pdev, unsigned int cmd,
+			      unsigned int num_in, unsigned int num_out,
+			      u32 args[])
+{
+	struct private_data *priv;
+
+	priv = platform_get_drvdata(pdev);
+
+	return __issue_avs_command(priv, cmd, num_in, num_out, args);
 }
 
 static irqreturn_t irq_handler(int irq, void *data)
@@ -427,7 +421,7 @@ static int brcm_avs_get_pmap(struct private_data *priv, struct pmap *pmap)
 	u32 args[AVS_MAX_CMD_ARGS];
 	int ret;
 
-	ret = __issue_avs_command(priv, AVS_CMD_GET_PMAP, false, args);
+	ret = __issue_avs_command(priv, AVS_CMD_GET_PMAP, 0, 4, args);
 	if (ret || !pmap)
 		return ret;
 
@@ -448,7 +442,7 @@ static int brcm_avs_set_pmap(struct private_data *priv, struct pmap *pmap)
 	args[2] = pmap->p2;
 	args[3] = pmap->state;
 
-	return __issue_avs_command(priv, AVS_CMD_SET_PMAP, true, args);
+	return __issue_avs_command(priv, AVS_CMD_SET_PMAP, 4, 0, args);
 }
 
 static int brcm_avs_get_pstate(struct private_data *priv, unsigned int *pstate)
@@ -456,7 +450,7 @@ static int brcm_avs_get_pstate(struct private_data *priv, unsigned int *pstate)
 	u32 args[AVS_MAX_CMD_ARGS];
 	int ret;
 
-	ret = __issue_avs_command(priv, AVS_CMD_GET_PSTATE, false, args);
+	ret = __issue_avs_command(priv, AVS_CMD_GET_PSTATE, 0, 1, args);
 	if (ret)
 		return ret;
 	*pstate = args[0];
@@ -471,7 +465,7 @@ static int brcm_avs_set_pstate(struct private_data *priv, unsigned int pstate)
 
 	args[0] = pstate;
 
-	ret = __issue_avs_command(priv, AVS_CMD_SET_PSTATE, true, args);
+	ret = __issue_avs_command(priv, AVS_CMD_SET_PSTATE, 1, 0, args);
 	priv->pstate = ret ? AVS_PSTATE_INVAL : pstate;
 
 	return ret;
@@ -622,7 +616,7 @@ static ssize_t brcm_avs_seq_write(struct file *file, const char __user *buf,
 	}
 
 	if (use_issue_command) {
-		ret = __issue_avs_command(priv, val, false, NULL);
+		ret = __issue_avs_command(priv, val, 0, 0, NULL);
 	} else {
 		/* Locking here is not perfect, but is only for debug. */
 		ret = down_interruptible(&priv->sem);
@@ -836,6 +830,20 @@ static int brcm_avs_prepare_init(struct platform_device *pdev)
 	struct device *dev;
 	int host_irq, ret;
 
+	/*
+	 * If the SCMI cpufreq driver is supported, we bail, so that
+	 * the more modern approach implementing DVFS in EL3/AVS can be used.
+	 */
+	if (IS_ENABLED(CONFIG_ARM_SCMI_PROTOCOL)) {
+		struct device_node *np;
+
+		np = of_find_compatible_node(NULL, NULL, ARM_SCMI_COMPAT);
+		if (np && of_device_is_available(np)) {
+			of_node_put(np);
+			return -ENXIO;
+		}
+	}
+
 	dev = &pdev->dev;
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -921,7 +929,7 @@ static int brcm_avs_cpufreq_init(struct cpufreq_policy *policy)
 	/* All cores share the same clock and thus the same policy. */
 	cpumask_setall(policy->cpus);
 
-	ret = __issue_avs_command(priv, AVS_CMD_ENABLE, false, NULL);
+	ret = __issue_avs_command(priv, AVS_CMD_ENABLE, 0, 0, NULL);
 	if (!ret) {
 		unsigned int pstate;
 

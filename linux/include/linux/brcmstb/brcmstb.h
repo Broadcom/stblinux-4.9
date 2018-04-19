@@ -47,6 +47,15 @@
 #include <spaces.h>
 #endif
 
+#if defined(CONFIG_ARM_BRCMSTB_AVS_CPUFREQ) || defined(CONFIG_ARM_SCMI_CPUFREQ)
+int brcmstb_stb_dvfs_get_pstate(unsigned int idx, unsigned int *pstate,
+				u32 *info);
+int brcmstb_stb_dvfs_set_pstate(unsigned int idx, unsigned int pstate,
+				unsigned int num_clk_writes,
+				const u32 *clk_params);
+int brcmstb_stb_avs_read_debug(unsigned int debug_idx, u32 *value);
+#endif
+
 #if defined(CONFIG_BRCMSTB_PM) && !defined(CONFIG_MIPS)
 /*
  * Exclude a given memory range from the MAC authentication process during S3

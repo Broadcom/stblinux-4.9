@@ -26,6 +26,7 @@ use POSIX;
 
 use constant AUTO_MK => qw(brcmstb.mk);
 use constant LOCAL_MK => qw(local.mk);
+use constant SHARED_OSS_DIR => qw(/projects/stbdev/open-source);
 
 my %arch_config = (
 	'arm64' => {
@@ -86,6 +87,11 @@ sub check_br()
 	return -1;
 }
 
+# Check if the shared open source directory exists
+sub check_open_source_dir()
+{
+	return  (-d SHARED_OSS_DIR) ? 1 : 0;
+}
 
 # Check for some obvious build artifacts that show us the local Linux source
 # tree is not clean.
@@ -267,6 +273,7 @@ sub print_usage($)
 		"          -j <jobs>....run <jobs> parallel build jobs\n".
 		"          -L <path>....use local <path> as Linux kernel\n".
 		"          -l <url>.....use <url> as the Linux kernel repo\n".
+		"          -n...........do not use shared download cache\n".
 		"          -o <path>....use <path> as the BR output directory\n".
 		"          -t <path>....use <path> as toolchain directory\n".
 		"          -v <tag>.....use <tag> as Linux version tag\n");
@@ -288,12 +295,8 @@ my $toolchain;
 my $arch;
 my %opts;
 
-getopts('3:bcDd:f:ij:L:l:o:t:v:', \%opts);
+getopts('3:bcDd:f:ij:L:l:no:t:v:', \%opts);
 $arch = $ARGV[0];
-# Treat bmips as an alias for mips.
-$arch = 'mips' if ($arch eq 'bmips');
-
-$is_64bit = ($arch =~ /64/) if (defined($arch));
 
 if ($#ARGV < 0) {
 	print_usage($prg);
@@ -315,6 +318,11 @@ if (defined($opts{'L'}) && defined($opts{'l'})) {
 	print(STDERR "$prg: options -L and -l cannot be specified together\n");
 	exit(1);
 }
+
+# Treat bmips as an alias for mips.
+$arch = 'mips' if ($arch eq 'bmips');
+# Are we building for a 64-bit platform?
+$is_64bit = ($arch =~ /64/);
 
 # Set local Linux directory from environment, if configured.
 if (defined($ENV{'BR_LINUX_OVERRIDE'})) {
@@ -377,6 +385,19 @@ if (!defined($toolchain) && !defined($opts{'t'})) {
 	print(STDERR
 		"$prg: couldn't find toolchain in your path, use option -t\n");
 	exit(1);
+}
+
+if (check_open_source_dir() && !defined($opts{'n'})) {
+	my $br_oss_cache = SHARED_OSS_DIR.'/buildroot';
+
+	if (! -d $br_oss_cache) {
+		print("Creating shared open source directory $br_oss_cache...\n");
+		mkdir($br_oss_cache);
+		chmod(0777, $br_oss_cache);
+	}
+
+	print("Using $br_oss_cache as download cache...\n");
+	$generic_config{'BR2_DL_DIR'} = $br_oss_cache;
 }
 
 if (defined($opts{'D'})) {
@@ -493,7 +514,10 @@ system("support/kconfig/merge_config.sh -m configs/brcmstb_defconfig ".
 	"\"$temp_config\"");
 if (defined($opts{'f'})) {
 	my $fragment_file = $opts{'f'};
-	system("support/kconfig/merge_config.sh -m configs/brcmstb_defconfig ".
+	# Preserve the merged configuration from above and use it as the
+	# starting point.
+	rename('.config', $temp_config);
+	system("support/kconfig/merge_config.sh -m $temp_config ".
 		"\"$fragment_file\"");
 }
 unlink($temp_config);

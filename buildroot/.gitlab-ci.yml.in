@@ -4,7 +4,7 @@
 # It needs to be regenerated every time a defconfig is added, using
 # "make .gitlab-ci.yml".
 
-image: buildroot/base
+image: buildroot/base:20180205.0730
 
 .defconfig_script: &defconfig_script
     - echo 'Configure Buildroot'
@@ -29,6 +29,10 @@ check-DEVELOPERS:
     # The initial ! is removed by YAML so we need to quote it.
     script:
         - "! utils/get-developers | grep -v 'No action specified'"
+
+check-package:
+    script:
+        - find . -type f \( -name '*.mk' -o -name '*.hash' \) -exec ./utils/check-package {} +
 
 .defconfig: &defconfig
     # Running the defconfigs for every push is too much, so limit to
@@ -57,4 +61,5 @@ check-DEVELOPERS:
         expire_in: 2 weeks
         paths:
             - test-output/*.log
+            - test-output/*/.config
             - test-output/*/images/*

@@ -4,14 +4,13 @@
 #
 ################################################################################
 
-BRCMROOT_VERSION = e301a2d729cbc11f7052fdbf2b4d3297950eb16c
+BRCMROOT_VERSION = c38822d042bd729481f2cea6b2fd138b5e190fa8
 
 BRCM_PM_VERSION = master
 BRCM_PM_SITE = git://stbgit.broadcom.com/mm940762/uclinux-rootfs.git
 BRCM_PM_SOURCE = uclinux-rootfs-$(BRCMROOT_VERSION).tar.gz
 BRCM_PM_DIR = uclinux-rootfs
-BRCM_PM_LICENSE = GPL-2.0
-BRCM_PM_LICENSE_FILES = COPYING
+BRCM_PM_LICENSE = BSD-3-Clause
 
 # Extract only what we need to save space.
 define BRCM_PM_EXTRACT_CMDS

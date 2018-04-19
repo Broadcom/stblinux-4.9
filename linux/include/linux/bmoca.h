@@ -249,6 +249,7 @@ typedef void (*write_sg)(void *hw_priv, dma_addr_t dst_offset,
 			 struct scatterlist *sg, int nents);
 typedef void (*hw_enable_irq)(void *hw_priv);
 typedef void (*hw_disable_irq)(void *hw_priv);
+typedef void (*remove)(void *hw_priv);
 
 struct moca_ops {
 	read32			read32;
@@ -260,8 +261,10 @@ struct moca_ops {
 	write_sg		write_sg;
 	hw_enable_irq		hw_enable_irq;
 	hw_disable_irq		hw_disable_irq;
+	remove			remove;
 
 	int			dma;
+	int			suspend_timeout_ms;
 };
 
 int moca_initialize(struct device *dev, struct moca_ops *moca_ops,
@@ -269,6 +272,8 @@ int moca_initialize(struct device *dev, struct moca_ops *moca_ops,
 		    int range_check_flag, int irq, int wol_irq,
 		    const u8 *macaddr, unsigned int enet_ph,
 		    const struct moca_regs *regs);
+
+extern const struct dev_pm_ops moca_pm_ops;
 
 #endif /* __KERNEL__ */
 

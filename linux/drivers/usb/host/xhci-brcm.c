@@ -127,6 +127,9 @@ static int xhci_brcm_probe(struct platform_device *pdev)
 		goto disable_clk;
 	}
 
+	if (device_property_read_bool(&pdev->dev, "usb3-lpm-capable"))
+		xhci->quirks |= XHCI_LPM_SUPPORT;
+
 	hcd->phy = devm_of_phy_get_by_index(&pdev->dev, pdev->dev.of_node, 0);
 	if (IS_ERR(hcd->phy)) {
 		ret = PTR_ERR(hcd->phy);
@@ -142,6 +145,9 @@ static int xhci_brcm_probe(struct platform_device *pdev)
 	ret = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (ret)
 		goto disable_usb_phy;
+
+	if (HCC_MAX_PSA(xhci->hcc_params) >= 4)
+		xhci->shared_hcd->can_do_streams = 1;
 
 	ret = usb_add_hcd(xhci->shared_hcd, irq, IRQF_SHARED);
 	if (ret)

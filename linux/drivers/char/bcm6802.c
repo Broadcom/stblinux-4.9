@@ -24,9 +24,11 @@
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/mutex.h>
+#include <linux/gpio/consumer.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/of_net.h>
+#include <linux/of_gpio.h>
 #include <linux/dma-mapping.h>
 #include <linux/phy.h>
 
@@ -117,6 +119,7 @@ struct bcm6802_priv {
 	u32			eport_mux;
 	u32			gphy_en;
 	int			irq;
+	struct gpio_desc	*gpio_desc;
 };
 
 static const struct moca_regs regs_6802 = {
@@ -384,6 +387,20 @@ static void bcm6802_pmb_give_cntrl(struct bcm6802_priv *priv,
 		data = 0x100002 + i * 0x1000;
 		REG_WR(MOCA_PMB_MASTER_CMD, data);
 	}
+}
+
+static void bcm6802_set_reset(struct bcm6802_priv *priv, bool reset)
+{
+	/* Reset assertion delay is 15ms. Reset de-assertion is specified as
+	   210ms in the datasheet, but this is not enough, round up to 250 ms
+	 */
+	unsigned int reset_delay = reset ? 15 : 250;
+
+	if (!priv->gpio_desc)
+		return;
+
+	gpiod_set_value(priv->gpio_desc, !reset);
+	msleep(reset_delay);
 }
 
 void bcm6802_hw_reset(void *hw_priv)
@@ -739,6 +756,14 @@ static int bcm6802_parse_rgmii(struct bcm6802_priv *priv,
 	return 0;
 }
 
+/* An estimate of how long it should take to prepare MoCA for S2 mode.
+   Measured empirically at different SPI bitrates, then doubled */
+static int bcm6802_estimate_suspend_timeout(unsigned int bitrate)
+{
+	/* This equation is a linear fit to measured data */
+	return (30 + 21562500 / bitrate ) * 200;
+}
+
 int bcm6802_probe(struct spi_device *spi_device)
 {
 	struct device_node *ethernet_of_node;
@@ -763,6 +788,13 @@ int bcm6802_probe(struct spi_device *spi_device)
 	mutex_init(&priv->copy_mutex);
 
 	priv->dev = &spi_device->dev;
+
+	priv->gpio_desc =  devm_gpiod_get_optional(priv->dev, "reset",
+						   GPIOD_OUT_LOW);
+
+	/* Reset chip, then un-reset it */
+	bcm6802_set_reset(priv, true);
+	bcm6802_set_reset(priv, false);
 
 	priv->chip_id = REG_RD(SUN_TOP_CTRL_PRODUCT_ID) + 0xA0;
 	if ((priv->chip_id & 0xFFFE0000) != 0x68020000) {
@@ -835,6 +867,9 @@ int bcm6802_probe(struct spi_device *spi_device)
 
 	wol_irq = irq_of_parse_and_map(priv->dev->of_node, 1);
 
+	bcm6802_moca_ops.suspend_timeout_ms =
+		bcm6802_estimate_suspend_timeout(spi_device->max_speed_hz);
+
 	rc = moca_initialize(&spi_device->dev, &bcm6802_moca_ops,
 			     (void *)priv, (void __iomem *)MOCA_DATA_MEM,
 			     priv->chip_id, 0, priv->irq, wol_irq, macaddr,
@@ -852,10 +887,16 @@ error:
 	return rc;
 }
 
+void bcm6802_remove(void *hw_priv)
+{
+	bcm6802_set_reset(hw_priv, true);
+}
+
 static struct spi_driver bcm6802_driver = {
 	.driver = {
 		.name = bcm6802_driver_name,
 		.owner = THIS_MODULE,
+		.pm = &moca_pm_ops,
 	},
 	.probe = bcm6802_probe,
 };

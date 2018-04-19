@@ -2559,7 +2559,7 @@ static int moca_send_pm_trap(struct moca_priv_data *priv,
 static void moca_prepare_suspend(struct moca_priv_data *priv)
 {
 	int rc;
-	long timeout = msecs_to_jiffies(MOCA_SUSPEND_TIMEOUT_MS);
+	long timeout = msecs_to_jiffies(priv->moca_ops->suspend_timeout_ms);
 
 	mutex_lock(&priv->dev_mutex);
 	if (moca_in_reset(priv)) {
@@ -2652,8 +2652,9 @@ static int moca_pm_notifier(struct notifier_block *notifier,
 			 __func__);
 	}
 
+	dev_dbg(priv->dev, "%s for event %lu", __func__, pm_event);
+
 	switch (pm_event) {
-		dev_info(priv->dev, "%s for state %lu", __func__, pm_event);
 	case PM_HIBERNATION_PREPARE:
 	case PM_SUSPEND_PREPARE:
 		moca_prepare_suspend(priv);
@@ -2919,7 +2920,8 @@ struct moca_ops moca_int_moca_ops = {
 	.read_mem = moca_int_read_mem,
 	.write_sg = moca_int_write_sg,
 
-	.dma = 1
+	.dma = 1,
+	.suspend_timeout_ms = MOCA_SUSPEND_TIMEOUT_MS
 };
 
 static int moca_probe(struct platform_device *pdev)
@@ -2955,9 +2957,13 @@ static int moca_remove(struct platform_device *pdev)
 	struct moca_priv_data *priv = dev_get_drvdata(&pdev->dev);
 	int err = 0;
 
-	if (priv->dev)
+	if (priv->dev) {
+		if (priv->moca_ops && priv->moca_ops->remove)
+			priv->moca_ops->remove(priv->hw_priv);
+
 		device_destroy(moca_class,
 			       MKDEV(MOCA_MAJOR, priv->platform_data.minor));
+	}
 
 	minor_tbl[priv->platform_data.minor] = NULL;
 
@@ -3053,7 +3059,7 @@ static int moca_resume(struct device *dev)
 }
 #endif
 
-static SIMPLE_DEV_PM_OPS(moca_pm_ops, moca_suspend, moca_resume);
+SIMPLE_DEV_PM_OPS(moca_pm_ops, moca_suspend, moca_resume);
 
 static struct platform_driver moca_plat_drv = {
 	.probe =		moca_probe,

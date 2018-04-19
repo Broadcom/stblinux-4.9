@@ -29,16 +29,26 @@ MAKEARGS += O=\$(if \$(patsubst /%,,\$(makedir)),\$(CURDIR)/)\$(patsubst %/,%,\$
 
 MAKEFLAGS += --no-print-directory
 
-makegoals := \$(filter-out images,\$(MAKECMDGOALS))
-all := \$(filter-out Makefile,\$(makegoals))
+makegoals0 := \$(filter-out images,\$(MAKECMDGOALS))
+makegoals1 := \$(filter-out install,\$(makegoals0))
+all := \$(filter-out Makefile,\$(makegoals1))
 
-.PHONY: _all \$(makegoals) images
+.PHONY: _all \$(makegoals1) images install
 
 _all:
+	test -d images || mkdir images
+	test -r images/rootfs.cpio || touch images/rootfs.cpio
 	umask 0022 && \$(MAKE) \$(MAKEARGS) \$(all)
 
 images: _all
 	$1/bin/build_rootfs_images.sh ${arch}
+
+install: _all
+	test -d \$(DESTDIR) || mkdir -p \$(DESTDIR)
+	cp -a images/* \$(DESTDIR)
+	@echo ""
+	@echo "Images have been copied to \$(DESTDIR)"
+	@echo ""
 
 Makefile:;
 

@@ -2190,29 +2190,6 @@ static int sw_clk_open(struct inode *inode, struct file *file)
 	return single_open(file, sw_clk_show, inode->i_private);
 }
 
-/* For sw clks which have multiple parents, create a symlink from
- * the clock's directory to the sw_clock */
-static int clk_debug_create_symlink(struct clk_core *clk, struct clk_core *sw_clk)
-{
-	int i, n;
-	struct clk_core *tmp;
-	char *target;
-
-	for (n = 0, tmp = clk; tmp; n++)
-		tmp = !tmp->parent ? NULL : tmp->parent;
-
-	target = kzalloc(strlen(clk->name) + 3*n + 1, GFP_KERNEL);
-	if (!target)
-		return -ENOMEM;
-
-	for (i = 0; i < n; i++)
-		strcat(target, "../");
-	strcat(target, sw_clk->name);
-	debugfs_create_symlink(sw_clk->name, clk->dentry, target);
-	kfree(target);
-	return 0;
-}
-
 static const struct file_operations sw_clk_ops = {
 	.open		= sw_clk_open,
 	.read		= seq_read,
@@ -2278,17 +2255,9 @@ static int clk_debug_create_one(struct clk_core *core, struct dentry *pdentry)
 	}
 
 	if (core->flags & CLK_IS_SW) {
-		int i;
 		d = debugfs_create_file("parents", S_IFREG | S_IRUGO,
 					core->dentry, core, &sw_clk_ops);
 		if (!d)
-			goto err_out;
-		for (i = 0, ret = 0; i < core->num_parents && ret == 0; ++i) {
-			if (core->parents[i])
-				ret = clk_debug_create_symlink(
-						core->parents[i], core);
-		}
-		if (ret)
 			goto err_out;
 	}
 
