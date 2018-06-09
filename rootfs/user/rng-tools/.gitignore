@@ -1,0 +1,11 @@
+.deps
+Makefile
+config.*
+contrib/Makefile
+librngd.a
+rng-tools-config.h
+rngd
+rngd.8
+rngtest
+rngtest.1
+stamp-h1

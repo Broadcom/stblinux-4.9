@@ -729,7 +729,7 @@ static int __init xpt_dma_init(void)
 	struct platform_device *pdev = &xpt_dma_pdev;
 
 	if (of_machine_is_compatible("brcm,bcm74371a0") ||
-	    of_machine_is_compatible("brcm,bcm7278a0"))
+	    of_machine_is_compatible("brcm,bcm7211a0"))
 		return 0;
 
 	if (of_machine_is_compatible("brcm,bcm7278b0")) {

@@ -62,7 +62,8 @@ endef
 
 define I2C_TOOLS_INSTALL_TARGET_CMDS
 	$(MAKE) $(TARGET_CONFIGURE_OPTS) $(I2C_TOOLS_MAKE_OPTS) \
-		DESTDIR="$(TARGET_DIR)" prefix=/usr -C $(@D) install
+		DESTDIR="$(TARGET_DIR)" prefix=/usr \
+		libdir=/usr/$(BR2_ROOTFS_LIB_DIR) -C $(@D) install
 	$(I2C_TOOLS_INSTALL_PYSMBUS)
 endef
 

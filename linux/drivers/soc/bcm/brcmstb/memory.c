@@ -89,10 +89,17 @@ static spinlock_t automap_lock = __SPIN_LOCK_UNLOCKED(automap_lock);
  * physical address.
  */
 #ifdef CONFIG_ARCH_BRCMSTB
-int __brcmstb_memory_phys_addr_to_memc(phys_addr_t pa, void __iomem *base)
+int __brcmstb_memory_phys_addr_to_memc(phys_addr_t pa, void __iomem *base,
+				       const char *compat)
 {
+	const char *bcm7211_biuctrl_match = "brcm,bcm7211-cpu-biu-ctrl";
 	int memc = -1;
 	int i;
+
+	/* Single MEMC controller with unreadable ULIMIT values as of the A0 */
+	if (!strncmp(compat, bcm7211_biuctrl_match,
+		     strlen(bcm7211_biuctrl_match)))
+		return 0;
 
 	for (i = 0; i < NUM_BUS_RANGES; i++, base += 8) {
 		const u64 ulimit_raw = readl(base);
@@ -120,16 +127,19 @@ int brcmstb_memory_phys_addr_to_memc(phys_addr_t pa)
 	int memc = -1;
 	struct device_node *np;
 	void __iomem *cpubiuctrl;
+	const char *compat;
 
 	np = of_find_compatible_node(NULL, NULL, "brcm,brcmstb-cpu-biu-ctrl");
 	if (!np)
 		return memc;
 
+	compat = of_get_property(np, "compatible", NULL);
+
 	cpubiuctrl = of_iomap(np, 0);
 	if (!cpubiuctrl)
 		goto cleanup;
 
-	memc = __brcmstb_memory_phys_addr_to_memc(pa, cpubiuctrl);
+	memc = __brcmstb_memory_phys_addr_to_memc(pa, cpubiuctrl, compat);
 	iounmap(cpubiuctrl);
 
 cleanup:
@@ -165,7 +175,9 @@ static int __init early_phys_addr_to_memc(phys_addr_t pa)
 	if (!cpubiuctrl)
 		return memc;
 
-	memc = __brcmstb_memory_phys_addr_to_memc(pa, cpubiuctrl);
+	prop = fdt_get_property(fdt, offset, "compatible", NULL);
+
+	memc = __brcmstb_memory_phys_addr_to_memc(pa, cpubiuctrl, prop->data);
 	early_iounmap(cpubiuctrl, cpubiuctrl_size);
 
 	return memc;

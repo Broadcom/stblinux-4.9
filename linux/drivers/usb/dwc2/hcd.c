@@ -42,6 +42,7 @@
 #include <linux/module.h>
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
+#include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/delay.h>
 #include <linux/io.h>
@@ -4970,6 +4971,8 @@ static void dwc2_hcd_release(struct dwc2_hsotg *hsotg)
  */
 int dwc2_hcd_init(struct dwc2_hsotg *hsotg, int irq)
 {
+	struct platform_device *pdev = to_platform_device(hsotg->dev);
+	struct resource *res;
 	struct usb_hcd *hcd;
 	struct dwc2_host_chan *channel;
 	u32 hcfg;
@@ -5025,7 +5028,11 @@ int dwc2_hcd_init(struct dwc2_hsotg *hsotg, int irq)
 
 	hcd->has_tt = 1;
 
-	((struct wrapper_priv_data *) &hcd->hcd_priv)->hsotg = hsotg;
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	hcd->rsrc_start = res->start;
+	hcd->rsrc_len = resource_size(res);
+
+	((struct wrapper_priv_data *)&hcd->hcd_priv)->hsotg = hsotg;
 	hsotg->priv = hcd;
 
 	/*

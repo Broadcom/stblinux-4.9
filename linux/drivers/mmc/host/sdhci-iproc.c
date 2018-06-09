@@ -22,8 +22,11 @@
 #include <linux/of_device.h>
 #include "sdhci-pltfm.h"
 
+#define IPROC_DATA_FLAGS_OPTIONAL_CLK 1
+
 struct sdhci_iproc_data {
 	const struct sdhci_pltfm_data *pdata;
+	u32 flags;
 	u32 caps;
 	u32 caps1;
 	u32 mmc_caps;
@@ -67,6 +70,9 @@ static inline void sdhci_iproc_writel(struct sdhci_host *host, u32 val, int reg)
 
 	writel(val, host->ioaddr + reg);
 
+	/* The data register does not have the bug */
+	if (reg == SDHCI_BUFFER)
+		return;
 	if (host->clock <= 400000) {
 		/* Round up to micro-second four SD clock delay */
 		if (host->clock)
@@ -193,9 +199,35 @@ static const struct sdhci_iproc_data bcm2835_data = {
 	.mmc_caps = 0x00000000,
 };
 
+static const struct sdhci_pltfm_data sdhci_bcm7211a0_pltfm_data = {
+	.quirks = SDHCI_QUIRK_MISSING_CAPS |
+		SDHCI_QUIRK_BROKEN_TIMEOUT_VAL |
+		SDHCI_QUIRK_BROKEN_DMA |
+		SDHCI_QUIRK_BROKEN_ADMA,
+	.ops = &sdhci_iproc_ops,
+};
+
+#define BCM7211A0_BASE_CLK_MHZ 100
+static const struct sdhci_iproc_data bcm7211a0_data = {
+	.pdata = &sdhci_bcm7211a0_pltfm_data,
+	.flags = IPROC_DATA_FLAGS_OPTIONAL_CLK,
+	.caps = ((BCM7211A0_BASE_CLK_MHZ / 2) << SDHCI_TIMEOUT_CLK_SHIFT) |
+		(BCM7211A0_BASE_CLK_MHZ << SDHCI_CLOCK_BASE_SHIFT) |
+		((0x2 << SDHCI_MAX_BLOCK_SHIFT)
+			& SDHCI_MAX_BLOCK_MASK) |
+		SDHCI_CAN_VDD_330 |
+		SDHCI_CAN_VDD_180 |
+		SDHCI_CAN_DO_SUSPEND |
+		SDHCI_CAN_DO_HISPD,
+	.caps1 = SDHCI_DRIVER_TYPE_C |
+		 SDHCI_DRIVER_TYPE_D,
+	.mmc_caps = MMC_CAP_1_8V_DDR,
+};
+
 static const struct of_device_id sdhci_iproc_of_match[] = {
 	{ .compatible = "brcm,bcm2835-sdhci", .data = &bcm2835_data },
 	{ .compatible = "brcm,sdhci-iproc-cygnus", .data = &iproc_data },
+	{ .compatible = "brcm,bcm7211a0-sdhci", .data = &bcm7211a0_data },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, sdhci_iproc_of_match);
@@ -230,8 +262,12 @@ static int sdhci_iproc_probe(struct platform_device *pdev)
 
 	pltfm_host->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(pltfm_host->clk)) {
-		ret = PTR_ERR(pltfm_host->clk);
-		goto err;
+		if ((iproc_data->flags & IPROC_DATA_FLAGS_OPTIONAL_CLK) == 0) {
+			ret = PTR_ERR(pltfm_host->clk);
+			goto err;
+		}
+		dev_warn(&pdev->dev, "Clock not found in Device Tree\n");
+		pltfm_host->clk = NULL;
 	}
 	ret = clk_prepare_enable(pltfm_host->clk);
 	if (ret) {

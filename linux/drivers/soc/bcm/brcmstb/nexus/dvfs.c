@@ -183,8 +183,12 @@ int brcmstb_stb_dvfs_set_pstate(unsigned int idx, unsigned int pstate,
 		ret = brcm_send_avs_cmd_via_scmi(handle, AVS_CMD_SET_PSTATE,
 						 num_in, 0, args);
 	} else if (cpufreq_dev) {
-		ret = brcmstb_issue_avs_command(
-			cpufreq_dev, AVS_CMD_GET_PSTATE, num_in, 0, args);
+		if (idx || clk_writes)
+			ret = -EINVAL;
+		else
+			ret = brcmstb_issue_avs_command(cpufreq_dev,
+							AVS_CMD_SET_PSTATE,
+							num_in, 0, args);
 	}
 	return ret;
 }
@@ -209,8 +213,13 @@ int brcmstb_stb_avs_read_debug(unsigned int debug_idx, u32 *value)
 		ret = brcm_send_avs_cmd_via_scmi(handle, AVS_CMD_READ_DEBUG,
 						 1, 2, args);
 	} else if (cpufreq_dev) {
-		ret = brcmstb_issue_avs_command(
-			cpufreq_dev, AVS_CMD_GET_PSTATE, 1, 2, args);
+		/*
+		 * If we are here, we are using the older AVS API and there
+		 * is no READ_DEBUG command.  In the future we may want
+		 * to emulate it in cpufreq-avs-brcmstb.c, as it can "see"
+		 * all of the debug values, but that's not implemented now.
+		 */
+		ret = -ENODEV;
 	}
 
 	if (!ret)

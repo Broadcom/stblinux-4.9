@@ -422,11 +422,14 @@ static int sata_rescan_hosts(void)
 static const struct sata_paths *get_sata_paths(void)
 {
 	glob_t g;
+
 	if (glob(available_sata_paths.legacy.sata_dev_path, GLOB_NOSORT,
-				NULL, &g))
+				NULL, &g)) {
 		return &available_sata_paths.current;
-	else
+	} else {
+		globfree(&g);
 		return &available_sata_paths.legacy;
+	}
 }
 
 static int sata_delete_devices(void)

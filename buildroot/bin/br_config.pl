@@ -26,7 +26,13 @@ use POSIX;
 
 use constant AUTO_MK => qw(brcmstb.mk);
 use constant LOCAL_MK => qw(local.mk);
+use constant RECOMMENDED_TOOLCHAINS => ( qw(misc/toolchain.master
+					misc/toolchain) );
 use constant SHARED_OSS_DIR => qw(/projects/stbdev/open-source);
+use constant TOOLCHAIN_DIR => qw(/opt/toolchains);
+use constant VERSION_H => qw(/usr/include/linux/version.h);
+
+use constant SLEEP_TIME => 5;
 
 my %arch_config = (
 	'arm64' => {
@@ -41,12 +47,13 @@ my %arch_config = (
 		'BR2_cortex_a15' => 'y',
 		'BR2_LINUX_KERNEL_DEFCONFIG' => 'brcmstb',
 	},
-	'mips' => {
+	'bmips' => {
 		'arch_name' => 'mips',
 		'BR2_mipsel' => 'y',
 		'BR2_MIPS_SOFT_FLOAT' => '',
 		'BR2_MIPS_FP32_MODE_32' => 'y',
 		'BR2_LINUX_KERNEL_DEFCONFIG' => 'bmips_stb',
+		'BR2_LINUX_KERNEL_VMLINUX' => 'y',
 	},
 );
 
@@ -59,7 +66,7 @@ my %toolchain_config = (
 	'arm' => {
 #		'BR2_TOOLCHAIN_EXTERNAL_CUSTOM_PREFIX' => '$(ARCH)-linux-gnueabihf'
 	},
-	'mips' => {
+	'bmips' => {
 #		'BR2_TOOLCHAIN_EXTERNAL_CUSTOM_PREFIX' => '$(ARCH)-linux-gnu'
 	},
 );
@@ -91,6 +98,35 @@ sub check_br()
 sub check_open_source_dir()
 {
 	return  (-d SHARED_OSS_DIR) ? 1 : 0;
+}
+
+
+# Check if the specified toolchain is the recommended one.
+sub check_toolchain($)
+{
+	my ($toolchain) = @_;
+	my $recommended;
+	my $found = 0;
+
+	foreach my $tc (RECOMMENDED_TOOLCHAINS) {
+		if (open(F, $tc)) {
+			$found = 1;
+			last;
+		}
+	}
+	# If we don't know what the recommended toolchain is, we accept the
+	# one that was specified.
+	if (!$found) {
+		return '';
+	}
+
+	$recommended = <F>;
+	chomp($recommended);
+	close(F);
+
+	$toolchain =~ s|.*/||;
+
+	return ($recommended ne $toolchain) ? $recommended : '';
 }
 
 # Check for some obvious build artifacts that show us the local Linux source
@@ -133,14 +169,97 @@ sub get_cores()
 sub find_toolchain()
 {
 	my @path = split(/:/, $ENV{'PATH'});
+	my $dh;
 
 	foreach my $dir (@path) {
 		# We don't support anything before stbgcc-6.x at this point.
 		if ($dir =~ /stbgcc-[6-9]/) {
+			$dir =~ s|/bin/?$||;
 			return $dir;
 		}
 	}
+
+	# If we didn't find a toolchain in the $PATH, we look in the standard
+	# location.
+	if (opendir($dh, TOOLCHAIN_DIR)) {
+		# Sort in reverse order, so newer toolchains appear first.
+		my @toolchains = sort { $b cmp $a }
+			grep { /stbgcc-[6-9]/ } readdir($dh);
+
+		closedir($dh);
+
+		foreach my $dir (@toolchains) {
+			if (-d TOOLCHAIN_DIR."/$dir/bin") {
+				return TOOLCHAIN_DIR."/$dir";
+			}
+		}
+	}
+
 	return undef;
+}
+
+sub trigger_toolchain_sync($$)
+{
+	my ($output_dir, $arch) = @_;
+	my $path;
+	my @files;
+
+	# First, we delete all toolchain symlinks
+	$path = "$output_dir/host/bin";
+	if (!opendir(D, $path)) {
+		return;
+	}
+	@files = grep { /^$arch/ } readdir(D);
+	closedir(D);
+	foreach my $f (@files) {
+		unlink("$path/$f") if (-l "$path/$f");
+	}
+
+	# Secondly, we delete the stamp files, so BR knows to re-sync the
+	# toolchain.
+	$path = "$output_dir/build/toolchain-external-custom";
+	if (!opendir(D, $path)) {
+		return;
+	}
+	@files = grep { /^(\.stamp|.applied)/ } readdir(D);
+	closedir(D);
+	foreach my $f (@files) {
+		unlink("$path/$f");
+	}
+}
+
+sub get_kernel_header_version($$)
+{
+	my ($toolchain, $arch) = @_;
+	my ($compiler_arch, $sys_root, $version_path);
+	my $version_code;
+
+	$compiler_arch = $arch_config{$arch}->{'arch_name'};
+	# The MIPS compiler may be called "mipsel-*" not just "mips-*".
+	if (defined($arch_config{$arch}->{'BR2_mipsel'})) {
+		$compiler_arch .= "el";
+	}
+	$sys_root = $toolchain;
+	$sys_root = `ls -d "$sys_root/$compiler_arch"*/sys*root 2>/dev/null`;
+	chomp($sys_root);
+	if ($sys_root eq '') {
+		return undef;
+	}
+	$version_path = $sys_root.VERSION_H;
+
+	open(F, $version_path) || return undef;
+	while (<F>) {
+		chomp;
+		if (/LINUX_VERSION_CODE\s+(\d+)/) {
+			$version_code = $1;
+			last;
+		}
+	}
+	close(F);
+
+	return undef if (!defined($version_code));
+
+	return [($version_code >> 16) & 0xff, ($version_code >> 8) & 0xff];
 }
 
 sub move_merged_config($$$$)
@@ -262,7 +381,7 @@ sub print_usage($)
 {
 	my ($prg) = @_;
 
-	print(STDERR "usage: $prg [argument(s)] arm|arm64|mips\n".
+	print(STDERR "usage: $prg [argument(s)] arm|arm64|bmips\n".
 		"          -3 <path>....path to 32-bit run-time\n".
 		"          -b...........launch build after configuring\n".
 		"          -c...........clean (remove output/\$platform)\n".
@@ -292,6 +411,8 @@ my $relative_outputdir;
 my $br_outputdir;
 my $local_linux;
 my $toolchain;
+my $recommended_toolchain;
+my $kernel_header_version;
 my $arch;
 my %opts;
 
@@ -309,6 +430,11 @@ if (check_br() < 0) {
 	exit(1);
 }
 
+# Treat mips as an alias for bmips.
+$arch = 'bmips' if ($arch eq 'mips');
+# Are we building for a 64-bit platform?
+$is_64bit = ($arch =~ /64/);
+
 if (!defined($arch_config{$arch})) {
 	print(STDERR "$prg: unknown architecture $arch\n");
 	exit(1);
@@ -318,11 +444,6 @@ if (defined($opts{'L'}) && defined($opts{'l'})) {
 	print(STDERR "$prg: options -L and -l cannot be specified together\n");
 	exit(1);
 }
-
-# Treat bmips as an alias for mips.
-$arch = 'mips' if ($arch eq 'bmips');
-# Are we building for a 64-bit platform?
-$is_64bit = ($arch =~ /64/);
 
 # Set local Linux directory from environment, if configured.
 if (defined($ENV{'BR_LINUX_OVERRIDE'})) {
@@ -455,20 +576,46 @@ if (defined($opts{'l'})) {
 
 if (defined($opts{'t'})) {
 	$toolchain = $opts{'t'};
-	print("Using $toolchain as toolchain...\n");
-	$toolchain_config{$arch}{'BR2_TOOLCHAIN_EXTERNAL_PATH'} = $toolchain;
 }
+
+$recommended_toolchain = check_toolchain($toolchain);
+if ($recommended_toolchain ne '') {
+	my $t = $toolchain;
+
+	$t =~ s|.*/||;
+	print(STDERR "WARNING: you are using toolchain $t. Recommended is ".
+		"$recommended_toolchain.\n");
+	print(STDERR "Hit Ctrl-C now or wait ".SLEEP_TIME." seconds...\n");
+	sleep(SLEEP_TIME);
+} else {
+	print("Using $toolchain as toolchain...\n");
+}
+$toolchain_config{$arch}{'BR2_TOOLCHAIN_EXTERNAL_PATH'} = $toolchain;
+
+# The toolchain may have changed since we last configured Buildroot. We need to
+# force it to create the symlinks again, so we are sure to use the toolchain
+# specified now.
+trigger_toolchain_sync($relative_outputdir, $arch);
 
 if (defined($opts{'v'})) {
 	print("Using ".$opts{'v'}." as Linux kernel version...\n");
 	$generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION'} = $opts{'v'};
 }
 
+$kernel_header_version = get_kernel_header_version($toolchain, $arch);
+if (defined($kernel_header_version)) {
+	my ($major, $minor) = @$kernel_header_version;
+	my $ext_headers = "BR2_TOOLCHAIN_EXTERNAL_HEADERS_${major}_${minor}";
+	print("Found kernel header version ${major}.${minor}...\n");
+	$toolchain_config{$arch}{$ext_headers} = 'y';
+} else {
+	print("WARNING: couldn't detect kernel header version; build may ".
+		"fail\n");
+}
+
 if ($is_64bit) {
 	my $rt_path;
 	my $runtime_base = $toolchain;
-
-	$runtime_base =~ s|/bin$||;
 
 	if (defined($opts{'3'})) {
 		$rt_path = $opts{'3'};

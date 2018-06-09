@@ -345,7 +345,6 @@ struct brcm_pcie {
 	enum pcie_type		type;
 	struct pci_bus		*bus;
 	int			id;
-	resource_size_t		reg_start; /* needed for 7278a0 quirk */
 };
 
 struct of_pci_range *dma_ranges;
@@ -611,26 +610,10 @@ static int is_pcie_link_up(struct brcm_pcie *pcie, bool silent)
 static inline void brcm_pcie_bridge_sw_init_set(struct brcm_pcie *pcie,
 						unsigned int val)
 {
-	unsigned int offset;
 	unsigned int shift = pcie->reg_field_info[RGR1_SW_INIT_1_INIT_SHIFT];
 	u32 mask =  pcie->reg_field_info[RGR1_SW_INIT_1_INIT_MASK];
 
-	if (pcie->type != BCM7278) {
-		wr_fld_rb(PCIE_RGR1_SW_INIT_1(pcie), mask, shift, val);
-	} else if (of_machine_is_compatible("brcm,bcm7278a0")) {
-		/* The two PCIE instance on 7278a0 are not even consistent with
-		 * respect to each other for internal offsets, here we offset
-		 * by 0x14000 + RGR1_SW_INIT_1's relative offset to account for
-		 * that.
-		 */
-		const resource_size_t pcie0_reg_addr = 0x8b10000UL;
-
-		offset = (pcie->reg_start == pcie0_reg_addr)
-			? pcie->reg_offsets[RGR1_SW_INIT_1] : 0x14010;
-		wr_fld_rb(pcie->base + offset, mask, shift, val);
-	} else {
-		wr_fld_rb(PCIE_RGR1_SW_INIT_1(pcie), mask, shift, val);
-	}
+	wr_fld_rb(PCIE_RGR1_SW_INIT_1(pcie), mask, shift, val);
 }
 
 static inline void brcm_pcie_perst_set(struct brcm_pcie *pcie,
@@ -1348,7 +1331,6 @@ static int brcm_pcie_probe(struct platform_device *pdev)
 	if (!res)
 		return -EINVAL;
 
-	pcie->reg_start = res->start;
 	base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(base))
 		return PTR_ERR(base);

@@ -77,8 +77,14 @@ static void brcmstb_waketmr_set_alarm(struct brcmstb_waketmr *timer,
 
 	brcmstb_waketmr_clear_alarm(timer);
 
+/*
+ * We use the waketimer as a clocksource for SMP on MIPS. So we do not want
+ * to reset the prescaler here, or it will screw up the timing.
+ */
+#ifndef CONFIG_MIPS
 	/* Make sure we are actually counting in seconds */
 	writel_relaxed(WKTMR_FREQ, timer->base + BRCMSTB_WKTMR_PRESCALER);
+#endif
 
 	if (timer->alarm_set_from_sysfs)
 		t = readl_relaxed(timer->base + BRCMSTB_WKTMR_COUNTER);

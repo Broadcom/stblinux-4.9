@@ -345,9 +345,7 @@ release-buildroot:
 	)
 	rm -rf ../buildroot/dl/ucrootfs
 	mkdir -p release/buildroot-$(VERSION)
-	# The output directory is called 'mips' for buildroot
 	for x in $(shell cat misc/release_builds); do \
-		y=`echo "$$x" | sed -e 's/^bmips/mips/'`; \
 		echo "Building buildroot for $$x..."; \
 		( \
 			pwd=`pwd`; \
@@ -355,7 +353,7 @@ release-buildroot:
 			cd ../buildroot; \
 			./bin/br_config.pl -L "$$toplevel/linux" -i $$x \
 		); \
-		mv ../buildroot/output/$$y/images/* release/buildroot-$(VERSION); \
+		mv ../buildroot/output/$$x/images/* release/buildroot-$(VERSION); \
 	done
 	@echo "Adding downloaded sources to tar-ball..."
 	tar -C .. -r -f ../buildroot-$(DOTVERSION).tar buildroot/dl

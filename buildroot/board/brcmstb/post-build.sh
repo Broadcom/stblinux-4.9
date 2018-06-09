@@ -10,15 +10,29 @@ SKEL_DIR="${BUILD_DIR}/brcmstb_skel"
 # Use newest rootfs tar-ball if there's more than one
 UCLINUX_ROOTFS=`ls -1t dl/uclinux-rootfs*.tar.gz 2>/dev/null | head -1`
 
+# If the uclinux tar-ball doesn't exist in the local download directory, check
+# if we have a download cache elsewhere.
+if [ ! -r "${UCLINUX_ROOTFS}" ]; then
+	dl_cache=`grep BR2_DL_DIR "${TARGET_DIR}/../.config" | cut -d= -f2 | \
+		sed -e 's/"//g'`
+	if [ "${dl_cache}" != "" ]; then
+		echo "Attempting to find uclinux-rootfs in ${dl_cache}..."
+		UCLINUX_ROOTFS=`ls -1t "${dl_cache}"/uclinux-rootfs*.tar.gz 2>/dev/null | head -1`
+	fi
+fi
+
 # BRCMSTB skeleton
 if [ ! -r "${UCLINUX_ROOTFS}" ]; then
 	echo "$prg: uclinux-rootfs tar-ball not found, not copying skel..." 1>&2
 else
+	echo "Extracting skel from ${UCLINUX_ROOTFS}..."
 	# Extract old "skel" directory straight into our new rootfs. If we ever
 	# need to be more selective, we'll extract it into a temporary location
 	# first (${SKEL_DIR}) and pick what we need from there.
 	tar -C "${TARGET_DIR}" -x -z -f "${UCLINUX_ROOTFS}" \
 		--wildcards --strip-components=2 '*/skel'
+	sed -i 's|$(cat $DT_DIR|$(tr -d "\\0" <$DT_DIR|' \
+		${TARGET_DIR}/etc/config/ifup.default
 fi
 
 if [ ! -e ${TARGET_DIR}/bin/sh ]; then
@@ -64,9 +78,6 @@ if [ -r board/brcmstb/brcmstb_root ]; then
 	mkdir "${sshdir}"
 	chmod go= "${sshdir}"
 	cp board/brcmstb/brcmstb_root.pub "${sshdir}/authorized_keys"
-	echo "Setting lock password for root..."
-	sed -i 's|^root::|root:*:|' ${TARGET_DIR}/etc/passwd
-	sed -i 's|^root::|root:*:|' ${TARGET_DIR}/etc/shadow
 fi
 
 # Create mount points
@@ -89,3 +100,17 @@ TFTPPATH=$linux_ver
 PLAT=$arch
 VERSION=$linux_ver
 EOF
+
+# Check that shared libraries were installed properly
+if [ -x bin/find_64bit_libs.sh ]; then
+	echo "Checking that shared libraries were installed properly..."
+	bin/find_64bit_libs.sh "${TARGET_DIR}"
+fi
+
+# Generate list of GPL-3.0 packages
+echo "Generating GPL-3.0 packages list"
+make -C ${BASE_DIR} legal-info
+rm -rf ${TARGET_DIR}/usr/share/legal-info/
+mkdir ${TARGET_DIR}/usr/share/legal-info/
+grep "GPL-3.0" ${BASE_DIR}/legal-info/manifest.csv  | cut -d, -f1 > ${TARGET_DIR}/usr/share/legal-info/GPL-3.0-packages
+sed -i 's| -e /bin/gdbserver -o -e /bin/gdb | -s /usr/share/legal-info/GPL-3.0-packages |' ${rcS}
