@@ -153,7 +153,6 @@ config ARCH_BCM2835
 	select CLKSRC_OF
 	select BCM2835_TIMER
 	select PINCTRL
-	select PINCTRL_BCM2835
 	help
 	  This enables support for the Broadcom BCM2835 and BCM2836 SoCs.
 	  This SoC is used in the Raspberry Pi and Roku 2 devices.
@@ -207,6 +206,7 @@ config ARCH_BRCMSTB
 	select SOC_BRCMSTB
 	select SOC_BUS
 	select BRCMSTB
+	select PINCTRL
 	help
 	  Say Y if you intend to run the kernel on a Broadcom ARM-based STB
 	  chipset.

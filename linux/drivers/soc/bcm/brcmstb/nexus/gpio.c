@@ -31,13 +31,34 @@
 #include <linux/brcmstb/gpio_api.h>
 
 #include "gpio.h"
+#define GIO_BANK_SIZE	0x20
+#define GPIO_PER_BANK	32
 #define GIO_DATA_OFFSET 4
 #define GIO_DIR_OFFSET	8
 
 /* The largest register bus aperture is 64MB so limit offsets to 26 bits */
 #define BCHP_BUS_MASK	0x3FFFFFF
 
-static const char *brcmstb_gpio_compat = GPIO_DT_COMPAT;
+/* BCM2835 GPIO register offsets */
+#define GPFSEL0		0x0	/* Function Select */
+#define GPSET0		0x1c	/* Pin Output Set */
+#define GPCLR0		0x28	/* Pin Output Clear */
+#define GPLEV0		0x34	/* Pin Level */
+#define GPEDS0		0x40	/* Pin Event Detect Status */
+#define GPREN0		0x4c	/* Pin Rising Edge Detect Enable */
+#define GPFEN0		0x58	/* Pin Falling Edge Detect Enable */
+#define GPHEN0		0x64	/* Pin High Detect Enable */
+#define GPLEN0		0x70	/* Pin Low Detect Enable */
+#define GPAREN0		0x7c	/* Pin Async Rising Edge Detect */
+#define GPAFEN0		0x88	/* Pin Async Falling Edge Detect */
+#define GPPUD		0x94	/* Pin Pull-up/down Enable */
+#define GPPUDCLK0	0x98	/* Pin Pull-up/down Enable Clock */
+#define GPLAST		0xa0	/* Last offset conflicting with Linux driver */
+
+struct bcm2835_pinctrl {
+	struct device *dev;
+	void __iomem *base;
+};
 
 static int brcmstb_gpio_chip_find(struct gpio_chip *chip, void *data)
 {
@@ -78,21 +99,25 @@ static int brcmstb_gpio_request(unsigned int gpio)
 	return ret;
 }
 
-static int brcmstb_gpio_find_base_by_addr(uint32_t addr, uint32_t *start)
+static struct gpio_chip *brcmstb_gpio_find_chip_by_addr(uint32_t addr,
+							struct resource *res,
+							const char *compat)
 {
 	struct device_node *dn;
 	struct gpio_chip *gc;
-	struct resource res;
 	int ret;
 
-	for_each_compatible_node(dn, NULL, brcmstb_gpio_compat) {
-		ret = of_address_to_resource(dn, 0, &res);
+	if (!res)
+		return NULL;
+
+	for_each_compatible_node(dn, NULL, compat) {
+		ret = of_address_to_resource(dn, 0, res);
 		if (ret) {
 			pr_err("%s: unable to translate resource\n", __func__);
 			continue;
 		}
 
-		if (res.flags != IORESOURCE_MEM) {
+		if (res->flags != IORESOURCE_MEM) {
 			pr_err("%s: invalid resource type\n", __func__);
 			continue;
 		}
@@ -105,8 +130,8 @@ static int brcmstb_gpio_find_base_by_addr(uint32_t addr, uint32_t *start)
 		 * "ranges" property. The bus base address must be masked off
 		 * for comparisons
 		 */
-		if (addr < (res.start & BCHP_BUS_MASK) ||
-			addr >= (res.end & BCHP_BUS_MASK))
+		if (addr < (res->start & BCHP_BUS_MASK) ||
+			addr >= (res->end & BCHP_BUS_MASK))
 			continue;
 
 		gc = gpiochip_find(dn, brcmstb_gpio_chip_find);
@@ -115,45 +140,129 @@ static int brcmstb_gpio_find_base_by_addr(uint32_t addr, uint32_t *start)
 			continue;
 		}
 
-		if (start)
-			*start = (uint32_t)(res.start & BCHP_BUS_MASK);
-
-		return gc->base;
+		return gc;
 	}
 
+	return NULL;
+}
+
+static int brcmstb_gpio_find_base_by_addr(uint32_t addr, uint32_t mask,
+					  uint32_t *start)
+{
+	struct gpio_chip *gc = NULL;
+	struct resource res;
+	uint32_t gc_start;
+	int ret, bit, gpio, gpio_base, bank_offset, field_width = 1;
+
+	if (IS_ENABLED(CONFIG_GPIO_BRCMSTB) && !gc) {
+		gc = brcmstb_gpio_find_chip_by_addr(addr, &res,
+						    "brcm,brcmstb-gpio");
+		if (gc) {
+			gpio_base = gc->base;
+			gc_start = (uint32_t)(res.start & BCHP_BUS_MASK);
+			bank_offset = (addr - gc_start) / GIO_BANK_SIZE;
+
+			pr_debug("%s: xlate base=%d, offset=%d, gpio=%d\n",
+				__func__, gpio_base, bank_offset,
+				(bank_offset * GPIO_PER_BANK));
+
+			gpio_base += bank_offset * GPIO_PER_BANK;
+			gc_start += bank_offset * GIO_BANK_SIZE;
+		}
+	}
+
+	if (IS_ENABLED(CONFIG_PINCTRL_BCM2835) && !gc) {
+		gc = brcmstb_gpio_find_chip_by_addr(addr, &res,
+						    "brcm,bcm2835-gpio");
+		if (gc) {
+			gpio_base = gc->base;
+			gc_start = (uint32_t)(res.start & BCHP_BUS_MASK);
+
+			bank_offset = addr - gc_start;
+			if (bank_offset > GPLAST) {
+				pr_err("%s: register offset 0x%x is not supported\n",
+				       __func__, bank_offset);
+				return -EPERM;
+			} else if (bank_offset >= GPPUDCLK0) {
+				bank_offset -= GPPUDCLK0;
+				bank_offset >>= 2;
+				gpio_base += bank_offset * 32;
+			} else if (bank_offset >= GPPUD) {
+				pr_err("%s: register offset 0x%x is not supported\n",
+				       __func__, bank_offset);
+				return -EPERM;
+			} else if (bank_offset >= GPSET0) {
+				/* These registers control 8 GPIO per byte */
+				bank_offset -= GPSET0;
+				bank_offset %= (GPCLR0 - GPSET0);
+				gpio_base += bank_offset * 8;
+			} else {
+				/* These registers control 10 GPIO per word */
+				field_width = 3;
+				bank_offset >>= 2;
+				gpio_base += bank_offset * 10;
+			}
+
+			pr_debug("%s: xlate base=%d\n",
+				__func__, gpio_base);
+		}
+	}
+
+	if (gc) {
+		if (start)
+			*start = gc_start;
+
+		for (bit = 0, gpio = gpio_base;
+		     bit + (field_width - 1) < 32;
+		     bit += field_width, gpio++) {
+			/* Ignore bits which are not in mask */
+			if (!((((1 << field_width) - 1) << bit) & mask))
+				continue;
+
+			ret = brcmstb_gpio_request(gpio);
+			if (ret < 0) {
+				pr_err("%s: unable to request gpio %d\n",
+					__func__, gpio);
+				return ret;
+			}
+		}
+
+		/* We got full access to the entire mask */
+
+		return gpio_base;
+	}
+
+	pr_err("%s: addr is not in GPIO range\n", __func__);
 	return -ENODEV;
 
 }
 
-static int brcmstb_gpio_find_by_addr(uint32_t addr, unsigned int shift)
+static int bcm2835_gpio_update32(struct gpio_chip *gc, uint32_t offset,
+				 uint32_t mask, uint32_t value)
 {
-	int gpio, gpio_base, bank_offset;
-	uint32_t start;
+	struct bcm2835_pinctrl *pc = gpiochip_get_data(gc);
+	uint32_t ivalue;
 
-	gpio_base = brcmstb_gpio_find_base_by_addr(addr, &start);
-	if (gpio_base >= 0) {
-		/* Now find out what GPIO bank this pin belongs to */
-		bank_offset = (addr - start) / GIO_BANK_SIZE;
-
-		gpio = gpio_base + shift + bank_offset * GPIO_PER_BANK;
-
-		pr_debug("%s: xlate base=%d, offset=%d, shift=%d, gpio=%d\n",
-			__func__, gpio_base, bank_offset, shift,
-			(gpio - gpio_base));
-
-		return gpio;
+	if (offset >= GPSET0 && offset < GPLEV0) {
+		/* We don't want to read from these registers */
+		writel(value & mask, pc->base + offset);
+	} else {
+		ivalue = readl(pc->base + offset);
+		ivalue &= ~(mask);
+		ivalue |= (value & mask);
+		writel(ivalue, pc->base + offset);
 	}
 
-	return gpio_base;
+	return 0;
 }
 
 int brcmstb_gpio_update32(uint32_t addr, uint32_t mask, uint32_t value)
 {
 	struct gpio_chip *gc;
-	int ret, bit, gpio_base, offset, bank_offset;
-	unsigned long flags;
-	uint32_t start, ivalue;
-	void __iomem *reg;
+	int gpio_base, offset;
+	unsigned long __maybe_unused flags;
+	uint32_t start, __maybe_unused ivalue;
+	void __iomem *__maybe_unused reg;
 
 	/* Silently strip any higher order bits from the addr value passed
 	 * to this function, so that regardless of whether or not it is a
@@ -161,37 +270,11 @@ int brcmstb_gpio_update32(uint32_t addr, uint32_t mask, uint32_t value)
 	 */
 	addr &= BCHP_BUS_MASK;
 
-	gpio_base = brcmstb_gpio_find_base_by_addr(addr, &start);
-	if (gpio_base < 0) {
-		pr_err("%s: addr is not in GPIO range\n", __func__);
-		return -EPERM;
-	}
+	gpio_base = brcmstb_gpio_find_base_by_addr(addr, mask, &start);
+	if (gpio_base < 0)
+		return gpio_base;
 
-	/* Now find out what GPIO bank this pin belongs to */
 	offset = addr - start;
-	bank_offset = offset / GIO_BANK_SIZE;
-	offset -= bank_offset * GIO_BANK_SIZE;
-
-	pr_debug("%s: xlate base=%d, offset=%d, gpio=%d\n",
-		__func__, gpio_base, bank_offset,
-		(bank_offset * GPIO_PER_BANK));
-
-	gpio_base += bank_offset * GPIO_PER_BANK;
-
-	for (bit = 0; bit < GPIO_PER_BANK; bit++) {
-		/* Ignore bits which are not in mask */
-		if (!((1 << bit) & mask))
-			continue;
-
-		ret = brcmstb_gpio_request(gpio_base + bit);
-		if (ret < 0) {
-			pr_err("%s: unable to request gpio %d\n",
-				__func__, gpio_base + bit);
-			return ret;
-		}
-	}
-
-	/* We got full access to the entire mask, do the write */
 
 	pr_debug("%s: offset=0x%08x mask=0x%08x, value=0x%08x\n",
 		__func__, addr, mask, value);
@@ -201,33 +284,40 @@ int brcmstb_gpio_update32(uint32_t addr, uint32_t mask, uint32_t value)
 		pr_err("%s: unable to resolve gpio chip\n", __func__);
 		return -EPERM;
 	}
+
+#ifdef CONFIG_GPIO_BRCMSTB
 	reg = gc->reg_dat;
-	if (reg == 0) {
-		pr_err("%s: unable to resolve GIO mapped address\n", __func__);
-		return -EPERM;
+	if (reg) {
+		spin_lock_irqsave(&gc->bgpio_lock, flags);
+		ivalue = gc->read_reg(reg + offset - GIO_DATA_OFFSET);
+		ivalue &= ~(mask);
+		ivalue |= (value & mask);
+
+		/* update shadows */
+		switch (offset) {
+		case GIO_DATA_OFFSET:
+			gc->bgpio_data = ivalue;
+			break;
+		case GIO_DIR_OFFSET:
+			gc->bgpio_dir = ivalue;
+			break;
+		default:
+			break;
+		}
+
+		gc->write_reg(reg + offset - GIO_DATA_OFFSET, ivalue);
+		spin_unlock_irqrestore(&gc->bgpio_lock, flags);
+
+		return 0;
+	}
+#endif /* CONFIG_GPIO_BRCMSTB */
+
+	if (IS_ENABLED(CONFIG_PINCTRL_BCM2835)) {
+		return bcm2835_gpio_update32(gc, offset, mask, value);
 	}
 
-	spin_lock_irqsave(&gc->bgpio_lock, flags);
-	ivalue = gc->read_reg(reg + offset - GIO_DATA_OFFSET);
-	ivalue &= ~(mask);
-	ivalue |= (value & mask);
-
-	/* update shadows */
-	switch (offset) {
-	case GIO_DATA_OFFSET:
-		gc->bgpio_data = ivalue;
-		break;
-	case GIO_DIR_OFFSET:
-		gc->bgpio_dir = ivalue;
-		break;
-	default:
-		break;
-	}
-
-	gc->write_reg(reg + offset - GIO_DATA_OFFSET, ivalue);
-	spin_unlock_irqrestore(&gc->bgpio_lock, flags);
-
-	return 0;
+	pr_err("%s: unable to resolve GIO mapped address\n", __func__);
+	return -EPERM;
 }
 
 int brcmstb_gpio_irq(uint32_t addr, unsigned int shift)
@@ -240,13 +330,11 @@ int brcmstb_gpio_irq(uint32_t addr, unsigned int shift)
 	 */
 	addr &= BCHP_BUS_MASK;
 
-	gpio = brcmstb_gpio_find_by_addr(addr, shift);
+	gpio = brcmstb_gpio_find_base_by_addr(addr, (1 << shift), NULL);
 	if (gpio < 0)
 		return gpio;
 
-	ret = brcmstb_gpio_request(gpio);
-	if (ret < 0)
-		return ret;
+	gpio += shift;
 
 	ret = gpio_to_irq(gpio);
 	if (ret < 0) {

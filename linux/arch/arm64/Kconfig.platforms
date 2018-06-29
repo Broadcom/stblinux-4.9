@@ -52,6 +52,7 @@ config ARCH_BRCMSTB
 	select GENERIC_IRQ_CHIP
 	select SOC_BRCMSTB
 	select BRCMSTB
+	select PINCTRL
 	help
 	  This enables support for Broadcom's ARMv8 Set Top Box SoCs
 

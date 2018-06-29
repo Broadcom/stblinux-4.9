@@ -11,6 +11,7 @@
  * GNU General Public License for more details.
  */
 
+#include <linux/module.h>
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/types.h>
@@ -22,6 +23,7 @@
 #include <linux/of_address.h>
 
 #include "xpt_dma.h"
+#include "pm-common.h"
 
 struct xpt_dma_priv {
 	void __iomem	*memdma_mcpb;
@@ -728,6 +730,9 @@ static int __init xpt_dma_init(void)
 	int ret = 0;
 	struct platform_device *pdev = &xpt_dma_pdev;
 
+	if (brcmstb_pm_psci_initialized)
+		return ret;
+
 	if (of_machine_is_compatible("brcm,bcm74371a0") ||
 	    of_machine_is_compatible("brcm,bcm7211a0"))
 		return 0;
@@ -762,4 +767,4 @@ static int __init xpt_dma_init(void)
 	return ret;
 }
 
-arch_initcall(xpt_dma_init);
+module_init(xpt_dma_init);

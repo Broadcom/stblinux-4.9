@@ -10,5 +10,6 @@ obj-$(CONFIG_BRCMSTB_SRPD)	+= srpd.o
 obj-$(CONFIG_BRCMSTB_WKTMR)	+= wktmr.o
 obj-$(CONFIG_BRCMSTB_NEXUS_API)	+= nexus/
 obj-$(CONFIG_BRCMSTB_BBSI)	+= bbsi.o
+obj-$(CONFIG_PHYLIB)		+= phy_fixups.o
 
 CFLAGS_memory.o += -I$(src)/../../../scripts/dtc/libfdt

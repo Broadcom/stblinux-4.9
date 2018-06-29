@@ -7,7 +7,7 @@
  * S5: (a.k.a. S3 cold boot) much like S3, except DDR is powered down, so we
  *     treat this mode like a soft power-off, with wakeup allowed from AON
  *
- * Copyright © 2014-2017 Broadcom
+ * Copyright © 2014-2018 Broadcom
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -21,9 +21,6 @@
 
 #define pr_fmt(fmt) "brcmstb-pm: " fmt
 
-#ifdef CONFIG_BRCMSTB_PM_DEBUG
-#include <linux/debugfs.h>
-#endif
 
 #include <linux/kernel.h>
 #include <linux/printk.h>
@@ -40,16 +37,13 @@
 #include <linux/pm.h>
 #include <linux/bitops.h>
 #include <linux/dma-mapping.h>
-#include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/kconfig.h>
 #include <linux/memblock.h>
-#include <linux/sort.h>
 #include <linux/notifier.h>
-#include <linux/proc_fs.h>
-#include <linux/uaccess.h>
 #include <linux/platform_device.h>
 #include <linux/module.h>
+#include <linux/irqchip/arm-gic.h>
 #include <asm/fncpy.h>
 #include <asm/suspend.h>
 #include <asm/setup.h>
@@ -60,6 +54,8 @@
 
 #include "pm.h"
 #include "xpt_dma.h"
+#include "pm-common.h"
+#include "pm-psci.h"
 
 #define SHIMPHY_DDR_PAD_CNTRL		0x8c
 
@@ -84,17 +80,6 @@
 
 #define MAX_NUM_MEMC			3
 
-/* Capped for performance reasons */
-#define MAX_HASH_SIZE			SZ_256M
-/* Max per bank, to keep some fairness */
-#define MAX_HASH_SIZE_BANK		SZ_64M
-
-struct brcmstb_memc {
-	void __iomem *ddr_phy_base;
-	void __iomem *ddr_shimphy_base;
-	void __iomem *ddr_ctrl;
-};
-
 struct brcmstb_pm_control {
 	void __iomem *aon_ctrl_base;
 	void __iomem *aon_sram;
@@ -114,6 +99,7 @@ struct brcmstb_pm_control {
 	u32 phy_a_standby_ctrl_offs;
 	u32 phy_b_standby_ctrl_offs;
 	bool needs_ddr_pad;
+	bool needs_srpd_exit;
 	struct platform_device *pdev;
 };
 
@@ -129,199 +115,18 @@ enum bsp_initiate_command {
 #define PM_INITIATE_FAIL	0xfe
 
 static struct brcmstb_pm_control ctrl;
-
-#define MAX_EXCLUDE				16
-#define MAX_REGION				16
-#define MAX_EXTRA				8
-static int num_exclusions;
-static int num_regions;
-static struct dma_region exclusions[MAX_EXCLUDE];
-static struct dma_region regions[MAX_REGION];
-static struct brcmstb_memory bm;
+bool brcmstb_pm_psci_initialized;
 
 extern const unsigned long brcmstb_pm_do_s2_sz;
 extern asmlinkage int brcmstb_pm_do_s2(void __iomem *aon_ctrl_base,
-		void __iomem *ddr_phy_pll_status);
+				       unsigned int ddr_phy_pll_offset,
+				       unsigned int num_memcs,
+				       struct brcmstb_memc *memcs);
 
-static int __clear_region(struct dma_region arr[], int max);
 static int (*brcmstb_pm_do_s2_sram)(void __iomem *aon_ctrl_base,
-		void __iomem *ddr_phy_pll_status);
-
-#define BRCMSTB_PM_DEBUG_NAME	"brcmstb-pm"
-
-struct procfs_data {
-	struct dma_region *region;
-	unsigned len;
-};
-
-static int brcm_pm_proc_show(struct seq_file *s, void *data)
-{
-	int i;
-	struct procfs_data *procfs_data = s->private;
-
-	if (!procfs_data) {
-		seq_puts(s, "--- No region pointer ---\n");
-		return 0;
-	}
-	if (procfs_data->len == 0) {
-		seq_puts(s, "--- Nothing to display ---\n");
-		return 0;
-	}
-	if (!procfs_data->region) {
-		seq_printf(s, "--- Pointer is NULL, but length is %u ---\n",
-			procfs_data->len);
-		return 0;
-	}
-
-	for (i = 0; i < procfs_data->len; i++) {
-		struct dma_region *entry = &procfs_data->region[i];
-		unsigned long addr = entry->addr;
-		unsigned long len = entry->len;
-		unsigned long end = (addr > 0 || len > 0) ? addr + len - 1 : 0;
-
-		seq_printf(s, "%3d\t0x%08lx\t%12lu\t0x%08lx%s\n", i, addr, len,
-			end, entry->persistent ? "\t*" : "");
-	}
-	return 0;
-}
-
-static ssize_t brcm_pm_seq_write(struct file *file, const char __user *buf,
-	size_t size, loff_t *ppos)
-{
-	unsigned long start_addr, len;
-	int ret;
-	char str[128];
-	char *len_ptr;
-	struct seq_file *s = file->private_data;
-	struct procfs_data *procfs_data = s->private;
-	bool is_exclusion;
-
-	if (!procfs_data)
-		return -ENOMEM;
-
-	if (size >= sizeof(str))
-		return -E2BIG;
-
-	is_exclusion = (procfs_data->region == exclusions);
-
-	memset(str, 0, sizeof(str));
-	ret = copy_from_user(str, buf, size);
-	if (ret)
-		return ret;
-
-	/* Strip trailing newline */
-	len_ptr = str + strlen(str) - 1;
-	while (*len_ptr == '\r' || *len_ptr == '\n')
-		*len_ptr-- = '\0';
-
-	/* Special command "clear" empties the exclusions or regions list. */
-	if (strcmp(str, "clear") == 0) {
-		struct dma_region *region = procfs_data->region;
-		int max, ret;
-
-		max = is_exclusion ? num_exclusions : num_regions;
-		ret = __clear_region(region, max);
-
-		if (is_exclusion)
-			num_exclusions = ret;
-		else
-			num_regions = ret;
-
-		return size;
-	}
-
-	/*
-	 * We expect userland input to be in the format
-	 *     <start-address> <length>
-	 * where start-address and length are separated by one or more spaces.
-	 * Both must be valid numbers. We do accept decimal, hexadecimal and
-	 * octal numbers.
-	 */
-	len_ptr = strchr(str, ' ');
-	if (!len_ptr)
-		return -EINVAL;
-	*len_ptr = '\0';
-	do {
-		len_ptr++;
-	} while (*len_ptr == ' ');
-
-	if (kstrtoul(str, 0, &start_addr) != 0)
-		return -EINVAL;
-	if (kstrtoul(len_ptr, 0, &len) != 0)
-		return -EINVAL;
-
-	if (is_exclusion)
-		ret = brcmstb_pm_mem_exclude(start_addr, len);
-	else
-		ret = brcmstb_pm_mem_region(start_addr, len);
-
-	return ret < 0 ? ret : size;
-}
-
-static int brcm_pm_proc_open(struct inode *inode, struct file *file)
-{
-	void *data;
-
-	/*
-	 * Using debugfs, inode->i_private contains our private data. For
-	 * procfs, our private data resides in PDE_DATA(inode) instead.
-	 */
-	if (inode->i_private)
-		data = inode->i_private;
-	else
-		data = PDE_DATA(inode);
-
-	return single_open(file, brcm_pm_proc_show, data);
-}
-
-static const struct file_operations brcm_pm_proc_ops = {
-	.open		= brcm_pm_proc_open,
-	.read		= seq_read,
-	.write		= brcm_pm_seq_write,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-#ifdef CONFIG_BRCMSTB_PM_DEBUG
-
-static int brcm_pm_debug_init(void)
-{
-	struct dentry *dir;
-	struct procfs_data *exclusion_data, *region_data;
-
-	dir = debugfs_create_dir(BRCMSTB_PM_DEBUG_NAME, NULL);
-	if (IS_ERR_OR_NULL(dir))
-		return IS_ERR(dir) ? PTR_ERR(dir) : -ENOENT;
-
-	/*
-	 * This driver has no "exit" function, so we don't worry about freeing
-	 * these memory areas if setup succeeds.
-	 */
-	exclusion_data = kmalloc(sizeof(*exclusion_data), GFP_KERNEL);
-	if (!exclusion_data)
-		return -ENOMEM;
-	region_data = kmalloc(sizeof(*region_data), GFP_KERNEL);
-	if (!region_data) {
-		kfree(exclusion_data);
-		return -ENOMEM;
-	}
-
-	exclusion_data->region = exclusions;
-	exclusion_data->len = ARRAY_SIZE(exclusions);
-	region_data->region = regions;
-	region_data->len = ARRAY_SIZE(regions);
-
-	debugfs_create_file("exclusions", S_IFREG | S_IRUGO | S_IWUSR, dir,
-		exclusion_data, &brcm_pm_proc_ops);
-	debugfs_create_file("regions", S_IFREG | S_IRUGO | S_IWUSR, dir,
-		region_data, &brcm_pm_proc_ops);
-
-	return 0;
-}
-
-fs_initcall(brcm_pm_debug_init);
-
-#endif /* CONFIG_BRCMSTB_PM_DEBUG */
+				    unsigned int ddr_phy_pll_offset,
+				    unsigned int num_memcs,
+				    struct brcmstb_memc *memcs);
 
 static int brcmstb_init_sram(struct device_node *dn)
 {
@@ -528,6 +333,15 @@ static void brcmstb_do_pmsm_power_down(unsigned long base_cmd, bool onewrite)
 {
 	void __iomem *base = ctrl.aon_ctrl_base;
 
+	/*
+	 * If the CPU is committed to power down, make sure
+	 * the PMSM will be in charge of waking it up upon IRQ,
+	 * i.e. IRQ lines are cut from GIC CPU IF to the CPU by
+	 * disabling the GIC CPU IF to prevent wfi from completing
+	 * execution behind the PMSM's back
+	 */
+	gic_cpu_if_down(0);
+
 	if ((ctrl.s3entry_method == 1) && (base_cmd == PM_COLD_CONFIG))
 		s5entry_method1();
 
@@ -541,6 +355,10 @@ static void brcmstb_do_pmsm_power_down(unsigned long base_cmd, bool onewrite)
 		(void)__raw_readl(base + AON_CTRL_PM_CTRL);
 	}
 	wfi();
+
+	/* Execution can only be resumed through the reset vector */
+	while (1)
+		;
 }
 
 /* Support S5 cold boot out of "poweroff" */
@@ -561,11 +379,17 @@ static void brcmstb_pm_poweroff(void)
 			     SHIMPHY_PAD_S3_PWRDWN_SEQ_SHIFT),
 			     ~SHIMPHY_PAD_S3_PWRDWN_SEQ_MASK);
 		ddr_ctrl_set(false);
-		brcmstb_do_pmsm_power_down(M1_PM_COLD_CONFIG, true);
+		if (brcmstb_pm_psci_initialized)
+			brcmstb_psci_sys_poweroff();
+		else
+			brcmstb_do_pmsm_power_down(M1_PM_COLD_CONFIG, true);
 		return; /* We should never actually get here */
 	}
 
-	brcmstb_do_pmsm_power_down(PM_COLD_CONFIG, false);
+	if (brcmstb_pm_psci_initialized)
+		brcmstb_psci_sys_poweroff();
+	else
+		brcmstb_do_pmsm_power_down(PM_COLD_CONFIG, false);
 }
 
 static void *brcmstb_pm_copy_to_sram(void *fn, size_t len)
@@ -600,8 +424,9 @@ static int brcmstb_pm_s2(void)
 		return -EINVAL;
 
 	return brcmstb_pm_do_s2_sram(ctrl.aon_ctrl_base,
-			ctrl.memcs[0].ddr_phy_base +
-			ctrl.pll_status_offset);
+				     ctrl.pll_status_offset,
+				     ctrl.needs_srpd_exit ? ctrl.num_memc : 0,
+				     ctrl.memcs);
 }
 
 static int brcmstb_pm_s3_control_hash(struct brcmstb_s3_params *params,
@@ -638,164 +463,6 @@ static int brcmstb_pm_s3_control_hash(struct brcmstb_s3_params *params,
 	__raw_writel(hash_len, ctrl.aon_sram + AON_REG_CONTROL_HASH_LEN);
 
 	return 0;
-}
-
-static inline int region_collision(struct dma_region *reg1,
-				   struct dma_region *reg2)
-{
-	return (reg1->addr + reg1->len > reg2->addr) &&
-	       (reg2->addr + reg2->len > reg1->addr);
-}
-
-/**
- * Check if @regions[0] collides with regions in @exceptions, and modify
- * regions[0..(max-1)] to ensure that they they exclude any area in @exceptions
- *
- * Note that the regions in @exceptions must be sorted into ascending order
- * prior to calling this function
- *
- * Returns the number of @regions used
- *
- * e.g., if @regions[0] and @exceptions do not overlap, return 1 and do nothing
- *       if @exceptions contains two ranges and both are entirely contained
- *          within @regions[0], split @regions[0] into @regions[0],
- *          @regions[1], and @regions[2], and return 3
- */
-static int region_handle_collisions(struct dma_region *regions, int max,
-				struct dma_region *exceptions, int num_except)
-{
-	int i;
-	struct dma_region *reg = &regions[0];
-	int reg_count = 1;
-
-	/*
-	 * Since the list of regions is ordered in ascending order we need only
-	 * to compare the last entry in regions against each exception region
-	 */
-	for (i = 0; i < num_except; i++) {
-		struct dma_region *except = &exceptions[i];
-		dma_addr_t start = reg->addr;
-		dma_addr_t end = reg->addr + reg->len;
-
-		if (!region_collision(reg, except))
-			/* No collision */
-			continue;
-
-		if (start < except->addr && end > except->addr + except->len) {
-			reg->len = except->addr - start;
-			if (reg_count < max) {
-				/* Split in 2 */
-				reg++;
-				reg_count++;
-				reg->addr = except->addr + except->len;
-				reg->len = end - reg->addr;
-			} else {
-				pr_warn("Not enough space to split region\n");
-				break;
-			}
-		} else if (start < except->addr) {
-			/* Overlap at right edge; truncate end of 'reg' */
-			reg->len = except->addr - start;
-		} else if (end > except->addr + except->len) {
-			/* Overlap at left edge; truncate beginning of 'reg' */
-			reg->addr = except->addr + except->len;
-			reg->len = end - reg->addr;
-		} else {
-			/*
-			 * 'reg' is entirely contained within 'except'?  This
-			 * should not happen, but trim to zero-length just in
-			 * case
-			 */
-			reg->len = 0;
-			reg_count--;
-			break;
-		}
-	}
-
-	return reg_count;
-}
-
-static int dma_region_compare(const void *a, const void *b)
-{
-	struct dma_region *reg_a = (struct dma_region *)a;
-	struct dma_region *reg_b = (struct dma_region *)b;
-
-	if (reg_a->addr < reg_b->addr)
-		return -1;
-	if (reg_a->addr > reg_b->addr)
-		return 1;
-	return 0;
-}
-
-/* Initialize the DMA region list and return the number of regions */
-static int configure_main_hash(struct dma_region *regions, int max,
-			       struct dma_region *exclude, int num_exclude)
-{
-	struct brcmstb_range *range;
-	int idx = 0, memc;
-	size_t total = 0;
-
-	/*
-	 * First sort the excluded regions in ascending order. This makes things
-	 * easier when we come to adding the regions since we avoid having to
-	 * add entries in the middle of the region list
-	 */
-	sort(exclude, num_exclude, sizeof(exclude[0]), &dma_region_compare,
-			NULL);
-
-	/*
-	 * Hash up to MAX_HASH_SIZE_BANK from each memory bank, with a
-	 * total limit of MAX_HASH_SIZE. Account for collisions with the
-	 * 'exclude' regions.
-	 */
-	for_each_range_of_memc(bm, memc, range) {
-		phys_addr_t block_start = range->addr;
-		phys_addr_t size_limit = range->size;
-
-		struct dma_region *reg = &regions[idx];
-		int i, count;
-		size_t bank_total = 0;
-
-		reg->addr = block_start;
-		reg->len = size_limit;
-
-		/*
-		 * Check for collisions with the excluded regions.  'reg' may be
-		 * split into 0 to (num_exclude + 1) segments, so account
-		 * accordingly
-		 */
-		count = region_handle_collisions(reg, max - idx, exclude,
-						 num_exclude);
-
-		/*
-		 * Add region length(s) to total. Cap at MAX_HASH_SIZE_BANK
-		 * per bank and MAX_HASH_SIZE total.
-		 */
-		for (i = 0; i < count; i++) {
-			/* Don't create 0-sized regions */
-			if (total >= MAX_HASH_SIZE)
-				break;
-			if (bank_total >= MAX_HASH_SIZE_BANK)
-				break;
-			if (total + reg[i].len > MAX_HASH_SIZE)
-				reg[i].len = MAX_HASH_SIZE - total;
-			if (bank_total + reg[i].len > MAX_HASH_SIZE_BANK)
-				reg[i].len = MAX_HASH_SIZE_BANK - bank_total;
-			total += reg[i].len;
-			bank_total += reg[i].len;
-		}
-
-		idx += i;
-
-		if (idx >= max)
-			break;
-
-		/* Apply total cap */
-		if (total >= MAX_HASH_SIZE)
-			break;
-	}
-
-	return idx;
 }
 
 /*
@@ -883,81 +550,6 @@ static int brcmstb_pm_s3_main_memory_hash(struct brcmstb_s3_params *params,
 
 	return 0;
 }
-
-static int __clear_region(struct dma_region arr[], int max)
-{
-	int i, j;
-	bool found_non_persistent = false;
-
-	for (i = 0, j = 0; i < max; i++) {
-		if (!arr[i].persistent) {
-			/*
-			 * Found a non-persistent entry. Remember this, so we
-			 * can fill the freed up entry with a persistent entry
-			 * should there be one.
-			 */
-			found_non_persistent = true;
-		} else if (found_non_persistent) {
-			/*
-			 * We found a persistent entry, but at least one non-
-			 * persistent entry preceeded it. Copy our entry to the
-			 * first available entry in the array.
-			 */
-			arr[j++] = arr[i];
-		} else {
-			/*
-			 * So far we've only found persistent entries. We need
-			 * to keep all of them. Just increment the "empty"
-			 * counter.
-			 */
-			j++;
-			continue;
-		}
-		memset(&arr[i], 0, sizeof(arr[i]));
-	}
-
-	return j;
-}
-
-static int __sorted_insert(struct dma_region arr[], int *cur, int max,
-			   phys_addr_t addr, size_t len, bool persistent)
-{
-	int end = *cur;
-
-	if (end >= max)
-		return -ENOSPC;
-
-	arr[end].addr = addr;
-	arr[end].len = len;
-	arr[end].persistent = persistent;
-	end++;
-	*cur = end;
-
-	/* Not pretty to insert first and sort second, but it works for now. */
-	sort(arr, end, sizeof(arr[0]), &dma_region_compare, NULL);
-
-	return 0;
-}
-
-static int __pm_mem_exclude(phys_addr_t addr, size_t len, bool persistent)
-{
-	return __sorted_insert(exclusions, &num_exclusions, MAX_EXCLUDE, addr,
-			      len, persistent);
-}
-
-
-int brcmstb_pm_mem_exclude(phys_addr_t addr, size_t len)
-{
-	return __pm_mem_exclude(addr, len, false);
-}
-EXPORT_SYMBOL(brcmstb_pm_mem_exclude);
-
-int brcmstb_pm_mem_region(phys_addr_t addr, size_t len)
-{
-	return __sorted_insert(regions, &num_regions, MAX_EXCLUDE, addr, len,
-			      false);
-}
-EXPORT_SYMBOL(brcmstb_pm_mem_region);
 
 /*
  * This function is called on a new stack, so don't allow inlining (which will
@@ -1069,6 +661,46 @@ static int brcmstb_pm_do_s3(unsigned long sp)
 	return ret;
 }
 
+static int brcmstb_psci_system_mem(void)
+{
+	enum bsp_initiate_command cmd;
+	u32 flags;
+
+	flags = __raw_readl(ctrl.aon_sram + AON_REG_MAGIC_FLAGS);
+
+	flags &= S3_BOOTLOADER_RESERVED;
+#ifndef CONFIG_BRCMSTB_XPT_HASH
+	flags |= S3_FLAG_NO_MEM_VERIFY;
+#endif
+	flags |= S3_FLAG_LOAD_RANDKEY; /* TODO: make this selectable */
+
+	/* Load random / fixed key */
+	if (flags & S3_FLAG_LOAD_RANDKEY)
+		cmd = BSP_GEN_RANDOM_KEY;
+	else
+		cmd = BSP_GEN_FIXED_KEY;
+	if (do_bsp_initiate_command(cmd)) {
+		pr_info("key loading failed\n");
+		return -EIO;
+	}
+
+	flags |= BRCMSTB_S3_MAGIC_SHORT;
+
+	__raw_writel(flags, ctrl.aon_sram + AON_REG_MAGIC_FLAGS);
+
+	/*
+	 * If the CPU is committed to power down, make sure
+	 * the PMSM will be in charge of waking it up upon IRQ,
+	 * i.e. IRQ lines are cut from GIC CPU IF to the CPU by
+	 * disabling the GIC CPU IF to prevent wfi from completing
+	 * execution behind the PMSM's back
+	 */
+	gic_cpu_if_down(0);
+
+	/* Should not return */
+	return brcmstb_psci_system_mem_finish();
+}
+
 static int brcmstb_pm_s3(void)
 {
 	void __iomem *sp = ctrl.boot_sram + ctrl.boot_sram_len;
@@ -1086,7 +718,10 @@ static int brcmstb_pm_standby(bool deep_standby)
 	if (deep_standby) {
 		/* Save DTU registers for S3 only. SAGE won't let us for S2. */
 		dtu_save();
-		ret = brcmstb_pm_s3();
+		if (brcmstb_pm_psci_initialized)
+			ret = brcmstb_psci_system_mem();
+		else
+			ret = brcmstb_pm_s3();
 	} else {
 		ret = brcmstb_pm_s2();
 	}
@@ -1123,52 +758,6 @@ static int brcmstb_pm_valid(suspend_state_t state)
 		return false;
 	}
 }
-
-static int __init proc_pm_init(void)
-{
-	struct procfs_data *exclusion_data, *region_data;
-	struct proc_dir_entry *brcmstb_root;
-	const int perm = S_IRUSR | S_IWUSR;
-
-	brcmstb_root = proc_mkdir("brcmstb", NULL);
-	if (!brcmstb_root)
-		return 0;
-
-	/*
-	 * This driver has no "exit" function, so we don't worry about freeing
-	 * these memory areas if setup succeeds.
-	 */
-	exclusion_data = kmalloc(sizeof(*exclusion_data), GFP_KERNEL);
-	if (!exclusion_data)
-		return -ENOMEM;
-	region_data = kmalloc(sizeof(*region_data), GFP_KERNEL);
-	if (!region_data) {
-		kfree(exclusion_data);
-		return -ENOMEM;
-	}
-
-	exclusion_data->region = exclusions;
-	exclusion_data->len = ARRAY_SIZE(exclusions);
-	region_data->region = regions;
-	region_data->len = ARRAY_SIZE(regions);
-
-	if (!proc_create_data("regions", perm, brcmstb_root, &brcm_pm_proc_ops,
-			      region_data))
-		goto err_out;
-	if (!proc_create_data("exclusions", perm, brcmstb_root,
-			      &brcm_pm_proc_ops, exclusion_data))
-		goto err_out;
-
-	return 0;
-
-err_out:
-	proc_remove(brcmstb_root); /* cleans up recursively */
-	kfree(exclusion_data);
-	kfree(region_data);
-
-	return -ENOENT;
-}
-module_init(proc_pm_init);
 
 static const struct platform_suspend_ops brcmstb_pm_ops = {
 	.enter		= brcmstb_pm_enter,
@@ -1246,11 +835,24 @@ static const struct of_device_id ddr_phy_dt_ids[] = {
 
 struct ddr_seq_ofdata {
 	bool needs_ddr_pad;
+	bool needs_srpd_exit;
 	u32 warm_boot_offset;
 };
 
 static const struct ddr_seq_ofdata ddr_seq_b22 = {
 	.needs_ddr_pad = false,
+	.needs_srpd_exit = false,
+	.warm_boot_offset = 0x2c,
+};
+
+static const struct ddr_seq_ofdata ddr_seq_b21 = {
+	.needs_ddr_pad = true,
+	.needs_srpd_exit = false,
+};
+
+static const struct ddr_seq_ofdata ddr_seq_b31 = {
+	.needs_ddr_pad = false,
+	.needs_srpd_exit = true,
 	.warm_boot_offset = 0x2c,
 };
 
@@ -1266,7 +868,7 @@ static const struct of_device_id ddr_shimphy_dt_ids[] = {
 static const struct of_device_id brcmstb_memc_of_match[] = {
 	{
 		.compatible = "brcm,brcmstb-memc-ddr-rev-b.2.1",
-		.data = &ddr_seq,
+		.data = &ddr_seq_b21,
 	},
 	{
 		.compatible = "brcm,brcmstb-memc-ddr-rev-b.2.2",
@@ -1282,7 +884,7 @@ static const struct of_device_id brcmstb_memc_of_match[] = {
 	},
 	{
 		.compatible = "brcm,brcmstb-memc-ddr-rev-b.3.1",
-		.data = &ddr_seq_b22,
+		.data = &ddr_seq_b31,
 	},
 	{
 		.compatible = "brcm,brcmstb-memc-ddr",
@@ -1412,6 +1014,7 @@ static int brcmstb_pm_probe(struct platform_device *pdev)
 
 		ddr_seq_data = of_id->data;
 		ctrl.needs_ddr_pad = ddr_seq_data->needs_ddr_pad;
+		ctrl.needs_srpd_exit = ddr_seq_data->needs_srpd_exit;
 		/* Adjust warm boot offset based on the DDR sequencer */
 		if (ddr_seq_data->warm_boot_offset)
 			ctrl.warm_boot_offset = ddr_seq_data->warm_boot_offset;
@@ -1475,6 +1078,10 @@ static int brcmstb_pm_probe(struct platform_device *pdev)
 	ret = brcmstb_dtusave_init(ctrl.s3_params->dtu);
 	if (ret)
 		goto out2;
+
+	ret = brcmstb_pm_psci_init();
+	if (!ret)
+		brcmstb_pm_psci_initialized = true;
 
 	atomic_notifier_chain_register(&panic_notifier_list,
 				       &brcmstb_pm_panic_nb);

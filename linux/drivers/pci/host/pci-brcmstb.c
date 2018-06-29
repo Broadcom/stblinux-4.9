@@ -300,8 +300,17 @@ static const struct pcie_cfg_data bcm7278_cfg = {
 static void __iomem *brcm_pci_map_cfg(struct pci_bus *bus, unsigned int devfn,
 				      int where);
 
+static void __iomem *brcm_pci_map_cfg32(struct pci_bus *bus, unsigned int devfn,
+					int where);
+
 static struct pci_ops brcm_pci_ops = {
 	.map_bus = brcm_pci_map_cfg,
+	.read = pci_generic_config_read,
+	.write = pci_generic_config_write,
+};
+
+static struct pci_ops brcm_pci_ops32 = {
+	.map_bus = brcm_pci_map_cfg32,
 	.read = pci_generic_config_read32,
 	.write = pci_generic_config_write32,
 };
@@ -345,6 +354,7 @@ struct brcm_pcie {
 	enum pcie_type		type;
 	struct pci_bus		*bus;
 	int			id;
+	bool			ep_wakeup_capable;
 };
 
 struct of_pci_range *dma_ranges;
@@ -758,9 +768,45 @@ done:
 	return ret;
 }
 
+static int pci_dev_may_wakeup(struct pci_dev *dev, void *data)
+{
+	bool *ret = data;
+
+	if (device_may_wakeup(&dev->dev)) {
+		*ret = true;
+		dev_info(&dev->dev, "disable cancelled for wake-up device\n");
+	}
+	return (int) *ret;
+}
+
 static void set_regulators(struct brcm_pcie *pcie, bool on)
 {
 	struct list_head *pos;
+	struct pci_bus *bus = pcie->bus;
+
+	if (on) {
+		if (pcie->ep_wakeup_capable) {
+			/*
+			 * We are resuming from a suspend.  In the suspend we
+			 * did not disable the power supplies, so there is
+			 * no need to enable them (and falsely increase their
+			 * usage count).
+			 */
+			pcie->ep_wakeup_capable = false;
+			return;
+		}
+	} else {
+		/*
+		 * If at least one device on this bus is enabled as a wake-up
+		 * source, do not turn off regulators
+		 */
+		pcie->ep_wakeup_capable = false;
+		if (pcie->bridge_setup_done) {
+			pci_walk_bus(bus, pci_dev_may_wakeup, &pcie->ep_wakeup_capable);
+			if (pcie->ep_wakeup_capable)
+				return;
+		}
+	}
 
 	list_for_each(pos, &pcie->pwr_supplies) {
 		struct brcm_dev_pwr_supply *supply
@@ -1116,24 +1162,31 @@ static void __iomem *brcm_pci_map_cfg(struct pci_bus *bus, unsigned int devfn,
 				      int where)
 {
 	struct brcm_pcie *pcie = bus->sysdata;
-	void __iomem *base = pcie->base;
-	bool rc_access = pci_is_root_bus(bus);
 	int idx;
 
-	if (!is_pcie_link_up(pcie, true))
-		return NULL;
+	/* Accesses to the RC go right to the RC registers if slot==0 */
+	if (pci_is_root_bus(bus))
+		return PCI_SLOT(devfn) ? NULL : pcie->base + where;
 
-	base = pcie->base;
+	/* For devices, write to the config space index register */
 	idx = cfg_index(bus->number, devfn, where);
-
 	bcm_writel(idx, IDX_ADDR(pcie));
+	return DATA_ADDR(pcie) + (where & 0x3);
+}
 
-	if (rc_access) {
-		if (PCI_SLOT(devfn))
-			return NULL;
-		return base + (where & ~3);
-	}
+static void __iomem *brcm_pci_map_cfg32(struct pci_bus *bus, unsigned int devfn,
+					int where)
+{
+	struct brcm_pcie *pcie = bus->sysdata;
+	int idx;
 
+	/* Accesses to the RC go right to the RC registers if slot==0 */
+	if (pci_is_root_bus(bus))
+		return PCI_SLOT(devfn) ? NULL : pcie->base + (where & ~0x3);
+
+	/* For devices, write to the config space index register */
+	idx = cfg_index(bus->number, devfn, where);
+	bcm_writel(idx, IDX_ADDR(pcie));
 	return DATA_ADDR(pcie);
 }
 
@@ -1256,6 +1309,7 @@ static const struct of_device_id brcm_pci_match[] = {
 	{ .compatible = "brcm,bcm7425-pcie", .data = &bcm7425_cfg },
 	{ .compatible = "brcm,bcm7435-pcie", .data = &bcm7435_cfg },
 	{ .compatible = "brcm,bcm7278-pcie", .data = &bcm7278_cfg },
+	{ .compatible = "brcm,bcm7211-pcie", .data = &generic_cfg },
 	{ .compatible = "brcm,pci-plat-dev", .data = &generic_cfg },
 	{},
 };
@@ -1285,6 +1339,7 @@ static int brcm_pcie_probe(struct platform_device *pdev)
 	const char *name;
 	struct brcm_dev_pwr_supply *supply;
 	struct pci_bus *child;
+	struct pci_ops *ops;
 
 	pcie = devm_kzalloc(&pdev->dev, sizeof(struct brcm_pcie), GFP_KERNEL);
 	if (!pcie)
@@ -1407,7 +1462,10 @@ static int brcm_pcie_probe(struct platform_device *pdev)
 	}
 	pcie->msi = of_pci_find_msi_chip_by_node(msi_dn);
 
-	pcie->bus = pci_create_root_bus(pcie->dev, 0, &brcm_pci_ops, pcie,
+	ops =  strcmp(of_id->compatible, "brcm,bcm7211-pcie")
+		? &brcm_pci_ops : &brcm_pci_ops32;
+
+	pcie->bus = pci_create_root_bus(pcie->dev, 0, ops, pcie,
 					&pcie->resources);
 	if (!pcie->bus) {
 		dev_err(pcie->dev, "unable to create PCI root bus\n");
