@@ -651,36 +651,28 @@ static int brcm_parse_ranges(struct brcm_pcie *pcie)
 	}
 
 	resource_list_for_each_entry(win, &pcie->resources) {
-		struct resource *parent, *res = win->res;
+		struct resource *res = win->res;
 		dma_addr_t offset = (dma_addr_t) win->offset;
 
-		if (resource_type(res) == IORESOURCE_IO) {
-			parent = &ioport_resource;
-		} else if (resource_type(res) == IORESOURCE_MEM) {
-			if (pcie->num_out_wins >= BRCM_NUM_PCI_OUT_WINS) {
-				dev_err(pcie->dev, "too many outbound wins\n");
-				return -EINVAL;
-			}
-			pcie->out_wins[pcie->num_out_wins].cpu_addr
-				= (phys_addr_t) res->start;
-			pcie->out_wins[pcie->num_out_wins].pci_addr
-				= (dma_addr_t) (res->start
-						- (phys_addr_t)offset);
-			pcie->out_wins[pcie->num_out_wins].size
-				= (dma_addr_t)(res->end - res->start + 1);
-			pcie->num_out_wins++;
-			parent = &iomem_resource;
-		} else {
+		if (resource_type(res) != IORESOURCE_MEM)
 			continue;
+		if (pcie->num_out_wins >= BRCM_NUM_PCI_OUT_WINS) {
+			dev_err(pcie->dev, "too many outbound windows\n");
+			return -EINVAL;
 		}
-
-		ret = devm_request_resource(pcie->dev, parent, res);
-		if (ret) {
-			dev_err(pcie->dev, "failed to get res %pR\n", res);
-			return ret;
-		}
+		pcie->out_wins[pcie->num_out_wins].cpu_addr
+			= (phys_addr_t)res->start;
+		pcie->out_wins[pcie->num_out_wins].pci_addr
+			= (dma_addr_t)(res->start - (phys_addr_t)offset);
+		pcie->out_wins[pcie->num_out_wins].size
+			= (dma_addr_t)(res->end - res->start + 1);
+		pcie->num_out_wins++;
 	}
-	return 0;
+
+	ret =  devm_request_pci_bus_resources(pcie->dev, &pcie->resources);
+	if (ret)
+		dev_err(pcie->dev, "failed to request pci resources\n");
+	return ret;
 }
 
 static int brcm_pci_dma_range_parser_init(struct of_pci_range_parser *parser,
@@ -1072,13 +1064,18 @@ static int brcm_pcie_setup_bridge(struct brcm_pcie *pcie)
 static void enter_l23(struct brcm_pcie *pcie)
 {
 	void __iomem *base = pcie->base;
-	int tries, l23;
+	int l23, i;
 
 	/* assert request for L23 */
 	WR_FLD_RB(base, PCIE_MISC_PCIE_CTRL, PCIE_L23_REQUEST, 1);
-	/* poll L23 status */
-	for (tries = 0, l23 = 0; tries < 1000 && !l23; tries++)
+
+	/* Wait up to 30 msec for L23 */
+	l23 = RD_FLD(base, PCIE_MISC_PCIE_STATUS, PCIE_LINK_IN_L23);
+	for (i = 0; i < 15 && !l23; i++) {
+		usleep_range(2000, 2400);
 		l23 = RD_FLD(base, PCIE_MISC_PCIE_STATUS, PCIE_LINK_IN_L23);
+	}
+
 	if (!l23)
 		dev_err(pcie->dev, "failed to enter L23\n");
 }
@@ -1317,11 +1314,16 @@ MODULE_DEVICE_TABLE(of, brcm_pci_match);
 
 static void _brcm_pcie_remove(struct brcm_pcie *pcie)
 {
+	struct resource_entry *window;
+
 	brcm_msi_remove(pcie->msi);
 	turn_off(pcie);
 	clk_disable_unprepare(pcie->clk);
 	clk_put(pcie->clk);
 	set_regulators(pcie, false);
+	resource_list_for_each_entry(window, &pcie->resources)
+		kfree(window->res);
+	pci_free_resource_list(&pcie->resources);
 	brcm_pcie_remove_controller(pcie);
 }
 

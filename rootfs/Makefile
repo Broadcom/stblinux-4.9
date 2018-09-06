@@ -263,7 +263,10 @@ images-%:
 # release-classic and release-buildroot in parallel.
 release: release-classic
 
+# Build buildroot only for releases other (i.e. newer) than 3.14.
+ifneq ($(MAJOR_VERSION),314)
 release-classic: release-buildroot
+endif
 
 release-classic:
 	# make sure this is a clean view; release/ will likely exist due to
@@ -305,9 +308,13 @@ release-classic:
 	mv images/* release/$(VERSION)/
 
 release-buildroot:
+	# Accept missing buildroot directory for stb-3.14, but bail otherwise.
 	@if [ ! -d ../buildroot ]; then \
-		echo "Buildroot doesn't exist. Skipping."; \
-		exit 1 ; \
+		echo "Buildroot doesn't exist."; \
+		echo "$(VERSION)" | grep '^314' >/dev/null; \
+		if [ $$? != 0 ]; then \
+			exit 1; \
+		fi; \
 	fi
 	@echo "Wiping any existing buildroot builds..."
 	rm -rf ../buildroot/output

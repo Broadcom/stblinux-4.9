@@ -1,0 +1,66 @@
+BRCMSTB_OUTPUT_DIR ?= output
+BRCMSTB_RELEASE_DIR = $(BRCMSTB_OUTPUT_DIR)/release
+
+BRCMSTB_VER := $(shell ./bin/linuxver.sh -dps misc/linux.master)
+BRCMSTB_LONG_VER := $(shell ./bin/linuxver.sh misc/linux.master)
+
+VERSION		:= $(shell bin/linuxver.sh misc/linux.master)
+DOTVERSION	:= $(patsubst 3%,3.%,$(patsubst 4%,4.%,$(patsubst 5%,5.%,$(VERSION))))
+MAJOR_VERSION	:= $(shell echo $(VERSION) | cut -d- -f1)
+STB_VERSION	:= stb-$(shell echo $(DOTVERSION) | cut -d- -f1)
+
+BINARY_DST	= $(BRCMSTB_RELEASE_DIR)/buildroot-$(VERSION)
+SRC_DST		= $(BRCMSTB_RELEASE_DIR)/src
+
+brcmstb-tarball:
+	@if [ "$(VERSION)" = "" ]; then exit 1; fi
+	@echo "Getting ready to wipe any existing buildroot builds."
+	@echo "Hit Ctrl-C within 5 seconds to abort."
+	@sleep 5
+	@echo "Wiping $(BRCMSTB_OUTPUT_DIR)..."
+	rm -rf $(BRCMSTB_OUTPUT_DIR)
+	test -d $(SRC_DST) || mkdir -p $(SRC_DST)
+	@echo "Creating tar-ball (without downloads)..."
+	tar -C .. -c -f $(SRC_DST)/buildroot-$(DOTVERSION).tar \
+		--exclude buildroot/.git \
+		--exclude buildroot/dl \
+		--exclude buildroot/output \
+		buildroot
+
+brcmstb-diffs: brcmstb-tarball
+	@if [ "$(VERSION)" = "" ]; then exit 1; fi
+	@echo "Generating buildroot diffs..."
+	test -d $(SRC_DST) || mkdir -p $(SRC_DST)
+	( \
+		cwd=`pwd`; \
+		dest="$$cwd/$(SRC_DST)"; \
+		git_log=`git log --oneline | grep 'Update for 20' | head -1`; \
+		base_sha=`echo "$$git_log" | cut -d' ' -f1`; \
+		rel=`echo "$$git_log" | cut -d' ' -f4-`; \
+		echo "Base SHA is $$base_sha, release is $$rel"; \
+		git diff --diff-filter=M $${base_sha}..HEAD | bzip2 \
+			>$$dest/buildroot-delta-$$rel-brcm-changed.patch.bz2; \
+		git diff --diff-filter=A $${base_sha}..HEAD | bzip2 \
+			>$$dest/buildroot-delta-$$rel-brcm-new.patch.bz2; \
+	)
+
+brcmstb-release: brcmstb-diffs
+	@if [ "$(VERSION)" = "" ]; then exit 1; fi
+	for arch in `bin/get_archs.pl $(STB_VERSION)`; do \
+		bin/br_config.pl -o $(BRCMSTB_OUTPUT_DIR) -i -n \
+			-L misc/linux.master $${arch}; \
+	done
+	mkdir -p $(BINARY_DST)
+	cp -a $(BRCMSTB_OUTPUT_DIR)/*/images/* $(BINARY_DST)
+	@echo "Adding downloaded sources to tar-ball..."
+	# We want to skip the GIT trees buildroot creates (e.g. dl/linux/git).
+	# Therefore, we exclude 'git' and 'git.readme'. If we ever wanted to
+	# bundle GIT itself, we'd likely have to add it in a separate step.
+	tar -C .. -r -f $(SRC_DST)/buildroot-$(DOTVERSION).tar \
+		--exclude 'git' \
+		--exclude 'git.readme' \
+		buildroot/dl
+	bzip2 $(SRC_DST)/buildroot-$(DOTVERSION).tar
+
+brcmstb-%:
+	bin/br_config.pl -b $*

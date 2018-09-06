@@ -50,6 +50,14 @@ static const char *brcmstb_l2_irq_to_name(brcmstb_l2_irq irq)
 	BUILD_IRQ_NAME(ua);
 	BUILD_IRQ_NAME(ub);
 	BUILD_IRQ_NAME(uc);
+	BUILD_IRQ_NAME(bicap_fifo_inact_intr);
+	BUILD_IRQ_NAME(bicap_fifo_lvl_intr);
+	BUILD_IRQ_NAME(bicap_fifo_of_intr);
+	BUILD_IRQ_NAME(bicap_timeout0_intr);
+	BUILD_IRQ_NAME(bicap_timeout1_intr);
+	BUILD_IRQ_NAME(bicap_timeout2_intr);
+	BUILD_IRQ_NAME(bicap_timeout3_intr);
+	BUILD_IRQ_NAME(wktmr_alarm_intr);
 	default:
 		return NULL;
 	}
@@ -114,7 +122,8 @@ static const char *nexus_irq0_node_names[] = { "nexus-irq0", "nexus-irq0_aon",
 					       "nexus-upg_main_aon_irq",
 					       "nexus-upg_bsc_irq",
 					       "nexus-upg_bsc_aon_irq",
-					       "nexus-upg_spi_aon_irq" };
+					       "nexus-upg_spi_aon_irq",
+					       "nexus-upg_aux_aon_intr2" };
 
 int brcmstb_get_l2_irq_id(brcmstb_l2_irq irq)
 {

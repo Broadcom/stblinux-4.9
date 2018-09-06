@@ -39,6 +39,14 @@ typedef enum brcmstb_l2_irq {
 	brcmstb_l2_irq_ua,
 	brcmstb_l2_irq_ub,
 	brcmstb_l2_irq_uc,
+	brcmstb_l2_irq_bicap_fifo_inact_intr,
+	brcmstb_l2_irq_bicap_fifo_lvl_intr,
+	brcmstb_l2_irq_bicap_fifo_of_intr,
+	brcmstb_l2_irq_bicap_timeout0_intr,
+	brcmstb_l2_irq_bicap_timeout1_intr,
+	brcmstb_l2_irq_bicap_timeout2_intr,
+	brcmstb_l2_irq_bicap_timeout3_intr,
+	brcmstb_l2_irq_wktmr_alarm_intr,
 	brcmstb_l2_irq_max
 } brcmstb_l2_irq;
 

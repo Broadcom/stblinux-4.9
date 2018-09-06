@@ -4,24 +4,25 @@
 #
 ################################################################################
 
-BRCMROOT_VERSION = c38822d042bd729481f2cea6b2fd138b5e190fa8
+BRCMROOT_VERSION = $(call qstrip,$(BR2_BRCM_STB_TOOLS_VERSION))
 
-MOCA2_VERSION = master
-MOCA2_SITE = git://stbgit.broadcom.com/mm940762/uclinux-rootfs.git
-MOCA2_SOURCE = uclinux-rootfs-$(BRCMROOT_VERSION).tar.gz
+MOCA2_VERSION = $(BRCMROOT_VERSION)
+MOCA2_SITE = git://stbgit.broadcom.com/mm940762/stbtools.git
+MOCA2_SOURCE = stbtools-$(BRCMROOT_VERSION).tar.gz
+MOCA2_DL_SUBDIR = brcm-pm
 MOCA2_LICENSE = Proprietary
 
 # Extract only what we need to save space.
 define MOCA2_EXTRACT_CMDS
 	$(call suitable-extractor,$(MOCA2_SOURCE)) \
-		$(DL_DIR)/$(MOCA2_SOURCE) | \
+		$(MOCA2_DL_DIR)/$(MOCA2_SOURCE) | \
 		$(TAR) --strip-components=1 -C $(MOCA2_DIR) \
-			--wildcards $(TAR_OPTIONS) - '*/user/moca2'
+			--wildcards $(TAR_OPTIONS) - '*/moca2'
 endef
 
 define MOCA2_INSTALL_TARGET_CMDS
 	$(TARGET_MAKE_ENV) MACHINE=$(BR2_ARCH) LIBCDIR=eglibc \
-		$(MAKE) -C $(@D)/user/moca2 install DESTDIR=$(TARGET_DIR)
+		$(MAKE) -C $(@D)/moca2 install DESTDIR=$(TARGET_DIR)
 endef
 
 $(eval $(generic-package))

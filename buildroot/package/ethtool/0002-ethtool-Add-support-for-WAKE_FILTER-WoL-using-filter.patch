@@ -1,0 +1,65 @@
+From 22743590cbbaa5a92560e6f1d5a14bfcc8b92b76 Mon Sep 17 00:00:00 2001
+From: Florian Fainelli <f.fainelli@gmail.com>
+Date: Wed, 8 Aug 2018 11:04:16 -0700
+Subject: [PATCH ethtool v2 2/3] ethtool: Add support for WAKE_FILTER (WoL
+ using filters)
+
+Add a new character 'f' which can be used to configure an Ethernet
+controller to support Wake-on-LAN using filters programmed with the
+ethtool::rxnfc and the special action -2 (wake-up filter). This is
+useful in particular in the context of devices that must support wake-up
+on more complex patterns such as multicast DNS packets.
+
+Signed-off-by: Florian Fainelli <f.fainelli@gmail.com>
+---
+ ethtool.8.in | 3 ++-
+ ethtool.c    | 5 +++++
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/ethtool.8.in b/ethtool.8.in
+index 0a366aa536ae..3eb9005ada48 100644
+--- a/ethtool.8.in
++++ b/ethtool.8.in
+@@ -58,7 +58,7 @@
+ .\"
+ .\"	\(*WO - wol flags
+ .\"
+-.ds WO \fBp\fP|\fBu\fP|\fBm\fP|\fBb\fP|\fBa\fP|\fBg\fP|\fBs\fP|\fBd\fP...
++.ds WO \fBp\fP|\fBu\fP|\fBm\fP|\fBb\fP|\fBa\fP|\fBg\fP|\fBs\fP|\fBf|\fBd\fP...
+ .\"
+ .\"	\(*FL - flow type values
+ .\"
+@@ -679,6 +679,7 @@ b	Wake on broadcast messages
+ a	Wake on ARP
+ g	Wake on MagicPacket\[tm]
+ s	Enable SecureOn\[tm] password for MagicPacket\[tm]
++f	Wake on filter(s)
+ d	T{
+ Disable (wake on nothing).  This option clears all previous options.
+ T}
+diff --git a/ethtool.c b/ethtool.c
+index fb93ae898312..aa2bbe9e4c65 100644
+--- a/ethtool.c
++++ b/ethtool.c
+@@ -931,6 +931,9 @@ static int parse_wolopts(char *optstr, u32 *data)
+ 		case 's':
+ 			*data |= WAKE_MAGICSECURE;
+ 			break;
++		case 'f':
++			*data |= WAKE_FILTER;
++			break;
+ 		case 'd':
+ 			*data = 0;
+ 			break;
+@@ -964,6 +967,8 @@ static char *unparse_wolopts(int wolopts)
+ 			*p++ = 'g';
+ 		if (wolopts & WAKE_MAGICSECURE)
+ 			*p++ = 's';
++		if (wolopts & WAKE_FILTER)
++			*p++ = 'f';
+ 	} else {
+ 		*p = 'd';
+ 	}
+-- 
+2.17.1
+

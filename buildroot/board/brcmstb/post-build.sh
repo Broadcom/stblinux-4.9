@@ -7,29 +7,29 @@ prg=`basename $0`
 
 # Temp directory for old skeleton (not currently used)
 SKEL_DIR="${BUILD_DIR}/brcmstb_skel"
-# Use newest rootfs tar-ball if there's more than one
-UCLINUX_ROOTFS=`ls -1t dl/uclinux-rootfs*.tar.gz 2>/dev/null | head -1`
+# Use newest stbtools tar-ball if there's more than one
+STBTOOLS=`ls -1t dl/brcm-pm/stbtools-*.tar.gz 2>/dev/null | head -1`
 
-# If the uclinux tar-ball doesn't exist in the local download directory, check
+# If the stbtools tar-ball doesn't exist in the local download directory, check
 # if we have a download cache elsewhere.
-if [ ! -r "${UCLINUX_ROOTFS}" ]; then
+if [ ! -r "${STBTOOLS}" ]; then
 	dl_cache=`grep BR2_DL_DIR "${TARGET_DIR}/../.config" | cut -d= -f2 | \
 		sed -e 's/"//g'`
 	if [ "${dl_cache}" != "" ]; then
-		echo "Attempting to find uclinux-rootfs in ${dl_cache}..."
-		UCLINUX_ROOTFS=`ls -1t "${dl_cache}"/uclinux-rootfs*.tar.gz 2>/dev/null | head -1`
+		echo "Attempting to find stbtools in ${dl_cache}..."
+		STBTOOLS=`ls -1t "${dl_cache}"/stbtools*.tar.gz 2>/dev/null | head -1`
 	fi
 fi
 
 # BRCMSTB skeleton
-if [ ! -r "${UCLINUX_ROOTFS}" ]; then
-	echo "$prg: uclinux-rootfs tar-ball not found, not copying skel..." 1>&2
+if [ ! -r "${STBTOOLS}" ]; then
+	echo "$prg: stbtools tar-ball not found, not copying skel..." 1>&2
 else
-	echo "Extracting skel from ${UCLINUX_ROOTFS}..."
+	echo "Extracting skel from ${STBTOOLS}..."
 	# Extract old "skel" directory straight into our new rootfs. If we ever
 	# need to be more selective, we'll extract it into a temporary location
 	# first (${SKEL_DIR}) and pick what we need from there.
-	tar -C "${TARGET_DIR}" -x -z -f "${UCLINUX_ROOTFS}" \
+	tar -C "${TARGET_DIR}" -x -z -f "${STBTOOLS}" \
 		--wildcards --strip-components=2 '*/skel'
 	sed -i 's|$(cat $DT_DIR|$(tr -d "\\0" <$DT_DIR|' \
 		${TARGET_DIR}/etc/config/ifup.default
@@ -91,8 +91,9 @@ done
 # Generate brcmstb.conf
 echo "Generating /etc/brcmstb.conf..."
 arch=`basename ${BASE_DIR}`
-# The Linux directory can be "linux-custom" or "linux-$tag"
-linux_dir=`ls -drt ${BUILD_DIR}/linux-* | grep -v linux-tools | head -1`
+# The Linux directory can be "linux-custom" or "linux-$tag". We also must ensure
+# we don't pick up directories like "linux-tools" or "linux-firmware".
+linux_dir=`ls -drt ${BUILD_DIR}/linux-* | egrep 'linux-(stb|custom)' | head -1`
 linux_ver=`./bin/linuxver.sh $linux_dir`
 cat >${TARGET_DIR}/etc/brcmstb.conf <<EOF
 TFTPHOST=`hostname -f`

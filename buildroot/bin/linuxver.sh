@@ -1,13 +1,34 @@
 #!/bin/sh
 
+dot=''
+prefix=''
+
 error_usage() {
-	echo "Usage: $0 <linux_kernel_directory>" 1>&2
+	echo "Usage: $0 (<options>) <linux_kernel_directory>" 1>&2
 	exit 1
 }
 
-[ $# -eq 0 -o "$1" = "-h" ] && error_usage
+
+while getopts 'dhps' opt; do
+	case $opt in
+		d) dot=1;;
+		h) help=1;;
+		p) prefix=1;;
+		s) short=1;;
+		*) exit 1;;
+	esac
+done
+
+shift $((OPTIND - 1))
+
+[ $# -eq 0 -o "$help" = "1" ] && error_usage
 
 LINUX_MAKEFILE="$1/Makefile"
+
+if [ ! -r "$LINUX_MAKEFILE" ]; then
+	echo "Error: couldn't read $LINUX_MAKEFILE" 1>&2
+	exit 1
+fi
 
 # Extract the first 10 lines of the Makefile, just in case there are additional
 # variables in there
@@ -23,7 +44,10 @@ do
 	fi
 done
 
-fullversion="$version$patch_lvl$extra_ver"
+[ "$dot" = "1" ] && dot='.'
+[ "$prefix" = "1" ] && prefix='stb-'
+fullversion="$prefix$version$dot$patch_lvl"
+[ "$short" != "1" ] && fullversion="$fullversion$extra_ver"
 
 if [ -z "$fullversion" ]; then
 	echo "Error: version not found in $LINUX_MAKEFILE" 1>&2

@@ -3,7 +3,10 @@
 #include <linux/sizes.h>
 #include <linux/brcmstb/brcmstb.h>
 #include <linux/brcmstb/gpio_api.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
 
+#define GPIO_DT_COMPAT	"brcm,brcmstb-gpio"
 #define GIO_BANK_SIZE	0x20
 #define GPIO_PER_BANK	32
 
@@ -34,19 +37,25 @@ static int test_gpio_bank(uint32_t offset, unsigned int width)
 
 static int __init test_init(void)
 {
+	struct device_node *dn;
 	unsigned int times;
+	struct resource res;
 	int ret;
 
-	for (times = 0; times < 2; times++) {
-		ret = test_gpio_bank(BCHP_GIO_REG_START,
-				     BCHP_GIO_REG_END - BCHP_GIO_REG_START + 4);
+	for_each_compatible_node(dn, NULL, GPIO_DT_COMPAT) {
+		ret = of_address_to_resource(dn, 0, &res);
 		if (ret)
-			pr_err("%s: GIO_REG_START failed!\n", __func__);
+			continue;
 
-		ret = test_gpio_bank(BCHP_GIO_AON_REG_START,
-				     BCHP_GIO_AON_REG_END - BCHP_GIO_AON_REG_START + 4);
-		if (ret)
-			pr_err("%s: GIO_AON_REG_START failed!\n", __func__);
+		if (res.flags != IORESOURCE_MEM)
+			continue;
+
+		for (times = 0; times < 2; times++) {
+			ret = test_gpio_bank(res.start, times);
+			if (ret)
+				pr_err("%s: test for shift %d failed!\n",
+				       __func__, times);
+		}
 	}
 
 	return 0;

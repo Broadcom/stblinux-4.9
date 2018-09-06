@@ -1,0 +1,15 @@
+menu "Broadcom STB test modules"
+
+config BR2_PACKAGE_BRCM_TEST_MODULES_GPIO_API
+	bool "GPIO API test module"
+
+config BR2_PACKAGE_BRCM_TEST_MODULES_IRQ_API
+	bool "IRQ API test module"
+
+config BR2_PACKAGE_BRCM_TEST_MODULES_MEMORY_API
+	bool "Memory API test module"
+
+config BR2_PACKAGE_BRCM_TEST_MODULES_REG_API
+	bool "Register API test module"
+
+endmenu

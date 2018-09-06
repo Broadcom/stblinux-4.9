@@ -129,17 +129,23 @@ sub check_toolchain($)
 	return ($recommended ne $toolchain) ? $recommended : '';
 }
 
+my @linux_build_artefacts = (
+	".config",
+	"vmlinux",
+	"*.o",
+	"vmlinuz",
+	"System.map",
+);
+
 # Check for some obvious build artifacts that show us the local Linux source
 # tree is not clean.
 sub check_linux($)
 {
 	my ($local_linux) = @_;
 
-	return 0 if (-e "$local_linux/.config");
-	return 0 if (-e "$local_linux/vmlinux");
-	return 0 if (-e "$local_linux/vmlinux.o");
-	return 0 if (-e "$local_linux/vmlinuz");
-	return 0 if (-e "$local_linux/System.map");
+	foreach (@linux_build_artefacts) {
+		return 0 if (-e "$local_linux/$_");
+	}
 
 	return 1;
 }
@@ -345,7 +351,12 @@ sub write_brcmstbmk($$$)
 		"below.\n".
 		"#\n".
 		"#" x 78, "\n\n".
-		"LINUX_OVERRIDE_SRCDIR = $linux_dir\n");
+		"LINUX_OVERRIDE_SRCDIR = $linux_dir\n" .
+		"LINUX_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = \\\n");
+	foreach (@linux_build_artefacts) {
+		print(F "\t--exclude=\"$_\" \\\n");
+	}
+	print(F "\n");
 	close(F);
 }
 
@@ -406,6 +417,7 @@ my $prg = basename($0);
 my $merged_config = 'brcmstb_merged_defconfig';
 my $br_output_default = 'output';
 my $temp_config = 'temp_config';
+my $ret = 0;
 my $is_64bit = 0;
 my $relative_outputdir;
 my $br_outputdir;
@@ -678,11 +690,16 @@ if (defined($opts{'i'})) {
 	print("Launching build, including file system images...\n");
 	# The "images" target only exists in the generated Makefile in
 	# $br_outputdir, so using "make O=..." does not work here.
-	system("make -C \"$br_outputdir\" images");
+	$ret = system("make -C \"$br_outputdir\" images");
+	$ret >>= 8;
 } elsif (defined($opts{'b'})) {
 	print("Launching build...\n");
-	system("make O=\"$br_outputdir\"");
+	$ret = system("make O=\"$br_outputdir\"");
+	$ret >>= 8;
 } else {
 	print("To build it, run the following commands:\n".
 	"\tcd $br_outputdir; make\n");
 }
+
+print(STDERR "$prg: exiting with code $ret\n") if ($ret > 0);
+exit($ret);

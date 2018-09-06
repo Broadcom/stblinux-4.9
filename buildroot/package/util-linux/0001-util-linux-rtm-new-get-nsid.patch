@@ -1,0 +1,17 @@
+--- util-linux-2.32/sys-utils/lsns.c	2018-02-20 05:59:05.567445178 -0800
++++ util-linux-2.32.new/sys-utils/lsns.c	2018-06-14 16:29:27.321217629 -0700
+@@ -36,6 +36,14 @@
+ #include <linux/netlink.h>
+ #include <linux/rtnetlink.h>
+ #include <linux/net_namespace.h>
++
++#ifndef RTM_NEWNSID
++#define RTM_NEWNSID	88
++#endif
++
++#ifndef RTM_GETNSID
++#define RTM_GETNSID	90
++#endif
+ #endif
+ 
+ #include "pathnames.h"

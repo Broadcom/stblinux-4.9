@@ -902,7 +902,14 @@ void __init brcmstb_memory_default_reserve(int (*setup)(phys_addr_t start,
 				size = end - start;
 			}
 		} else if (i > prev_memc) {
-			/* Use entire first region of this MEMC */
+#ifdef CONFIG_ARM64
+			if (start >= VME_A32_MAX && size >= SZ_1G) {
+				/* Give 256M back to Linux */
+				start += SZ_256M;
+				size = end - start;
+			}
+#endif
+			/* Use the rest of the first region of this MEMC */
 			prev_memc = i;
 		} else if (start >= VME_A32_MAX && size > SZ_64M) {
 			/*

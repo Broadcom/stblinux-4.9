@@ -214,7 +214,7 @@ static int ehci_brcm_probe(struct platform_device *pdev)
 err_phy:
 	phy_exit(priv->phy);
 err_clk:
-	clk_disable(priv->clk);
+	clk_disable_unprepare(priv->clk);
 err_hcd:
 	usb_put_hcd(hcd);
 
@@ -228,7 +228,7 @@ static int ehci_brcm_remove(struct platform_device *dev)
 
 	usb_remove_hcd(hcd);
 	phy_exit(priv->phy);
-	clk_disable(priv->clk);
+	clk_disable_unprepare(priv->clk);
 	usb_put_hcd(hcd);
 	return 0;
 }
@@ -243,7 +243,7 @@ static int ehci_brcm_suspend(struct device *dev)
 	bool do_wakeup = device_may_wakeup(dev);
 
 	ret = ehci_suspend(hcd, do_wakeup);
-	clk_disable(priv->clk);
+	clk_disable_unprepare(priv->clk);
 	return ret;
 }
 
@@ -254,7 +254,7 @@ static int ehci_brcm_resume(struct device *dev)
 	struct brcm_priv *priv = hcd_to_ehci_priv(hcd);
 	int err;
 
-	err = clk_enable(priv->clk);
+	err = clk_prepare_enable(priv->clk);
 	if (err)
 		return err;
 	/*

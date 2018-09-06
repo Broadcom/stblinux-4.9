@@ -42,11 +42,13 @@ static struct brcmstb_waketmr {
 	struct rtc_device *rtc;
 	struct device *dev;
 	void __iomem *base;
-	unsigned int irq;
+	unsigned int wake_irq;
+	unsigned int timer_irq;
 	int wake_timeout;
 	struct notifier_block reboot_notifier;
 	bool alarm_is_active;
 	bool alarm_set_from_sysfs;
+	bool timer_irq_en;
 } wktimer;
 
 /* No timeout */
@@ -99,6 +101,16 @@ static irqreturn_t brcmstb_waketmr_irq(int irq, void *data)
 	timer->alarm_is_active = false;
 	return IRQ_HANDLED;
 }
+
+#ifdef CONFIG_RTC_CLASS
+static irqreturn_t brcmstb_timer_irq(int irq, void *data)
+{
+	struct brcmstb_waketmr *timer = data;
+	brcmstb_waketmr_clear_alarm(timer);
+	rtc_update_irq(timer->rtc, 1, RTC_IRQF | RTC_AF);
+	return IRQ_HANDLED;
+}
+#endif
 
 struct wktmr_time {
 	u32			sec;
@@ -188,7 +200,7 @@ static int brcmstb_waketmr_prepare_suspend(struct brcmstb_waketmr *timer)
 
 	if (device_may_wakeup(dev) && timer->wake_timeout >= 0) {
 		dev_dbg(dev, "enable wake IRQ\n");
-		ret = enable_irq_wake(timer->irq);
+		ret = enable_irq_wake(timer->wake_irq);
 		if (ret) {
 			dev_err(dev, "failed to enable wake-up interrupt\n");
 			return ret;
@@ -306,14 +318,22 @@ static int brcmstb_waketmr_setalarm(struct device *dev,
 	return 0;
 }
 
-/*
- * Does not do much but keep the RTC class happy. We always support
- * alarms.
- */
 static int brcmstb_waketmr_alarm_enable(struct device *dev,
 					unsigned int enabled)
 {
+	struct brcmstb_waketmr *timer = dev_get_drvdata(dev);
+
+	if ((int)timer->timer_irq < 0)
+		return 0;
+
+	if (enabled && !timer->timer_irq_en)
+		enable_irq(timer->timer_irq);
+	else if (!enabled && timer->timer_irq_en)
+		disable_irq(timer->timer_irq);
+	timer->timer_irq_en = enabled;
+
 	dev_dbg(dev, "%s: enabled=%d\n", __FUNCTION__, enabled);
+
 	return 0;
 }
 
@@ -391,20 +411,28 @@ static int __init brcmstb_waketmr_probe(struct platform_device *pdev)
 	device_set_wakeup_capable(dev, true);
 	device_wakeup_enable(dev);
 
-	timer->irq = platform_get_irq(pdev, 0);
-	if ((int)timer->irq < 0)
-		return -ENODEV;
-
-	ret = devm_request_irq(dev, timer->irq, brcmstb_waketmr_irq, 0,
+	timer->wake_irq = platform_get_irq(pdev, 0);
+	ret = devm_request_irq(dev, timer->wake_irq, brcmstb_waketmr_irq, 0,
 			       DRV_NAME, timer);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(dev, "Unabled to initialize wake IRQ\n");
 		return ret;
+	}
+	dev_info(dev, "wake IRQ found: %d\n", timer->wake_irq);
 
-	timer->reboot_notifier.notifier_call = brcmstb_waketmr_reboot;
-	register_reboot_notifier(&timer->reboot_notifier);
-
-	timer->wake_timeout = BRCMSTB_WKTMR_DEFAULT_TIMEOUT;
 #ifdef CONFIG_RTC_CLASS
+	/* Attempt to initialize non-wake irq */
+	timer->timer_irq = platform_get_irq(pdev, 1);
+	ret = devm_request_irq(dev, timer->timer_irq, brcmstb_timer_irq, 0,
+			 DRV_NAME, timer);
+	if (ret < 0) {
+		timer->timer_irq = -1;
+		dev_warn(dev, "Unable to initialize timer IRQ\n");
+	} else {
+		timer->timer_irq_en = 1;
+		dev_info(dev, "timer IRQ found: %d\n", timer->timer_irq);
+	}
+
 	timer->rtc = rtc_device_register("brcmstb-waketmr", dev,
 					 &brcmstb_waketmr_ops, THIS_MODULE);
 	if (IS_ERR(timer->rtc)) {
@@ -412,6 +440,10 @@ static int __init brcmstb_waketmr_probe(struct platform_device *pdev)
 		return PTR_ERR(timer->rtc);
 	}
 #endif
+	timer->reboot_notifier.notifier_call = brcmstb_waketmr_reboot;
+	register_reboot_notifier(&timer->reboot_notifier);
+
+	timer->wake_timeout = BRCMSTB_WKTMR_DEFAULT_TIMEOUT;
 
 	ret = device_create_file(dev, &dev_attr_timeout);
 	if (ret) {
@@ -424,7 +456,7 @@ static int __init brcmstb_waketmr_probe(struct platform_device *pdev)
 #endif
 
 	init_wktmr_clocksource();
-	dev_info(dev, "registered, with irq %d\n", timer->irq);
+	dev_info(dev, "registered wake timer\n");
 	return ret;
 }
 
@@ -456,7 +488,7 @@ static int brcmstb_waketmr_resume(struct device *dev)
 	if (!device_may_wakeup(dev) || timer->wake_timeout < 0)
 		return 0;
 
-	ret = disable_irq_wake(timer->irq);
+	ret = disable_irq_wake(timer->wake_irq);
 
 	brcmstb_waketmr_clear_alarm(timer);
 

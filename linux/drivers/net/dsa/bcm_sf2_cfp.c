@@ -731,6 +731,8 @@ static int bcm_sf2_cfp_rule_set(struct dsa_switch *ds, int port,
 				struct ethtool_rx_flow_spec *fs)
 {
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
+	s8 cpu_port = ds->dst[ds->index].cpu_port;
+	__u64 ring_cookie = fs->ring_cookie;
 	unsigned int queue_num, port_num;
 	int ret = -EINVAL;
 
@@ -747,21 +749,27 @@ static int bcm_sf2_cfp_rule_set(struct dsa_switch *ds, int port,
 	    fs->location > bcm_sf2_cfp_rule_size(priv))
 		return -EINVAL;
 
+	/* This rule is a Wake-on-LAN filter and we must specifically
+	 * target the CPU port in order for it to be working.
+	 */
+	if (ring_cookie == RX_CLS_FLOW_WAKE)
+		ring_cookie = cpu_port * SF2_NUM_EGRESS_QUEUES;
+
 	/* We do not support discarding packets, check that the
 	 * destination port is enabled and that we are within the
 	 * number of ports supported by the switch
 	 */
-	port_num = fs->ring_cookie / SF2_NUM_EGRESS_QUEUES;
+	port_num = ring_cookie / SF2_NUM_EGRESS_QUEUES;
 
-	if (fs->ring_cookie == RX_CLS_FLOW_DISC ||
-	    !(BIT(port_num) & ds->enabled_port_mask) ||
+	if (ring_cookie == RX_CLS_FLOW_DISC ||
+	    !(BIT(port_num) & (ds->enabled_port_mask | ds->cpu_port_mask)) ||
 	    port_num >= priv->hw_params.num_ports)
 		return -EINVAL;
 	/*
 	 * We have a small oddity where Port 6 just does not have a
 	 * valid bit here (so we substract by one).
 	 */
-	queue_num = fs->ring_cookie % SF2_NUM_EGRESS_QUEUES;
+	queue_num = ring_cookie % SF2_NUM_EGRESS_QUEUES;
 	if (port_num >= 7)
 		port_num -= 1;
 
@@ -1186,6 +1194,7 @@ static int bcm_sf2_cfp_rule_get_all(struct bcm_sf2_priv *priv,
 int bcm_sf2_get_rxnfc(struct dsa_switch *ds, int port,
 		      struct ethtool_rxnfc *nfc, u32 *rule_locs)
 {
+	struct net_device *p = ds->dst[ds->index].master_netdev;
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
 	int ret = 0;
 
@@ -1212,12 +1221,23 @@ int bcm_sf2_get_rxnfc(struct dsa_switch *ds, int port,
 
 	mutex_unlock(&priv->cfp.lock);
 
+	if (ret)
+		return  ret;
+
+	/* Pass up the commands to the attached master network device */
+	if (p->ethtool_ops->get_rxnfc) {
+		ret = p->ethtool_ops->get_rxnfc(p, nfc, rule_locs);
+		if (ret == -EOPNOTSUPP)
+			ret = 0;
+	}
+
 	return ret;
 }
 
 int bcm_sf2_set_rxnfc(struct dsa_switch *ds, int port,
 		      struct ethtool_rxnfc *nfc)
 {
+	struct net_device *p = ds->dst[ds->index].master_netdev;
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
 	int ret = 0;
 
@@ -1237,6 +1257,23 @@ int bcm_sf2_set_rxnfc(struct dsa_switch *ds, int port,
 	}
 
 	mutex_unlock(&priv->cfp.lock);
+
+	if (ret)
+		return ret;
+
+	/* Pass up the commands to the attached master network device.
+	 * This can fail, so rollback the operation if we need to.
+	 */
+	if (p->ethtool_ops->set_rxnfc) {
+		ret = p->ethtool_ops->set_rxnfc(p, nfc);
+		if (ret && ret != -EOPNOTSUPP) {
+			mutex_lock(&priv->cfp.lock);
+			bcm_sf2_cfp_rule_del(priv, port, nfc->fs.location);
+			mutex_unlock(&priv->cfp.lock);
+		} else {
+			ret = 0;
+		}
+	}
 
 	return ret;
 }

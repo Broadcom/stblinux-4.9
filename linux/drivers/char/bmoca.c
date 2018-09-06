@@ -2364,6 +2364,9 @@ static const struct file_operations moca_fops = {
 	.open =			moca_file_open,
 	.release =		moca_file_release,
 	.unlocked_ioctl =	moca_file_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl =		moca_file_ioctl,
+#endif
 	.read =			moca_file_read,
 	.write =		moca_file_write,
 	.poll =			moca_file_poll,

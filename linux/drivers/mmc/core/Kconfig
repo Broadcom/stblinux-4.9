@@ -22,3 +22,15 @@ config PWRSEQ_SIMPLE
 
 	  This driver can also be built as a module. If so, the module
 	  will be called pwrseq_simple.
+
+config PWRSEQ_EMMC_BRCM
+	tristate "Reset support for MMC on some Broadcom SoCs"
+	default n
+	depends on OF
+	depends on ARCH_BRCMSTB
+	help
+	  This selects special hardware reset support for MMC needed
+	  for some Broadcom SoCs. By default this option is set to n.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called pwrseq_emmc_brcm.

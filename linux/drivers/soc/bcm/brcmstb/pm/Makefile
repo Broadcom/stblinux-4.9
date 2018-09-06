@@ -33,6 +33,8 @@ endef
 # Need to specify full path to the objects
 BRCMSTB_PM_DIR := drivers/soc/bcm/brcmstb/pm/
 
+LINUXINCLUDE += -I$(objtree)/$(BRCMSTB_PM_DIR)
+
 drivers/soc/bcm/brcmstb/pm/pm_data-offsets.s: drivers/soc/bcm/brcmstb/pm/pm_data-offsets.c
 	$(call if_changed_dep,cc_s_c)
 

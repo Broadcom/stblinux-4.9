@@ -18,7 +18,11 @@ image_path="$1"
 linux_ver="$2"
 # The output directory is one level up from the image directory.
 output_path=`dirname "$image_path"`
-linux_dir="linux-$linux_ver"
+
+# The Linux directory can be "linux-custom" or "linux-$tag". We also must ensure
+# we don't pick up directories like "linux-tools" or "linux-firmware".
+linux_dir=`ls -drt ${BUILD_DIR}/linux-* | egrep 'linux-(stb|custom)' | head -1`
+
 # The architecture is the last component in the output path.
 arch=`basename "$output_path"`
 test "$arch" = "mips" && arch="bmips"
@@ -28,18 +32,22 @@ rootfs_tar="$image_path/rootfs.tar"
 nfs_tar="nfsroot-$arch.tar"
 
 for s in $LINUX_STAMPS; do
-	stamp="$output_path/build/$linux_dir/$s"
+	stamp="$linux_dir/$s"
 	if [ -r "$stamp" ]; then
 		echo "Removing $stamp..."
 		rm "$stamp"
 	fi
 done
 
-echo "Removing CONFIG_BLK_DEV_INITRD from kernel config..."
 tmp="$output_path/build/$$"
-kern_config="$output_path/build/$linux_dir/.config"
-fgrep -v "CONFIG_BLK_DEV_INITRD=y" "$kern_config" >"$tmp"
-mv "$tmp" "$kern_config"
+kern_config="$linux_dir/.config"
+if [ -r "$kern_config" ]; then
+	echo "Removing CONFIG_BLK_DEV_INITRD from kernel config..."
+	fgrep -v "CONFIG_BLK_DEV_INITRD=y" "$kern_config" >"$tmp"
+	mv "$tmp" "$kern_config"
+else
+	echo "WARNING: couldn't read $kern_config"
+fi
 
 if [ -r "$rootfs_cpio" ]; then
 	echo "Removing rootfs_cpio..."
@@ -51,7 +59,7 @@ rm -f "${rootfs_tar}.gz"
 mkdir "$image_path/romfs"
 # We need fakeroot, so mknod doesn't complain.
 fakeroot tar -C "$image_path/romfs" -x -f "$rootfs_tar"
-(cd "$image_path"; tar -c -f "$nfs_tar.bz2" -j --owner=root --group=root romfs)
+(cd "$image_path"; tar -c -f "$nfs_tar.bz2" -j --owner 0 --group 0 romfs)
 rm -rf "$image_path/romfs"
 rm -f "${rootfs_tar}"
 

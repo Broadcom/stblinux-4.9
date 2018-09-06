@@ -109,7 +109,7 @@ GDB_CONF_OPTS = \
 	--without-x \
 	--disable-sim \
 	$(GDB_DISABLE_BINUTILS_CONF_OPTS) \
-	$(if $(BR2_PACKAGE_GDB_SERVER),--enable-gdbserver) \
+	$(if $(BR2_PACKAGE_GDB_SERVER),--enable-gdbserver,--disable-gdbserver) \
 	--with-curses \
 	--without-included-gettext \
 	--disable-werror \
@@ -217,16 +217,8 @@ else
 HOST_GDB_CONF_OPTS += --without-python
 endif
 
-# workaround a bug if in-tree build is used for bfin sim
-define HOST_GDB_BFIN_SIM_WORKAROUND
-	$(RM) $(@D)/sim/common/tconfig.h
-endef
-
 ifeq ($(BR2_PACKAGE_HOST_GDB_SIM),y)
 HOST_GDB_CONF_OPTS += --enable-sim
-ifeq ($(BR2_bfin),y)
-HOST_GDB_PRE_CONFIGURE_HOOKS += HOST_GDB_BFIN_SIM_WORKAROUND
-endif
 else
 HOST_GDB_CONF_OPTS += --disable-sim
 endif

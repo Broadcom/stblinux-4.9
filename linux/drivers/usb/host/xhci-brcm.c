@@ -184,7 +184,7 @@ static int xhci_brcm_remove(struct platform_device *dev)
 
 	usb_remove_hcd(hcd);
 	phy_exit(hcd->phy);
-	clk_disable(xhci->clk);
+	clk_disable_unprepare(xhci->clk);
 	usb_put_hcd(hcd);
 
 	return 0;
@@ -198,7 +198,7 @@ static int xhci_brcm_suspend(struct device *dev)
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
 
 	ret = xhci_suspend(xhci, device_may_wakeup(dev));
-	clk_disable(xhci->clk);
+	clk_disable_unprepare(xhci->clk);
 	return ret;
 }
 
@@ -208,7 +208,7 @@ static int xhci_brcm_resume(struct device *dev)
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
 	int err;
 
-	err = clk_enable(xhci->clk);
+	err = clk_prepare_enable(xhci->clk);
 	if (err)
 		return err;
 	return xhci_resume(xhci, 0);

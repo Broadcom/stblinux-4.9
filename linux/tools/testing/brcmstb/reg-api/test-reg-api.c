@@ -4,7 +4,10 @@
 #include <linux/gpio.h>
 #include <linux/brcmstb/brcmstb.h>
 #include <linux/brcmstb/gpio_api.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
 
+#define GPIO_DT_COMPAT	"brcm,brcmstb-gpio"
 #define GIO_BANK_SIZE	0x20
 
 static int test_gpio_bank(uint32_t offset, unsigned int width)
@@ -57,27 +60,73 @@ static unsigned int request_linux_gpios(unsigned int width, unsigned int base)
 	return banks * 32;
 }
 
+static int brcmstb_aon_gpio(struct device_node *dn)
+{
+	return of_property_read_bool(dn, "always-on");
+}
+
+static int get_resource(const char *compat, struct resource *res,
+			int (*cmp_func)(struct device_node *dn))
+{
+	struct device_node *dn;
+	int ret = -ENODEV;
+
+	for_each_compatible_node(dn, NULL, compat) {
+		ret = of_address_to_resource(dn, 0, res);
+		if (ret)
+			continue;
+
+		if (res->flags != IORESOURCE_MEM)
+			continue;
+
+		if (cmp_func) {
+			ret = cmp_func(dn);
+			if (ret)
+				continue;
+		}
+
+		break;
+	}
+
+	return ret;
+}
+
 static int __init test_init(void)
 {
 	unsigned int times, base;
+	struct resource res1, res2;
 	int ret;
 
-	ret = brcmstb_update32(BCHP_UARTA_REG_START, 0xf, 1);
+	ret = get_resource("ns16550a", &res1, NULL);
+	if (ret) {
+		pr_err("%s: failed to get UARTA resource\n", __func__);
+		return ret;
+	}
+
+	ret = brcmstb_update32(res1.start, 0xf, 1);
 	if (ret >= 0)
 		pr_err("%s: this should fail!\n", __func__);
 
-	base = request_linux_gpios(BCHP_GIO_REG_END - BCHP_GIO_REG_START + 4, 0);
-	request_linux_gpios(BCHP_GIO_AON_REG_END - BCHP_GIO_AON_REG_START + 4, base);
+	ret = get_resource("brcm,brcmstb-gpio", &res1, brcmstb_aon_gpio);
+	if (ret) {
+		pr_err("%s: failed to obtain AON_GPIO controller\n", __func__);
+		return ret;
+	}
+
+	base = request_linux_gpios(res1.end - res1.start + 4, 0);
+	request_linux_gpios(res1.end - res1.start + 4, base);
 
 	for (times = 0; times < 2; times++) {
+		ret = get_resource("brcm,brcmstb-gpio", &res2, NULL);
+		if (ret)
+			pr_err("%s: failed to obtain GIO controller resource\n",
+				__func__);
 
-		ret = test_gpio_bank(BCHP_GIO_REG_START,
-				     BCHP_GIO_REG_END - BCHP_GIO_REG_START + 4);
+		ret = test_gpio_bank(res2.start, res2.end - res2.start + 4);
 		if (ret)
 			pr_err("%s: GIO_REG_START failed!\n", __func__);
 
-		ret = test_gpio_bank(BCHP_GIO_AON_REG_START,
-				     BCHP_GIO_AON_REG_END - BCHP_GIO_AON_REG_START + 4);
+		ret = test_gpio_bank(res1.start, res1.end - res1.start + 4);
 		if (ret)
 			pr_err("%s: GIO_AON_REG_START failed!\n", __func__);
 	}
