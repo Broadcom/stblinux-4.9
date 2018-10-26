@@ -1,3 +1,0 @@
-
-#include <pcmcia/config.h>
-

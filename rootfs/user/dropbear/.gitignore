@@ -1,9 +1,0 @@
-config.h
-config.log
-config.status
-dbclient
-dropbear
-dropbearkey
-Makefile
-*.a
-scp

@@ -400,9 +400,12 @@ int bcmgenet_mii_probe(struct net_device *dev)
 	_phy_pause_set(phydev, priv->pause_flags);
 
 	/* The internal PHY has its link interrupts routed to the
-	 * Ethernet MAC ISRs
+	 * Ethernet MAC ISRs. On GENETv5 there is a hardware issue
+	 * that prevents the signaling of link UP interrupts when
+	 * the link operates at 10Mbps, so fallback to polling for
+	 * those versions of GENET.
 	 */
-	if (priv->internal_phy)
+	if (priv->internal_phy && !GENET_IS_V5(priv))
 		dev->phydev->irq = PHY_IGNORE_INTERRUPT;
 
 	return 0;

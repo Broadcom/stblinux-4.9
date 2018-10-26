@@ -644,6 +644,16 @@ static int bcm_qspi_setup(struct spi_device *spi)
 	return 0;
 }
 
+static bool bcm_qspi_mspi_transfer_is_last(struct bcm_qspi *qspi,
+					   struct qspi_trans *qt)
+{
+	if (qt->mspi_last_trans &&
+	    spi_transfer_is_last(qspi->master, qt->trans))
+		return true;
+	else
+		return false;
+}
+
 static int update_qspi_trans_byte_count(struct bcm_qspi *qspi,
 					struct qspi_trans *qt, int flags)
 {
@@ -665,7 +675,7 @@ static int update_qspi_trans_byte_count(struct bcm_qspi *qspi,
 		    (flags & TRANS_STATUS_BREAK_CS_CHANGE))
 			ret |= TRANS_STATUS_BREAK_CS_CHANGE;
 
-		if (spi_transfer_is_last(qspi->master, qt->trans))
+		if (bcm_qspi_mspi_transfer_is_last(qspi, qt))
 			ret |= TRANS_STATUS_BREAK_EOM;
 		else
 			ret |= TRANS_STATUS_BREAK_NO_BYTES;

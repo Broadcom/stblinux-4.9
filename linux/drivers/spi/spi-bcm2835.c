@@ -101,8 +101,9 @@ static inline void bcm2835_wr(struct bcm2835_spi *bs, unsigned reg, u32 val)
 	writel(val, bs->regs + reg);
 }
 
-static inline void bcm2835_rd_fifo(struct bcm2835_spi *bs)
+static inline unsigned int bcm2835_rd_fifo(struct bcm2835_spi *bs)
 {
+	unsigned int count = 0;
 	u8 byte;
 
 	while ((bs->rx_len) &&
@@ -111,11 +112,15 @@ static inline void bcm2835_rd_fifo(struct bcm2835_spi *bs)
 		if (bs->rx_buf)
 			*bs->rx_buf++ = byte;
 		bs->rx_len--;
+		count++;
 	}
+
+	return count;
 }
 
-static inline void bcm2835_wr_fifo(struct bcm2835_spi *bs)
+static inline unsigned int bcm2835_wr_fifo(struct bcm2835_spi *bs)
 {
+	unsigned int count = 0;
 	u8 byte;
 
 	while ((bs->tx_len) &&
@@ -123,7 +128,10 @@ static inline void bcm2835_wr_fifo(struct bcm2835_spi *bs)
 		byte = bs->tx_buf ? *bs->tx_buf++ : 0;
 		bcm2835_wr(bs, BCM2835_SPI_FIFO, byte);
 		bs->tx_len--;
+		count++;
 	}
+
+	return count;
 }
 
 static void bcm2835_spi_reset_hw(struct spi_master *master)
@@ -149,11 +157,15 @@ static irqreturn_t bcm2835_spi_interrupt(int irq, void *dev_id)
 {
 	struct spi_master *master = dev_id;
 	struct bcm2835_spi *bs = spi_master_get_devdata(master);
+	unsigned int work_done = 0;
 
 	/* Read as many bytes as possible from FIFO */
-	bcm2835_rd_fifo(bs);
+	work_done = bcm2835_rd_fifo(bs);
 	/* Write as many bytes as possible to FIFO */
-	bcm2835_wr_fifo(bs);
+	work_done += bcm2835_wr_fifo(bs);
+
+	if (work_done == 0)
+		return IRQ_NONE;
 
 	/* based on flags decide if we can finish the transfer */
 	if (bcm2835_rd(bs, BCM2835_SPI_CS) & BCM2835_SPI_CS_DONE) {
@@ -787,8 +799,8 @@ static int bcm2835_spi_probe(struct platform_device *pdev)
 	bcm2835_wr(bs, BCM2835_SPI_CS,
 		   BCM2835_SPI_CS_CLEAR_RX | BCM2835_SPI_CS_CLEAR_TX);
 
-	err = devm_request_irq(&pdev->dev, bs->irq, bcm2835_spi_interrupt, 0,
-			       dev_name(&pdev->dev), master);
+	err = devm_request_irq(&pdev->dev, bs->irq, bcm2835_spi_interrupt,
+			       IRQF_SHARED, dev_name(&pdev->dev), master);
 	if (err) {
 		dev_err(&pdev->dev, "could not request IRQ: %d\n", err);
 		goto out_clk_disable;

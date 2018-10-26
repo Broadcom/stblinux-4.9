@@ -26,19 +26,22 @@ use constant ARCHS_MASTER => 'misc/release_builds.master';
 use constant ARCHS => 'misc/release_builds.json';
 
 my $prg = $0;
+my $br_base = $0;
 $prg =~ s|.*/||;
+$br_base =~ s|/?bin/[^/]+$||;
+$br_base = '.' if ($br_base eq '');
 
-sub get_archs($)
+sub get_archs($$)
 {
-	my ($ver) = @_;
+	my ($dir, $ver) = @_;
 	my $archs;
 
-	if (open(F, ARCHS_MASTER)) {
+	if (open(F, "$dir/".ARCHS_MASTER)) {
 		my @archs = <F>;
 
 		chomp(@archs);
 		$archs = join(' ', @archs);
-	} elsif (open(F, ARCHS)) {
+	} elsif (open(F, "$dir/".ARCHS)) {
 		my @json = <F>;
 		my $json = join('', @json);
 		my $arch_hash = decode_json($json);
@@ -61,11 +64,15 @@ if ($#ARGV < 0)  {
 	exit(1);
 }
 
+my $ret = 0;
 my $version = $ARGV[0];
-my $archs = get_archs($version);
+my $archs = get_archs($br_base, $version);
 
 if (defined($archs)) {
 	print("$archs\n");
 } else {
-	print("Couldn't find architectures\n");
+	print(STDERR "Couldn't find architectures\n");
+	$ret = 1;
 }
+
+exit($ret);

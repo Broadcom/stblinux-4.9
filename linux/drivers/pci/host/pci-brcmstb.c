@@ -1315,14 +1315,19 @@ MODULE_DEVICE_TABLE(of, brcm_pci_match);
 static void _brcm_pcie_remove(struct brcm_pcie *pcie)
 {
 	struct resource_entry *window;
+	unsigned long type;
 
 	brcm_msi_remove(pcie->msi);
 	turn_off(pcie);
 	clk_disable_unprepare(pcie->clk);
 	clk_put(pcie->clk);
 	set_regulators(pcie, false);
-	resource_list_for_each_entry(window, &pcie->resources)
+	resource_list_for_each_entry(window, &pcie->resources) {
+		type = resource_type(window->res);
+		if (type == IORESOURCE_IO || type == IORESOURCE_MEM)
+			devm_release_resource(pcie->dev, window->res);
 		kfree(window->res);
+	}
 	pci_free_resource_list(&pcie->resources);
 	brcm_pcie_remove_controller(pcie);
 }

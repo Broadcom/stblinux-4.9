@@ -54,9 +54,21 @@ if [ -r "$rootfs_cpio" ]; then
 	rm "$rootfs_cpio"
 fi
 
-echo "Creating NFS tar-ball..."
+echo "Creating romfs staging area..."
+target_boot="${image_path}/romfs/boot"
 rm -f "${rootfs_tar}.gz"
-mkdir "$image_path/romfs"
+mkdir -p "${target_boot}"
+
+# Copy auxiliary Linux files. We have to do this at the post-image stage. If we
+# copied the files in post-build.sh, they would be included in the initrd,
+# making the kernel too large for BOLT to load.
+echo "Copying Linux configuration & symbol files for inclusion..."
+for f in Module.symvers System.map vmlinux; do
+	cp -p "${linux_dir}/${f}" "${target_boot}"
+done
+cp -p "${linux_dir}/.config" "${target_boot}/config"
+
+echo "Creating NFS tar-ball..."
 # We need fakeroot, so mknod doesn't complain.
 fakeroot tar -C "$image_path/romfs" -x -f "$rootfs_tar"
 (cd "$image_path"; tar -c -f "$nfs_tar.bz2" -j --owner 0 --group 0 romfs)

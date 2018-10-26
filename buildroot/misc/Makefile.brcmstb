@@ -44,7 +44,21 @@ brcmstb-diffs: brcmstb-tarball
 			>$$dest/buildroot-delta-$$rel-brcm-new.patch.bz2; \
 	)
 
-brcmstb-release: brcmstb-diffs
+linux-release:
+	@echo "Generating Linux tar-ball..."
+	test -d $(SRC_DST) || mkdir -p $(SRC_DST)
+	rm -f $(SRC_DST)/stblinux-$(DOTVERSION).tar.bz2
+	tar -C .. -c -j -f $(SRC_DST)/stblinux-$(DOTVERSION).tar.bz2 \
+		--exclude linux/.git \
+		linux
+
+linux-diffs:
+	@echo "Generating Linux diffs..."
+	test -d $(SRC_DST) || mkdir -p $(SRC_DST)
+	(cd ..; tools/makedelta.pl)
+	mv ../delta*.patch.bz2 $(SRC_DST)
+
+brcmstb-release: brcmstb-diffs linux-diffs linux-release
 	@if [ "$(VERSION)" = "" ]; then exit 1; fi
 	for arch in `bin/get_archs.pl $(STB_VERSION)`; do \
 		bin/br_config.pl -o $(BRCMSTB_OUTPUT_DIR) -i -n \
@@ -61,6 +75,8 @@ brcmstb-release: brcmstb-diffs
 		--exclude 'git.readme' \
 		buildroot/dl
 	bzip2 $(SRC_DST)/buildroot-$(DOTVERSION).tar
+	ln -s buildroot-$(DOTVERSION).tar.bz2 \
+		$(SRC_DST)/rootfs-$(DOTVERSION).tar.bz2
 
 brcmstb-%:
 	bin/br_config.pl -b $*

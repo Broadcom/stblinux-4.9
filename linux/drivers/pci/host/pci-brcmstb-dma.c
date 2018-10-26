@@ -305,13 +305,29 @@ static int brcmstb_platform_notifier(struct notifier_block *nb,
 				     unsigned long event, void *__dev)
 {
 	struct device *dev = __dev;
+	int ret = NOTIFY_OK;
 
 	brcm_dma_ops_ptr = &brcm_dma_ops;
-	if (event != BUS_NOTIFY_ADD_DEVICE)
-		return NOTIFY_DONE;
 
-	brcm_set_dma_ops(dev);
-	return NOTIFY_OK;
+	switch (event) {
+	case BUS_NOTIFY_ADD_DEVICE:
+		brcm_set_dma_ops(dev);
+		break;
+	case BUS_NOTIFY_BOUND_DRIVER:
+		/*
+		 * Set the device as wakeup capable.  We do this so
+		 * that userland may 'echo "enabled" > /sys/.../wakeup'
+		 * and let us know that we should not turn of the
+		 * voltage regulators when entering S2/S3.
+		 */
+		device_set_wakeup_capable(dev, true);
+		break;
+	default:
+		ret = NOTIFY_DONE;
+		break;
+	}
+
+	return ret;
 }
 
 static struct notifier_block brcmstb_platform_nb = {

@@ -114,8 +114,9 @@ enum bsp_initiate_command {
 #define PM_INITIATE_SUCCESS	0x00
 #define PM_INITIATE_FAIL	0xfe
 
+enum brcmstb_pm_method brcmstb_pm_method;
+
 static struct brcmstb_pm_control ctrl;
-bool brcmstb_pm_psci_initialized;
 
 extern const unsigned long brcmstb_pm_do_s2_sz;
 extern asmlinkage int brcmstb_pm_do_s2(void __iomem *aon_ctrl_base,
@@ -379,14 +380,14 @@ static void brcmstb_pm_poweroff(void)
 			     SHIMPHY_PAD_S3_PWRDWN_SEQ_SHIFT),
 			     ~SHIMPHY_PAD_S3_PWRDWN_SEQ_MASK);
 		ddr_ctrl_set(false);
-		if (brcmstb_pm_psci_initialized)
+		if (brcmstb_pm_method == BRCMSTB_PM_PSCI_ASSISTED)
 			brcmstb_psci_sys_poweroff();
 		else
 			brcmstb_do_pmsm_power_down(M1_PM_COLD_CONFIG, true);
 		return; /* We should never actually get here */
 	}
 
-	if (brcmstb_pm_psci_initialized)
+	if (brcmstb_pm_method == BRCMSTB_PM_PSCI_ASSISTED)
 		brcmstb_psci_sys_poweroff();
 	else
 		brcmstb_do_pmsm_power_down(PM_COLD_CONFIG, false);
@@ -559,10 +560,16 @@ static noinline int brcmstb_pm_s3_finish(void)
 {
 	struct brcmstb_s3_params *params = ctrl.s3_params;
 	phys_addr_t params_pa = ctrl.s3_params_pa;
-	phys_addr_t reentry = virt_to_phys(&cpu_resume);
 	enum bsp_initiate_command cmd;
+	phys_addr_t reentry;
 	int ret;
 	u32 flags;
+
+#ifdef CONFIG_THUMB2_KERNEL
+	reentry = virt_to_phys(&cpu_resume_arm);
+#else
+	reentry = virt_to_phys(&cpu_resume);
+#endif
 
 	/*
 	 * Clear parameter structure, but not DTU area, which has already been
@@ -718,7 +725,7 @@ static int brcmstb_pm_standby(bool deep_standby)
 	if (deep_standby) {
 		/* Save DTU registers for S3 only. SAGE won't let us for S2. */
 		dtu_save();
-		if (brcmstb_pm_psci_initialized)
+		if (brcmstb_pm_method == BRCMSTB_PM_PSCI_ASSISTED)
 			ret = brcmstb_psci_system_mem();
 		else
 			ret = brcmstb_pm_s3();
@@ -937,6 +944,9 @@ static int brcmstb_pm_probe(struct platform_device *pdev)
 	void __iomem *base;
 	int ret, i;
 
+	if (brcmstb_pm_method == BRCMSTB_PM_PSCI_FULL)
+		return 0;
+
 	/* AON ctrl registers */
 	base = brcmstb_ioremap_match(aon_ctrl_dt_ids, 0, NULL);
 	if (IS_ERR(base)) {
@@ -1079,15 +1089,14 @@ static int brcmstb_pm_probe(struct platform_device *pdev)
 	if (ret)
 		goto out2;
 
-	ret = brcmstb_pm_psci_init();
-	if (!ret)
-		brcmstb_pm_psci_initialized = true;
+	brcmstb_pm_psci_init();
 
 	atomic_notifier_chain_register(&panic_notifier_list,
 				       &brcmstb_pm_panic_nb);
 
 	pm_power_off = brcmstb_pm_poweroff;
 	suspend_set_ops(&brcmstb_pm_ops);
+
 	return 0;
 
 out2:

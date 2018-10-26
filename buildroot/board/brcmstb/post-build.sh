@@ -17,13 +17,14 @@ if [ ! -r "${STBTOOLS}" ]; then
 		sed -e 's/"//g'`
 	if [ "${dl_cache}" != "" ]; then
 		echo "Attempting to find stbtools in ${dl_cache}..."
-		STBTOOLS=`ls -1t "${dl_cache}"/stbtools*.tar.gz 2>/dev/null | head -1`
+		STBTOOLS=`ls -1t "${dl_cache}"/*/stbtools*.tar.gz 2>/dev/null | head -1`
 	fi
 fi
 
 # BRCMSTB skeleton
 if [ ! -r "${STBTOOLS}" ]; then
-	echo "$prg: stbtools tar-ball not found, not copying skel..." 1>&2
+	echo "$prg: stbtools tar-ball not found, aborting!" 1>&2
+	exit 1
 else
 	echo "Extracting skel from ${STBTOOLS}..."
 	# Extract old "skel" directory straight into our new rootfs. If we ever
@@ -87,6 +88,30 @@ mkdir ${TARGET_DIR}/mnt
 for d in flash hd nfs usb; do
 	mkdir ${TARGET_DIR}/mnt/${d}
 done
+
+# Fixing symlinks in /var
+echo "Turning some /var symlinks into directories..."
+for d in `find ${TARGET_DIR}/var -type l`; do
+	l=`readlink "$d"`
+	# We don't want any symlinks into /tmp. They break the ability to
+	# install into a FAT-formatted USB stick.
+	if echo "$l" | grep '/tmp' >/dev/null; then
+		rm -f "$d"
+		mkdir "$d"
+	fi
+done
+
+# Create /data
+rm -rf ${TARGET_DIR}/data
+mkdir ${TARGET_DIR}/data
+
+# We don't want /etc/resolv.conf to be a symlink into /tmp, either
+resolvconf="${TARGET_DIR}/etc/resolv.conf"
+if [ -h "${resolvconf}" ]; then
+	echo "Creating empty /etc/resolv.conf..."
+	rm "${resolvconf}"
+	touch "${resolvconf}"
+fi
 
 # Generate brcmstb.conf
 echo "Generating /etc/brcmstb.conf..."

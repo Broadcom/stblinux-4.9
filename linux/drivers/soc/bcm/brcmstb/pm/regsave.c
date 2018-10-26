@@ -268,6 +268,8 @@ int brcmstb_regsave_init(void)
 	resource_size_t size;
 	const char *name;
 
+	if (priv.reg_groups)
+		return 0;
 
 	dn = of_find_node_by_name(NULL, "s3");
 	if (!dn)

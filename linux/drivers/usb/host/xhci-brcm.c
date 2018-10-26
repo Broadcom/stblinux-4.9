@@ -104,15 +104,17 @@ static int xhci_brcm_probe(struct platform_device *pdev)
 	hcd->rsrc_len = resource_size(res);
 
 	/*
-	 * Not all platforms have a clk so it is not an error if the
-	 * clock does not exists.
+	 * Not all platforms have a clk so it is not fatal if the
+	 * clock does not exist.
 	 */
 	clk = devm_clk_get(&pdev->dev, NULL);
-	if (!IS_ERR(clk)) {
-		ret = clk_prepare_enable(clk);
-		if (ret)
-			goto put_hcd;
+	if (IS_ERR(clk)) {
+		dev_warn(&pdev->dev, "Clock not found in Device Tree\n");
+		clk = NULL;
 	}
+	ret = clk_prepare_enable(clk);
+	if (ret)
+		goto put_hcd;
 
 	xhci = hcd_to_xhci(hcd);
 
@@ -165,8 +167,7 @@ put_usb3_hcd:
 	usb_put_hcd(xhci->shared_hcd);
 
 disable_clk:
-	if (!IS_ERR(clk))
-		clk_disable_unprepare(clk);
+	clk_disable_unprepare(clk);
 
 put_hcd:
 	usb_put_hcd(hcd);

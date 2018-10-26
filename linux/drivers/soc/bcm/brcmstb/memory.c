@@ -18,7 +18,9 @@
 #include <asm/page.h>
 #include <linux/device.h>
 #include <linux/io.h>
+#include <linux/kasan.h>
 #include <linux/libfdt.h>
+#include <linux/list.h>
 #include <linux/memblock.h>
 #include <linux/mm.h>   /* for high_memory */
 #include <linux/of_address.h>
@@ -34,7 +36,6 @@
 #include <linux/brcmstb/memory_api.h>
 #include <asm/tlbflush.h>
 #include <linux/pfn_t.h>
-
 /* -------------------- Constants -------------------- */
 
 #define DEFAULT_LOWMEM_PCT	20  /* used if only one membank */
@@ -71,7 +72,22 @@ enum {
 	BUSNUM_MCP2 = 0x6,
 };
 
+#ifdef KASAN_SHADOW_SCALE_SHIFT
+#define BMEM_LARGE_ENOUGH	(SZ_1G - (SZ_1G >> KASAN_SHADOW_SCALE_SHIFT))
+#else
+#define BMEM_LARGE_ENOUGH	(SZ_1G)
+#endif
+
 /* -------------------- Shared and local vars -------------------- */
+struct kva_map {
+	struct list_head list;
+	phys_addr_t pa;
+	unsigned long va;
+	unsigned long size;
+	pgprot_t prot;
+};
+static LIST_HEAD(kva_map_list);
+static DEFINE_MUTEX(kva_map_lock);
 
 const enum brcmstb_reserve_type brcmstb_default_reserve = BRCMSTB_RESERVE_BMEM;
 bool brcmstb_memory_override_defaults = false;
@@ -855,6 +871,11 @@ void __init brcmstb_memory_default_reserve(int (*setup)(phys_addr_t start,
 		end = start + size;
 		i = early_phys_addr_to_memc(start);
 
+#ifdef KASAN_SHADOW_SCALE_SHIFT
+		/* KASAN requires a fraction of the memory */
+		start += size >> KASAN_SHADOW_SCALE_SHIFT;
+		size = end - start;
+#endif
 		if (offset == cellslen) {	/* First Bank */
 			limit = memblock_get_current_limit();
 			/*
@@ -903,7 +924,7 @@ void __init brcmstb_memory_default_reserve(int (*setup)(phys_addr_t start,
 			}
 		} else if (i > prev_memc) {
 #ifdef CONFIG_ARM64
-			if (start >= VME_A32_MAX && size >= SZ_1G) {
+			if (start >= VME_A32_MAX && size >= BMEM_LARGE_ENOUGH) {
 				/* Give 256M back to Linux */
 				start += SZ_256M;
 				size = end - start;
@@ -1263,61 +1284,63 @@ static void *page_to_virt_contig(const struct page *page, unsigned int pg_cnt,
 	return rc ? NULL : page_address(page);
 }
 
-static struct page **get_pages(struct page *page, int num_pages)
-{
-	struct page **pages;
-	long pfn;
-	int i;
-
-	if (num_pages == 0) {
-		pr_err("bad count\n");
-		return NULL;
-	}
-
-	if (page == NULL) {
-		pr_err("bad page\n");
-		return NULL;
-	}
-
-	pages = vmalloc(sizeof(struct page *) * num_pages);
-	if (pages == NULL)
-		return NULL;
-
-	pfn = page_to_pfn(page);
-	for (i = 0; i < num_pages; i++) {
-		/*
-		 * pfn_to_page() should resolve to simple arithmetic for the
-		 * FLATMEM memory model.
-		 */
-		pages[i] = pfn_to_page(pfn++);
-	}
-
-	return pages;
-}
-
 /*
- * Basically just vmap() without checking that count < totalram_pages,
- * since we want to be able to map pages that aren't managed by Linux
+ * Create a new vm area for the mapping of a contiguous physical range
  */
-static void *brcmstb_memory_vmap(struct page **pages, unsigned int count,
+static void *brcmstb_memory_remap(unsigned long pfn, unsigned int count,
 		unsigned long flags, pgprot_t prot)
 {
 	struct vm_struct *area;
+	struct kva_map *kva, *tmp;
+	phys_addr_t pend;
 
 	might_sleep();
 
-	area = get_vm_area_caller((count << PAGE_SHIFT), flags,
-					__builtin_return_address(0));
-	if (!area)
+	kva = kmalloc(sizeof(*kva), GFP_KERNEL);
+	if (!kva)
 		return NULL;
 
-	if (map_vm_area(area, prot, pages)) {
-		vunmap(area->addr);
-		vm_unmap_aliases();
+	kva->pa = __pfn_to_phys(pfn);
+	kva->size = (count << PAGE_SHIFT);
+	kva->prot = prot;
+
+	area = get_vm_area_caller(kva->size, flags,
+				  __builtin_return_address(0));
+	if (!area) {
+		kfree(kva);
 		return NULL;
 	}
 
-	return area->addr;
+	kva->va = (unsigned long)area->addr;
+	pend = kva->pa + kva->size;
+
+	/* Look for conflicting maps */
+	mutex_lock(&kva_map_lock);
+	list_for_each_entry(tmp, &kva_map_list, list) {
+		if (tmp->pa >= pend || tmp->pa + tmp->size <= kva->pa)
+			continue;
+
+		if (pgprot_val(tmp->prot) != pgprot_val(kva->prot)) {
+			mutex_unlock(&kva_map_lock);
+			goto error;
+		}
+	}
+	list_add(&kva->list, &kva_map_list);
+	mutex_unlock(&kva_map_lock);
+
+	if (!ioremap_page_range(kva->va, kva->va + kva->size, kva->pa, prot)) {
+		area->phys_addr = kva->pa;
+		return area->addr;
+	}
+
+	mutex_lock(&kva_map_lock);
+	list_del(&kva->list);
+	mutex_unlock(&kva_map_lock);
+error:
+	vunmap(area->addr);
+	vm_unmap_aliases();
+	kfree(kva);
+	return NULL;
 }
 
 /**
@@ -1340,18 +1363,8 @@ void *brcmstb_memory_kva_map(struct page *page, int num_pages, pgprot_t pgprot)
 		pr_debug("page_to_virt_contig() failed (%ld)\n", PTR_ERR(va));
 		return NULL;
 	} else if (va == NULL || is_vmalloc_addr(va)) {
-		struct page **pages;
-
-		pages = get_pages(page, num_pages);
-		if (pages == NULL) {
-			pr_err("couldn't get pages\n");
-			return NULL;
-		}
-
-		va = brcmstb_memory_vmap(pages, num_pages, 0, pgprot);
-
-		vfree(pages);
-
+		va = brcmstb_memory_remap(page_to_pfn(page), num_pages, 0,
+					  pgprot);
 		if (va == NULL) {
 			pr_err("vmap failed (num_pgs=%d)\n", num_pages);
 			return NULL;
@@ -1369,27 +1382,39 @@ EXPORT_SYMBOL(brcmstb_memory_kva_map);
  * @size: size of range to map
  * @cached: whether to use cached or uncached mapping
  *
- * Return: NULL on failure, err on success
+ * Return: NULL on failure, addr on success
  */
 void *brcmstb_memory_kva_map_phys(phys_addr_t phys, size_t size, bool cached)
 {
 	void *addr = NULL;
-	unsigned long pfn = PFN_DOWN(phys);
+	unsigned long offset = phys & ~PAGE_MASK;
+	unsigned long pfn = __phys_to_pfn(phys);
+	unsigned int pg_cnt = (offset + size + PAGE_SIZE - 1) >> PAGE_SHIFT;
 
-	if (!cached) {
-		/*
-		 * This could be supported for MIPS by using ioremap instead,
-		 * but that cannot be done on ARM if you want O_DIRECT support
-		 * because having multiple mappings to the same memory with
-		 * different cacheability will result in undefined behavior.
-		 */
+	if (size == 0)
 		return NULL;
-	}
 
 	if (pfn_valid(pfn)) {
+		if (!cached) {
+			/*
+			 * This could be supported for MIPS by using ioremap instead,
+			 * but that cannot be done on ARM if you want O_DIRECT support
+			 * because having multiple mappings to the same memory with
+			 * different cacheability will result in undefined behavior.
+			 */
+			return NULL;
+		}
+
 		addr = brcmstb_memory_kva_map(pfn_to_page(pfn),
-				size / PAGE_SIZE, PAGE_KERNEL);
+				pg_cnt, PAGE_KERNEL);
+	} else {
+		addr = brcmstb_memory_remap(pfn, pg_cnt, 0,
+			cached ? PAGE_KERNEL : pgprot_noncached(PAGE_KERNEL));
 	}
+
+	if (addr)
+		addr += offset;
+
 	return addr;
 }
 EXPORT_SYMBOL(brcmstb_memory_kva_map_phys);
@@ -1404,6 +1429,9 @@ EXPORT_SYMBOL(brcmstb_memory_kva_map_phys);
  */
 int brcmstb_memory_kva_unmap(const void *kva)
 {
+	struct kva_map *map, *next;
+	unsigned long addr = (unsigned long)kva;
+
 	if (kva == NULL)
 		return -EINVAL;
 
@@ -1412,6 +1440,11 @@ int brcmstb_memory_kva_unmap(const void *kva)
 		return 0;
 	}
 
+	mutex_lock(&kva_map_lock);
+	list_for_each_entry_safe(map, next, &kva_map_list, list)
+		if (addr >= map->va && addr <= map->va + map->size)
+			list_del(&map->list);
+	mutex_unlock(&kva_map_lock);
 	vunmap(kva);
 	vm_unmap_aliases();
 

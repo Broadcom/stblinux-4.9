@@ -314,7 +314,7 @@ config MMC_SDHCI_IPROC
 	depends on MMC_SDHCI_PLTFM
 	default ARCH_BCM_IPROC
 	select MMC_SDHCI_IO_ACCESSORS
-	select PWRSEQ_EMMC_BRCM
+	select PWRSEQ_EMMC_BRCM if ARCH_BRCMSTB
 	help
 	  This selects the iProc SD/MMC controller.
 

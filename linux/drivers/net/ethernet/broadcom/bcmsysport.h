@@ -457,7 +457,8 @@ struct bcm_rsb {
 /* Uses 2 bits on SYSTEMPORT Lite and shifts everything by 1 bit, we
  * keep the SYSTEMPORT layout here and adjust with tdma_control_bit()
  */
-#define  TSB_SWAP			2
+#define  TSB_SWAP0			2
+#define  TSB_SWAP1			3
 #define  ACB_ALGO			3
 #define  BUF_DATA_OFFSET_SHIFT		4
 #define  BUF_DATA_OFFSET_MASK		0x3ff
@@ -606,6 +607,8 @@ struct bcm_sysport_mib {
 	u32 alloc_rx_buff_failed;
 	u32 rx_dma_failed;
 	u32 tx_dma_failed;
+	u32 tx_realloc_tsb;
+	u32 tx_realloc_tsb_failed;
 };
 
 /* HW maintains a large list of counters */
@@ -762,6 +765,7 @@ struct bcm_sysport_priv {
 	unsigned int		wol_irq_disabled:1;
 	struct clk		*clk;
 	struct clk		*wol_clk;
+	struct clk		*gmii_tx_clk;
 
 	/* MIB related fields */
 	struct bcm_sysport_mib	mib;
@@ -769,6 +773,7 @@ struct bcm_sysport_priv {
 	/* Ethtool */
 	u32			msg_enable;
 	DECLARE_BITMAP(filters, RXCHK_BRCM_TAG_MAX);
+	u32			filters_loc[RXCHK_BRCM_TAG_MAX];
 
 	/* netdev notifier to map switch port queues */
 	struct notifier_block	queue_nb;

@@ -730,7 +730,7 @@ static int __init xpt_dma_init(void)
 	int ret = 0;
 	struct platform_device *pdev = &xpt_dma_pdev;
 
-	if (brcmstb_pm_psci_initialized)
+	if (brcmstb_pm_method != BRCMSTB_PM_BARE_METAL)
 		return ret;
 
 	if (of_machine_is_compatible("brcm,bcm74371a0") ||

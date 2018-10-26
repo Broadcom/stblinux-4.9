@@ -1294,13 +1294,12 @@ menu "Kernel Features"
 
 config HAVE_NATIVE_64BIT_ACCESS
 	bool
-	depends on !THUMB2_KERNEL
-	depends on (CPU_32v7 || CPU_32v6 || CPU_32v6K || CPU_32v5)
+	depends on CPU_32v7 || CPU_32v6 || CPU_32v6K || CPU_32v5
 	help
 	   This symbol should be selected by an architecture if 64 bit
 	   accesses to specific address space, e.g: registers is required.
 
-	   It will allow the use of native readq/write I/O accessors for this
+	   It will allow the use of native readq/writeq I/O accessors for this
 	   platform.
 
 config HAVE_SMP

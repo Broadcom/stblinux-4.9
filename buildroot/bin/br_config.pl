@@ -181,7 +181,10 @@ sub find_toolchain()
 		# We don't support anything before stbgcc-6.x at this point.
 		if ($dir =~ /stbgcc-[6-9]/) {
 			$dir =~ s|/bin/?$||;
-			return $dir;
+			# Only use the directory if it actually exists.
+			if (-d $dir) {
+				return $dir;
+			}
 		}
 	}
 

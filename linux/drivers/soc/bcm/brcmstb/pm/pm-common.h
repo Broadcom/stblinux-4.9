@@ -20,6 +20,13 @@ int __pm_mem_exclude(phys_addr_t addr, size_t len, bool persistent);
 extern int num_regions;
 extern int num_exclusions;
 extern struct brcmstb_memory bm;
-extern bool brcmstb_pm_psci_initialized;
+
+enum brcmstb_pm_method {
+	BRCMSTB_PM_BARE_METAL = 0,
+	BRCMSTB_PM_PSCI_ASSISTED,
+	BRCMSTB_PM_PSCI_FULL,
+};
+
+extern enum brcmstb_pm_method brcmstb_pm_method;
 
 #endif /* __BRCMSTB_PM_COMMON_H__ */

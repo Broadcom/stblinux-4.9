@@ -1,9 +1,0 @@
-#!/bin/sh
-
-if [ -e /etc/config/ifdown.$1 ]; then
-	source /etc/config/ifdown.$1 "$@"
-else
-	source /etc/config/ifdown.default "$@"
-fi
-
-exit 0

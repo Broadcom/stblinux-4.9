@@ -1,6 +1,6 @@
 config BR2_BRCM_STB_TOOLS_VERSION
 	string "Broadcom STB tools version"
-	default 670af2490e54
+	default 21f1cc7d23e2
 	help
 	  Specify the git hash of the stbtools version you want to use. The
 	  hash can be abbreviated if it is unique.

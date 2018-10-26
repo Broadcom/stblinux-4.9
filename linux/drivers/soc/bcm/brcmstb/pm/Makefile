@@ -1,4 +1,5 @@
 obj-y				+= regsave.o
+# Keep in that order to let pm-psci initialize before pm-arm
 obj-$(CONFIG_ARM_PSCI_FW)	+= pm-psci.o
 obj-$(CONFIG_ARM)		+= s2-arm.o pm-arm.o pm-common.o
 obj-$(CONFIG_ARM64)		+= s2-arm64.o pm-arm.o pm-common.o
