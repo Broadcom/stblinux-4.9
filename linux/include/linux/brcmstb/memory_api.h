@@ -1,5 +1,5 @@
 /*
- * Copyright © 2015-2017 Broadcom
+ * Copyright © 2015-2018 Broadcom
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2, as
@@ -73,6 +73,7 @@ struct brcmstb_memory {
 	struct brcmstb_reserved_memory reserved;
 };
 
+#define BRCMSTB_MEM_SUPPORTS_UNALIGNED_KVA_MAP
 int brcmstb_memory_phys_addr_to_memc(phys_addr_t pa);
 void *brcmstb_memory_kva_map(struct page *page, int num_pges, pgprot_t pgprot);
 void *brcmstb_memory_kva_map_phys(phys_addr_t phys, size_t size, bool cached);

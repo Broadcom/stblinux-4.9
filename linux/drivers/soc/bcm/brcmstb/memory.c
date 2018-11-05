@@ -1,5 +1,5 @@
 /*
- * Copyright © 2015-2017 Broadcom
+ * Copyright © 2015-2018 Broadcom
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -1429,7 +1429,7 @@ EXPORT_SYMBOL(brcmstb_memory_kva_map_phys);
  */
 int brcmstb_memory_kva_unmap(const void *kva)
 {
-	struct kva_map *map, *next;
+	struct kva_map *map, *next, *found = NULL;
 	unsigned long addr = (unsigned long)kva;
 
 	if (kva == NULL)
@@ -1442,11 +1442,18 @@ int brcmstb_memory_kva_unmap(const void *kva)
 
 	mutex_lock(&kva_map_lock);
 	list_for_each_entry_safe(map, next, &kva_map_list, list)
-		if (addr >= map->va && addr <= map->va + map->size)
-			list_del(&map->list);
+		if (addr >= map->va && addr <= map->va + map->size) {
+			found = map;
+			list_del(&found->list);
+			break;
+		}
 	mutex_unlock(&kva_map_lock);
-	vunmap(kva);
+	if (!found)
+		return -EFAULT;
+
+	vunmap((void *)found->va);
 	vm_unmap_aliases();
+	kfree(found);
 
 	return 0;
 }
