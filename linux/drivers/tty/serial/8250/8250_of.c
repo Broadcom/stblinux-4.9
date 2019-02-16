@@ -63,22 +63,25 @@ static int of_platform_serial_setup(struct platform_device *ofdev,
 	int ret;
 
 	memset(port, 0, sizeof *port);
-	if (of_property_read_u32(np, "clock-frequency", &clk)) {
-
-		/* Get clk rate through clk driver if present */
-		info->clk = devm_clk_get(&ofdev->dev, NULL);
-		if (IS_ERR(info->clk)) {
+	/* Get clk rate through clk driver if present */
+	info->clk = devm_clk_get(&ofdev->dev, NULL);
+	if (IS_ERR(info->clk)) {
+		if (PTR_ERR(info->clk) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		if (of_property_read_u32(np, "clock-frequency", &clk)) {
 			dev_warn(&ofdev->dev,
 				"clk or clock-frequency not defined\n");
-			return PTR_ERR(info->clk);
+			return -EINVAL;
 		}
-
+		info->clk = NULL;
+	} else {
 		ret = clk_prepare_enable(info->clk);
 		if (ret < 0)
 			return ret;
 
 		clk = clk_get_rate(info->clk);
 	}
+
 	/* If current-speed was set, then try not to change it. */
 	if (of_property_read_u32(np, "current-speed", &spd) == 0)
 		port->custom_divisor = clk / (16 * spd);

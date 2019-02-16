@@ -26,6 +26,7 @@
 #include <linux/timer.h>
 #include <linux/inetdevice.h>
 #include <net/ip.h>
+#include <net/switchdev.h>
 #if IS_ENABLED(CONFIG_IPV6)
 #include <net/ipv6.h>
 #include <net/mld.h>
@@ -244,7 +245,8 @@ static void br_multicast_group_expired(unsigned long data)
 	if (!netif_running(br->dev) || timer_pending(&mp->timer))
 		goto out;
 
-	mp->mglist = false;
+	mp->host_joined = false;
+	br_mdb_notify(br->dev, NULL, &mp->addr, RTM_DELMDB, 0);
 
 	if (mp->ports)
 		goto out;
@@ -287,7 +289,7 @@ static void br_multicast_del_pg(struct net_bridge *br,
 			      p->flags);
 		call_rcu_bh(&p->rcu, br_multicast_free_pg);
 
-		if (!mp->ports && !mp->mglist &&
+		if (!mp->ports && !mp->host_joined &&
 		    netif_running(br->dev))
 			mod_timer(&mp->timer, jiffies);
 
@@ -697,7 +699,10 @@ static int br_multicast_add_group(struct net_bridge *br,
 		goto err;
 
 	if (!port) {
-		mp->mglist = true;
+		if (!mp->host_joined) {
+			mp->host_joined = true;
+			br_mdb_notify(br->dev, NULL, &mp->addr, RTM_NEWMDB, 0);
+		}
 		mod_timer(&mp->timer, now + br->multicast_membership_interval);
 		goto out;
 	}
@@ -929,8 +934,22 @@ static void br_ip6_multicast_port_query_expired(unsigned long data)
 }
 #endif
 
+static int br_mc_disabled_update(struct net_device *dev, bool value)
+{
+	struct switchdev_attr attr = {
+		.orig_dev = dev,
+		.id = SWITCHDEV_ATTR_ID_BRIDGE_MC_DISABLED,
+		.flags = SWITCHDEV_F_DEFER,
+		.u.mc_disabled = value,
+	};
+
+	return switchdev_port_attr_set(dev, &attr);
+}
+
 int br_multicast_add_port(struct net_bridge_port *port)
 {
+	int ret;
+
 	port->multicast_router = MDB_RTR_TYPE_TEMP_QUERY;
 
 	setup_timer(&port->multicast_router_timer, br_multicast_router_expired,
@@ -941,6 +960,11 @@ int br_multicast_add_port(struct net_bridge_port *port)
 	setup_timer(&port->ip6_own_query.timer,
 		    br_ip6_multicast_port_query_expired, (unsigned long)port);
 #endif
+	ret = br_mc_disabled_update(port->dev,
+				    port->br->multicast_disabled);
+	if (ret)
+		return ret;
+
 	port->mcast_stats = netdev_alloc_pcpu_stats(struct bridge_mcast_stats);
 	if (!port->mcast_stats)
 		return -ENOMEM;
@@ -1348,7 +1372,7 @@ static int br_ip4_multicast_query(struct net_bridge *br,
 
 	max_delay *= br->multicast_last_member_count;
 
-	if (mp->mglist &&
+	if (mp->host_joined &&
 	    (timer_pending(&mp->timer) ?
 	     time_after(mp->timer.expires, now + max_delay) :
 	     try_to_del_timer_sync(&mp->timer) >= 0))
@@ -1432,7 +1456,7 @@ static int br_ip6_multicast_query(struct net_bridge *br,
 		goto out;
 
 	max_delay *= br->multicast_last_member_count;
-	if (mp->mglist &&
+	if (mp->host_joined &&
 	    (timer_pending(&mp->timer) ?
 	     time_after(mp->timer.expires, now + max_delay) :
 	     try_to_del_timer_sync(&mp->timer) >= 0))
@@ -1492,7 +1516,7 @@ br_multicast_leave_group(struct net_bridge *br,
 			br_mdb_notify(br->dev, port, group, RTM_DELMDB,
 				      p->flags);
 
-			if (!mp->ports && !mp->mglist &&
+			if (!mp->ports && !mp->host_joined &&
 			    netif_running(br->dev))
 				mod_timer(&mp->timer, jiffies);
 		}
@@ -1532,7 +1556,7 @@ br_multicast_leave_group(struct net_bridge *br,
 		     br->multicast_last_member_interval;
 
 	if (!port) {
-		if (mp->mglist &&
+		if (mp->host_joined &&
 		    (timer_pending(&mp->timer) ?
 		     time_after(mp->timer.expires, time) :
 		     try_to_del_timer_sync(&mp->timer) >= 0)) {
@@ -2007,6 +2031,10 @@ int br_multicast_toggle(struct net_bridge *br, unsigned long val)
 	if (br->multicast_disabled == !val)
 		goto unlock;
 
+	err = br_mc_disabled_update(br->dev, !val);
+	if (err)
+		goto unlock;
+
 	br->multicast_disabled = !val;
 	if (br->multicast_disabled)
 		goto unlock;
@@ -2038,6 +2066,14 @@ unlock:
 
 	return err;
 }
+
+bool br_multicast_enabled(const struct net_device *dev)
+{
+	struct net_bridge *br = netdev_priv(dev);
+
+	return !br->multicast_disabled;
+}
+EXPORT_SYMBOL_GPL(br_multicast_enabled);
 
 int br_multicast_set_querier(struct net_bridge *br, unsigned long val)
 {

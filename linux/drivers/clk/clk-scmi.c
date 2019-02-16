@@ -6,6 +6,7 @@
  */
 
 #include <linux/clk-provider.h>
+#include <linux/clkdev.h>
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/of.h>
@@ -38,7 +39,6 @@ static unsigned long scmi_clk_recalc_rate(struct clk_hw *hw,
 static long scmi_clk_round_rate(struct clk_hw *hw, unsigned long rate,
 				unsigned long *parent_rate)
 {
-	int step;
 	u64 fmin, fmax, ftmp;
 	struct scmi_clk *clk = to_scmi_clk(hw);
 
@@ -60,9 +60,9 @@ static long scmi_clk_round_rate(struct clk_hw *hw, unsigned long rate,
 
 	ftmp = rate - fmin;
 	ftmp += clk->info->range.step_size - 1; /* to round up */
-	step = do_div(ftmp, clk->info->range.step_size);
+	do_div(ftmp, clk->info->range.step_size);
 
-	return step * clk->info->range.step_size + fmin;
+	return ftmp * clk->info->range.step_size + fmin;
 }
 
 static int scmi_clk_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -116,6 +116,11 @@ static int scmi_clk_ops_init(struct device *dev, struct scmi_clk *sclk)
 	if (!ret)
 		clk_hw_set_rate_range(&sclk->hw, sclk->info->range.min_rate,
 				      sclk->info->range.max_rate);
+#ifdef CONFIG_ARCH_BRCMSTB
+	if (!ret)
+		clk_register_clkdev(sclk->hw.clk, sclk->info->name, NULL);
+#endif
+
 	return ret;
 }
 

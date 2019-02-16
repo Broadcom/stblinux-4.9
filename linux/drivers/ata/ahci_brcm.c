@@ -25,6 +25,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/reset.h>
 #include <linux/string.h>
 
 #include "ahci.h"
@@ -95,6 +96,7 @@ struct brcm_ahci_priv {
 	u32 quirks;
 	enum brcm_ahci_version version;
 	struct clk *clk;
+	struct reset_control *rescal;
 };
 
 static inline u32 brcm_sata_readreg(void __iomem *addr)
@@ -389,6 +391,8 @@ static int brcm_ahci_suspend(struct device *dev)
 	ret = ahci_platform_suspend(dev);
 	brcm_sata_phys_disable(priv);
 	brcm_sata_clk_disable(priv);
+	if (priv->rescal)
+		reset_control_assert(priv->rescal);
 	return ret;
 }
 
@@ -398,6 +402,8 @@ static int brcm_ahci_resume(struct device *dev)
 	struct ahci_host_priv *hpriv = host->private_data;
 	struct brcm_ahci_priv *priv = hpriv->plat_data;
 
+	if (priv->rescal)
+		reset_control_deassert(priv->rescal);
 	brcm_sata_clk_enable(priv);
 	brcm_sata_init(priv);
 	brcm_sata_phys_enable(priv);
@@ -435,6 +441,14 @@ static int brcm_ahci_probe(struct platform_device *pdev)
 	if (!of_id)
 		return -ENODEV;
 
+	priv->clk = devm_clk_get(dev, "sw_sata3");
+	if (IS_ERR(priv->clk)) {
+		if (PTR_ERR(priv->clk) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		priv->clk = NULL;
+		pr_warn("failed to get sata clock\n");
+	}
+
 	priv->version = (enum brcm_ahci_version)of_id->data;
 	priv->dev = dev;
 
@@ -443,10 +457,15 @@ static int brcm_ahci_probe(struct platform_device *pdev)
 	if (IS_ERR(priv->top_ctrl))
 		return PTR_ERR(priv->top_ctrl);
 
-	priv->clk = devm_clk_get(dev, "sw_sata3");
-	if (IS_ERR(priv->clk)) {
-		priv->clk = NULL;
-		pr_warn("failed to get sata clock\n");
+	priv->rescal = devm_reset_control_get_shared(&pdev->dev, "rescal");
+	if (IS_ERR(priv->rescal)) {
+		if (PTR_ERR(priv->rescal) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		priv->rescal = NULL;
+	} else {
+		ret = reset_control_deassert(priv->rescal);
+		if (ret)
+			dev_err(&pdev->dev, "failed to deassert 'rescal'\n");
 	}
 
 	if ((priv->version == BRCM_SATA_BCM7425) ||

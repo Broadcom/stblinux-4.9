@@ -79,6 +79,8 @@ static int ohci_brcm_probe(struct platform_device *pdev)
 
 	priv->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(priv->clk)) {
+		if (PTR_ERR(priv->clk) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
 		dev_err(&pdev->dev, "Clock not found in Device Tree\n");
 		priv->clk = NULL;
 	}

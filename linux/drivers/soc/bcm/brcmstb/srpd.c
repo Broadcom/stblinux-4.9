@@ -174,16 +174,36 @@ static const struct brcmstb_memc_data brcmstb_memc_versions[] = {
 
 static const struct of_device_id brcmstb_memc_of_match[] = {
 	{
-		.compatible = "brcm,brcmstb-memc-ddr-rev-b.2.1",
-		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V21]
+		.compatible = "brcm,brcmstb-memc-ddr-rev-b.1.x",
+		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V1X]
 	},
 	{
 		.compatible = "brcm,brcmstb-memc-ddr-rev-b.2.0",
 		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V20]
 	},
 	{
-		.compatible = "brcm,brcmstb-memc-ddr-rev-b.1.x",
-		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V1X]
+		.compatible = "brcm,brcmstb-memc-ddr-rev-b.2.1",
+		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V21]
+	},
+	{
+		.compatible = "brcm,brcmstb-memc-ddr-rev-b.2.2",
+		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V21]
+	},
+	{
+		.compatible = "brcm,brcmstb-memc-ddr-rev-b.2.3",
+		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V21]
+	},
+	{
+		.compatible = "brcm,brcmstb-memc-ddr-rev-b.3.0",
+		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V21]
+	},
+	{
+		.compatible = "brcm,brcmstb-memc-ddr-rev-b.3.1",
+		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V21]
+	},
+	{
+		.compatible = "brcm,brcmstb-memc-ddr-rev-c.1.0",
+		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V21]
 	},
 	/* default to the original offset */
 	{
@@ -193,6 +213,42 @@ static const struct of_device_id brcmstb_memc_of_match[] = {
 	{}
 };
 
+#ifdef CONFIG_PM_SLEEP
+static int brcmstb_memc_suspend(struct device *dev)
+{
+	struct brcmstb_memc *memc = dev_get_drvdata(dev);
+	void __iomem *cfg = memc->ddr_ctrl + memc->srpd_offset;
+	u32 val;
+
+	if (memc->timeout_cycles == 0)
+		return 0;
+
+	/* Disable SPRD prior to suspending the system since that can
+	 * cause issues with e.g: XPT_DMA trying to hash memory
+	 */
+	val = __raw_readl(cfg);
+	val &= ~(1 << SRPD_EN_SHIFT);
+	__raw_writel(val, cfg);
+	(void)__raw_readl(cfg);
+
+	return 0;
+}
+
+static int brcmstb_memc_resume(struct device *dev)
+{
+	struct brcmstb_memc *memc = dev_get_drvdata(dev);
+
+	if (memc->timeout_cycles == 0)
+		return 0;
+
+	return brcmstb_memc_srpd_config(memc, memc->timeout_cycles);
+}
+#endif
+
+static SIMPLE_DEV_PM_OPS(brcmstb_memc_pm_ops, brcmstb_memc_suspend,
+			 brcmstb_memc_resume);
+
+
 static struct platform_driver brcmstb_memc_driver = {
 	.probe = brcmstb_memc_probe,
 	.remove = brcmstb_memc_remove,
@@ -200,6 +256,7 @@ static struct platform_driver brcmstb_memc_driver = {
 		.name		= "brcmstb_memc",
 		.owner		= THIS_MODULE,
 		.of_match_table	= of_match_ptr(brcmstb_memc_of_match),
+		.pm		= &brcmstb_memc_pm_ops,
 	},
 };
 module_platform_driver(brcmstb_memc_driver);

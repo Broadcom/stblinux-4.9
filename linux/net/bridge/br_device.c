@@ -18,6 +18,7 @@
 #include <linux/ethtool.h>
 #include <linux/list.h>
 #include <linux/netfilter_bridge.h>
+#include <net/switchdev.h>
 
 #include <asm/uaccess.h>
 #include "br_private.h"
@@ -134,8 +135,62 @@ static int br_dev_open(struct net_device *dev)
 	return 0;
 }
 
+static int bridge_sync_unsync_mc_addr(struct net_device *dev,
+				      const unsigned char *addr,
+				      bool add)
+{
+	struct net_bridge *br = netdev_priv(dev);
+	struct switchdev_obj_port_mdb mdb = {
+		.obj = {
+			.orig_dev = dev,
+			.id = SWITCHDEV_OBJ_ID_HOST_MDB,
+			.flags = SWITCHDEV_F_DEFER,
+		},
+		.vid = 0,
+	};
+	struct net_bridge_port *p;
+	int ret = -EOPNOTSUPP;
+
+#ifdef CONFIG_BRIDGE_VLAN_FILTERING
+	if (br_vlan_enabled(dev))
+		mdb.vid = br->default_pvid;
+#endif
+
+	ether_addr_copy(mdb.addr, addr);
+	spin_lock_bh(&br->lock);
+	list_for_each_entry(p, &br->port_list, list) {
+		if (add)
+			ret = switchdev_port_obj_add(p->dev, &mdb.obj);
+		else
+			ret = switchdev_port_obj_del(p->dev, &mdb.obj);
+		if (ret)
+			goto out;
+	}
+out:
+	spin_unlock_bh(&br->lock);
+	return ret;
+}
+
+static int bridge_sync_mc_addr(struct net_device *dev,
+			       const unsigned char *addr)
+{
+	return bridge_sync_unsync_mc_addr(dev, addr, true);
+}
+
+static int bridge_unsync_mc_addr(struct net_device *dev,
+				 const unsigned char *addr)
+{
+	return bridge_sync_unsync_mc_addr(dev, addr, false);
+}
+
 static void br_dev_set_multicast_list(struct net_device *dev)
 {
+	/* HOST_MDB notifications are sent through MDB notifications */
+	if (br_multicast_enabled(dev))
+		return;
+
+	__hw_addr_sync_dev(&dev->mc, dev, bridge_sync_mc_addr,
+			   bridge_unsync_mc_addr);
 }
 
 static void br_dev_change_rx_flags(struct net_device *dev, int change)

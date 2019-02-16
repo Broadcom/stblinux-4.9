@@ -149,6 +149,7 @@ config BRCMSTB_MBOX
 	tristate "Broadcom STB Mailbox"
 	depends on ARM64 || ARM
 	depends on ARM_SCMI_PROTOCOL && ARCH_BRCMSTB
+	depends on SMP
 	default ARM_SCMI_PROTOCOL && ARCH_BRCMSTB
 	help
 	  Mailbox implementation of the Broadcom STB for the purposes

@@ -180,6 +180,8 @@ static int brcmuart_probe(struct platform_device *pdev)
 	/* See if a Baud clock has been specified */
 	baud_mux_clk = of_clk_get_by_name(np, "sw_baud");
 	if (IS_ERR(baud_mux_clk)) {
+		if (PTR_ERR(baud_mux_clk) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
 		dev_info(&pdev->dev, "BAUD MUX clock not specified\n");
 	} else {
 		dev_info(&pdev->dev, "BAUD MUX clock found\n");

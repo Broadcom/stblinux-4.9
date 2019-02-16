@@ -118,3 +118,26 @@ Example:
 		  "usb1_gisb_ck", "usb1_scb_ck", "usb1_108_ck_ahb", 
 		  "usb1_108_ck_axi", "lc_pll_pst_div_hld_ch1"; 
 	};
+
+=== bcm_clk_mult ===
+
+bcm_clk_mult is a fractional multipler clock with an integer
+part, a fractional part, and an optional "nudge" part.
+
+Required properties:
+- compatible : must be "brcm,brcmstb-mult-clk"
+- reg : the register addresses that hold the int, frac, and
+        nudge parts of the clock.  A brcm,type==0 clock
+	requires either two or three contiguous 32-bit registers.
+- #clock-cells : see clock-bindings.txt.
+
+Optional properties:
+- clocks : the parent clock.
+- clock-names : name of the parent clock given in 'clocks'.
+- brcm,has-nudge: indicates that the multiplier incorporates
+	a "nudge" value in computing its output frequency.
+- brcm,type -- indicates the specific type of fractional
+        multiplier being used.  The only defined type is 0;
+	this has a 10 bit integer part, a 20 bit fractional
+	part, and an optional 12 bit nudge field.
+

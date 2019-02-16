@@ -26,7 +26,7 @@ endif
 # otherwise it's installed in STAGING_DIR/lib/pkgconfig/ breaking
 # pkg-config --libs libprocps.
 PROCPS_NG_CONF_OPTS += --exec-prefix=/ \
-	--libdir=/usr/lib
+	--libdir=/usr/$(BR2_ROOTFS_LIB_DIR)
 
 # Allows unicode characters to show in 'watch'
 ifeq ($(BR2_PACKAGE_NCURSES_WCHAR),y)

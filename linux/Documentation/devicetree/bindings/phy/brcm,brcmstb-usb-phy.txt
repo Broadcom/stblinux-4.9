@@ -1,0 +1,45 @@
+Broadcom STB USB PHY
+
+Required properties:
+- compatible: "brcm,brcmstb-usb-phy" - Standard STB SoC's
+  	      "brcm,bcm7216-usb-phy" - SoC's with the new Synopsis controller
+  	      "brcm,bcm7211-usb-phy" - 7211 SoC with Synopsis controller
+- reg: a list of offset and length pairs.
+- reg-names: "ctrl" - Required for all systems
+  	     "xhci_ec" - Required for systems with an XHCI controller
+	     "xhci_gbl - Required for systems with the new Synopsis controller
+  
+- #phy-cells: Shall be 1 as it expects one argument for setting
+	      the type of the PHY. Possible values are:
+	      - 0 for USB1.1/2.0 PHY
+	      - 1 for USB3.x PHY
+
+Optional Properties:
+- clocks : clock phandles.
+- clock-names: String, clock name.
+- ipp: Boolean, Invert Port Power.
+  Possible values are: 0 (Don't invert), 1 (Invert)
+- ioc: Boolean, Invert Over Current detection.
+  Possible values are: 0 (Don't invert), 1 (Invert)
+- has-xhci: Boolean indicating the phy has an XHCI phy.
+- has-xhci-only: Boolean indicating the phy has an XHCI phy and no
+  EHCI/OHCI phy.
+- device: String, PHY Device mode.
+  Possible values are: "off", "on ", "dual" or "typec-pd"
+  If this property is not defined, the phy will default to "off" mode.
+
+Example:
+
+usbphy_0: usb-phy@f0470200 {
+	reg = <0xf0470200 0xb8>,
+		<0xf0471940 0x6c0>;
+	reg-names "ctrl", "xhci_ec"
+	compatible = "brcm,brcmstb-usb-phy";
+	#phy-cells = <1>;
+	device = "off"
+	ioc = <1>;
+	ipp = <1>;
+	has-xhci;
+	clocks = <&usb20>, <&usb30>;
+	clock-names = "sw_usb", "sw_usb3";
+};

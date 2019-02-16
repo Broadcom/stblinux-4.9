@@ -9,11 +9,12 @@ error_usage() {
 }
 
 
-while getopts 'dhps' opt; do
+while getopts 'dhpqs' opt; do
 	case $opt in
 		d) dot=1;;
 		h) help=1;;
 		p) prefix=1;;
+		q) quiet=1;;
 		s) short=1;;
 		*) exit 1;;
 	esac
@@ -26,7 +27,9 @@ shift $((OPTIND - 1))
 LINUX_MAKEFILE="$1/Makefile"
 
 if [ ! -r "$LINUX_MAKEFILE" ]; then
-	echo "Error: couldn't read $LINUX_MAKEFILE" 1>&2
+	if [ -z $quiet ]; then
+		echo "Error: couldn't read $LINUX_MAKEFILE" 1>&2
+	fi
 	exit 1
 fi
 

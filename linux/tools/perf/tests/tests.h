@@ -34,6 +34,7 @@ struct test {
 		int (*get_nr)(void);
 		const char *(*get_desc)(int subtest);
 	} subtest;
+	bool (*is_supported)(void);
 };
 
 /* Tests */
@@ -91,6 +92,8 @@ int test__cpu_map_print(int subtest);
 int test__sdt_event(int subtest);
 int test__is_printable_array(int subtest);
 int test__bitmap_print(int subtest);
+
+bool test__bp_signal_is_supported(void);
 
 #if defined(__arm__) || defined(__aarch64__)
 #ifdef HAVE_DWARF_UNWIND_SUPPORT

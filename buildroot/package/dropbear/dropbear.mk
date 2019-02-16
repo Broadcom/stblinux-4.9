@@ -83,7 +83,7 @@ endef
 
 ifneq ($(BR2_PACKAGE_DROPBEAR_PATH),"")
 define DROPBEAR_CUSTOM_PATH
-	$(SED) 's|^\(#define \+DEFAULT_PATH\)[	 ]\+.*|\1 $(BR2_PACKAGE_DROPBEAR_PATH)|' $(@D)/options.h
+	echo '#define DEFAULT_PATH $(BR2_PACKAGE_DROPBEAR_PATH)' >>$(@D)/localoptions.h
 endef
 
 DROPBEAR_POST_EXTRACT_HOOKS += DROPBEAR_CUSTOM_PATH

@@ -1,0 +1,22 @@
+BrcmSTB simple reset controller
+===============================
+
+Please also refer to reset.txt in this directory for common reset
+controller binding usage.
+
+Required properties:
+- compatible: should be brcm,bcm7216-pcie-sata-rescal
+- reg: register base and length
+- #reset-cells: must be set to 0
+
+Example:
+
+rescal: reset {
+	compatible = "brcm,bcm7216-pcie-sata-rescal";
+	reg = <0x8b2c800>;
+	#reset-cells = <0>;
+};
+
+&pcie0 {
+	resets = <&rescal>;
+};

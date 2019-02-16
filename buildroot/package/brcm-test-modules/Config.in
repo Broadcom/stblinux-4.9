@@ -1,5 +1,8 @@
 menu "Broadcom STB test modules"
 
+config BR2_PACKAGE_BRCM_TEST_MODULES_DVFS_API
+	bool "DVFS API test module"
+
 config BR2_PACKAGE_BRCM_TEST_MODULES_GPIO_API
 	bool "GPIO API test module"
 

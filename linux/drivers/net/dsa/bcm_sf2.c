@@ -145,6 +145,42 @@ static void bcm_sf2_brcm_hdr_setup(struct bcm_sf2_priv *priv, int port)
 	core_writel(priv, reg, CORE_BRCM_HDR_TX_DIS);
 }
 
+static void bcm_sf2_port_learn_setup(struct dsa_switch *ds, int port)
+{
+	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
+	u32 reg;
+
+	/* Enable learning */
+	reg = core_readl(priv, CORE_DIS_LEARN);
+	reg &= ~BIT(port);
+	core_writel(priv, reg, CORE_DIS_LEARN);
+
+	/* Software learning control disabled */
+	reg = core_readl(priv, CORE_SFT_LRN_CTRL);
+	reg &= ~BIT(port);
+	core_writel(priv, reg, CORE_SFT_LRN_CTRL);
+
+	/* Configure IP multicast, allow Unicast ARL misses to be forwarded */
+	reg = core_readl(priv, CORE_NEW_CTRL);
+	reg |= IP_MC | UC_FWD_EN;
+	core_writel(priv, reg, CORE_NEW_CTRL);
+
+	/* Set port in Unicast lookup forward map */
+	reg = core_readl(priv, CORE_ULF_DROP_MAP);
+	reg |= BIT(port);
+	core_writel(priv, reg, CORE_ULF_DROP_MAP);
+
+	/* Do not set port in Multicast lookup forward map, learn */
+	reg = core_readl(priv, CORE_MLF_DROP_MAP);
+	reg &= ~BIT(port);
+	core_writel(priv, reg, CORE_MLF_DROP_MAP);
+
+	/* Do not set port in IP multicast lookup formward map, learn */
+	reg = core_readl(priv, CORE_MLF_IPMC_FWD_MAP);
+	reg &= ~BIT(port);
+	core_writel(priv, reg, CORE_MLF_IPMC_FWD_MAP);
+}
+
 static void bcm_sf2_imp_setup(struct dsa_switch *ds, int port)
 {
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
@@ -161,19 +197,24 @@ static void bcm_sf2_imp_setup(struct dsa_switch *ds, int port)
 	reg &= ~P_TXQ_PSM_VDD(port);
 	core_writel(priv, reg, CORE_MEM_PSM_VDD_CTRL);
 
-	/* Enable Broadcast, Multicast, Unicast forwarding to IMP port */
-	reg = core_readl(priv, CORE_IMP_CTL);
-	reg |= (RX_BCST_EN | RX_MCST_EN | RX_UCST_EN);
-	reg &= ~(RX_DIS | TX_DIS);
-	core_writel(priv, reg, CORE_IMP_CTL);
+	/* Enable forwarding and managed mode */
+	core_writel(priv, SW_FWDG_EN | SW_FWDG_MODE, CORE_SWMODE);
 
-	/* Enable forwarding */
-	core_writel(priv, SW_FWDG_EN, CORE_SWMODE);
+	/* Configure port for learning */
+	bcm_sf2_port_learn_setup(ds, port);
 
-	/* Enable IMP port in dumb mode */
+	/* Disable dumb forwarding mode for IMP port */
 	reg = core_readl(priv, CORE_SWITCH_CTRL);
-	reg |= MII_DUMB_FWDG_EN;
+	reg &= ~MII_DUMB_FWDG_EN;
 	core_writel(priv, reg, CORE_SWITCH_CTRL);
+
+	/* Enable IGMP and MLD high-level protocol snooping support */
+	reg = HL_PRTC_IGMP_RPTLVE_EN | HL_PRTC_IGMP_RPTVLE_FWD_MODE |
+	      HL_PRTC_IGMP_QRY_EN | HL_PRTC_IGMP_QRY_FWD_MODE |
+	      HL_PRTC_IGMP_UKN_EN | HL_PRTC_IGMP_UKN_FWD_MODE |
+	      HL_PRTC_MLD_RPTDONE_EN | HL_PRTC_MLD_RPTDONE_FWD_MODE |
+	      HL_PRTC_MLD_QRY_EN | HL_PRTC_MLD_QRY_FWD_MODE;
+	core_writel(priv, reg, CORE_HL_PRTC_CTRL);
 
 	/* Configure Traffic Class to QoS mapping, allow each priority to map
 	 * to a different queue number
@@ -185,10 +226,26 @@ static void bcm_sf2_imp_setup(struct dsa_switch *ds, int port)
 
 	bcm_sf2_brcm_hdr_setup(priv, port);
 
+	/* Set IMP0 port to be managed port, enable BPDU */
+	reg = core_readl(priv, CORE_GMNCFGCFG);
+	reg &= ~(FRM_MGNP_MASK << FRM_MGNP_SHIFT);
+	if (port == core_readl(priv, CORE_IMP0_PRT_ID))
+		reg |= FRM_MNGP_IMP0 << FRM_MGNP_SHIFT;
+	if (port == core_readl(priv, CORE_IMP1_PRT_ID))
+		reg |= FRM_MGNP_IMP_DUAL << FRM_MGNP_SHIFT;
+	reg |= RXBPDU_EN;
+	core_writel(priv, reg, CORE_GMNCFGCFG);
+
 	/* Force link status for IMP port */
 	reg = core_readl(priv, offset);
 	reg |= (MII_SW_OR | LINK_STS);
 	core_writel(priv, reg, offset);
+
+	/* Enable Broadcast, Unicast forwarding to IMP port */
+	reg = core_readl(priv, CORE_IMP_CTL);
+	reg |= (RX_BCST_EN | RX_UCST_EN);
+	reg &= ~(RX_DIS | TX_DIS);
+	core_writel(priv, reg, CORE_IMP_CTL);
 
 	priv->port_sts[port].enabled = true;
 }
@@ -296,10 +353,8 @@ static int bcm_sf2_port_setup(struct dsa_switch *ds, int port,
 	reg &= ~P_TXQ_PSM_VDD(port);
 	core_writel(priv, reg, CORE_MEM_PSM_VDD_CTRL);
 
-	/* Enable learning */
-	reg = core_readl(priv, CORE_DIS_LEARN);
-	reg &= ~BIT(port);
-	core_writel(priv, reg, CORE_DIS_LEARN);
+	/* Configure port for learning */
+	bcm_sf2_port_learn_setup(ds, port);
 
 	/* Enable Broadcom tags for that port if requested */
 	if (priv->brcm_tag_mask & BIT(port)) {
@@ -871,6 +926,7 @@ static int bcm_sf2_sw_suspend(struct dsa_switch *ds)
 {
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
 	unsigned int port;
+	u32 reg;
 
 	bcm_sf2_intr_disable(priv);
 
@@ -883,6 +939,20 @@ static int bcm_sf2_sw_suspend(struct dsa_switch *ds)
 		    dsa_is_cpu_port(ds, port))
 			bcm_sf2_port_disable(ds, port, NULL);
 	}
+
+	/* Disable management mode since we won't be able to
+	 * perform any tasks while being suspended.
+	 */
+	reg = core_readl(priv, CORE_SWMODE);
+	reg &= ~SW_FWDG_MODE;
+	core_writel(priv, reg, CORE_SWMODE);
+
+	/* Enable IMP port in dumb switching mode to allow
+	 * Magic Packets to reach IMP port.
+	 */
+	reg = core_readl(priv, CORE_SWITCH_CTRL);
+	reg |= MII_DUMB_FWDG_EN;
+	core_writel(priv, reg, CORE_SWITCH_CTRL);
 
 	if (!priv->wol_ports_mask)
 		clk_disable_unprepare(priv->clk);
@@ -1006,10 +1076,9 @@ static void bcm_sf2_sw_configure_vlan(struct dsa_switch *ds)
 	bcm_sf2_vlan_op(priv, ARLA_VTBL_CMD_CLEAR);
 
 	for (port = 0; port < priv->hw_params.num_ports; port++) {
-		if (!((1 << port) & ds->enabled_port_mask))
-			continue;
-
-		core_writel(priv, 1, CORE_DEFAULT_1Q_TAG_P(port));
+		if (((1 << port) & ds->enabled_port_mask) ||
+		    dsa_is_cpu_port(ds, port))
+			core_writel(priv, 0, CORE_DEFAULT_1Q_TAG_P(port));
 	}
 }
 
@@ -1223,6 +1292,14 @@ static int bcm_sf2_sw_probe(struct platform_device *pdev)
 	if (!priv)
 		return -ENOMEM;
 
+	priv->clk = of_clk_get_by_name(dn, "sw_switch");
+	if (IS_ERR(priv->clk)) {
+		if (PTR_ERR(priv->clk) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		pr_warn("%s: failed to request clock\n", __func__);
+		priv->clk = NULL;
+	}
+
 	ops = devm_kzalloc(&pdev->dev, sizeof(*ops), GFP_KERNEL);
 	if (!ops)
 		return -ENOMEM;
@@ -1313,11 +1390,6 @@ static int bcm_sf2_sw_probe(struct platform_device *pdev)
 		base++;
 	}
 
-	priv->clk = of_clk_get_by_name(dn, "sw_switch");
-	if (IS_ERR(priv->clk)) {
-		pr_warn("%s: failed to request clock\n", __func__);
-		priv->clk = NULL;
-	}
 	clk_prepare_enable(priv->clk);
 
 	priv->clk_mdiv = of_clk_get_by_name(dn, "sw_switch_mdiv");
@@ -1333,11 +1405,15 @@ static int bcm_sf2_sw_probe(struct platform_device *pdev)
 		goto out_clk;
 	}
 
+	bcm_sf2_gphy_enable_set(priv->dev->ds, true);
+
 	ret = bcm_sf2_mdio_register(ds);
 	if (ret) {
 		pr_err("failed to register MDIO bus\n");
 		goto out_clk;
 	}
+
+	bcm_sf2_gphy_enable_set(priv->dev->ds, false);
 
 	ret = bcm_sf2_cfp_rst(priv);
 	if (ret) {

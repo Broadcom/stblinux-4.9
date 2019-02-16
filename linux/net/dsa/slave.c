@@ -93,6 +93,39 @@ static void dsa_port_set_stp_state(struct dsa_switch *ds, int port, u8 state)
 	dp->stp_state = state;
 }
 
+static int dsa_slave_sync_unsync_mdb_addr(struct net_device *dev,
+					  const unsigned char *addr, bool add)
+{
+	struct switchdev_obj_port_mdb mdb = {
+		.obj = {
+			.id = SWITCHDEV_OBJ_ID_HOST_MDB,
+			.flags = SWITCHDEV_F_DEFER,
+		},
+		.vid = 0,
+	};
+	int ret = -EOPNOTSUPP;
+
+	ether_addr_copy(mdb.addr, addr);
+	if (add)
+		ret = switchdev_port_obj_add(dev, &mdb.obj);
+	else
+		ret = switchdev_port_obj_del(dev, &mdb.obj);
+
+	return ret;
+}
+
+static int dsa_slave_sync_mdb_addr(struct net_device *dev,
+				   const unsigned char *addr)
+{
+	return dsa_slave_sync_unsync_mdb_addr(dev, addr, true);
+}
+
+static int dsa_slave_unsync_mdb_addr(struct net_device *dev,
+				     const unsigned char *addr)
+{
+	return dsa_slave_sync_unsync_mdb_addr(dev, addr, false);
+}
+
 static int dsa_slave_open(struct net_device *dev)
 {
 	struct dsa_slave_priv *p = netdev_priv(dev);
@@ -159,6 +192,8 @@ static int dsa_slave_close(struct net_device *dev)
 
 	dev_mc_unsync(master, dev);
 	dev_uc_unsync(master, dev);
+	__hw_addr_unsync_dev(&dev->mc, dev, dsa_slave_unsync_mdb_addr);
+
 	if (dev->flags & IFF_ALLMULTI)
 		dev_set_allmulti(master, -1);
 	if (dev->flags & IFF_PROMISC)
@@ -191,6 +226,15 @@ static void dsa_slave_set_rx_mode(struct net_device *dev)
 	struct dsa_slave_priv *p = netdev_priv(dev);
 	struct net_device *master = p->parent->dst->master_netdev;
 
+	/* If the port is bridged, the bridge takes care of sending
+	 * SWITCHDEV_OBJ_ID_HOST_MDB to program the host's MC filter
+	 */
+	if (netdev_mc_empty(dev) || dsa_port_is_bridged(p))
+		goto out;
+
+	__hw_addr_sync_dev(&dev->mc, dev, dsa_slave_sync_mdb_addr,
+			   dsa_slave_unsync_mdb_addr);
+out:
 	dev_mc_sync(master, dev);
 	dev_uc_sync(master, dev);
 }
@@ -381,6 +425,24 @@ static int dsa_slave_stp_state_set(struct net_device *dev,
 	return 0;
 }
 
+static int dsa_slave_multicast_toggle(struct net_device *dev,
+				      const struct switchdev_attr *attr,
+				      struct switchdev_trans *trans)
+{
+	struct dsa_slave_priv *p = netdev_priv(dev);
+	struct dsa_switch *ds = p->parent;
+
+	/* bridge skips -EOPNOTSUPP, so skip the prepare phase */
+	if (switchdev_trans_ph_prepare(trans))
+		return 0;
+
+	if (ds->ops->port_multicast_toggle)
+		return ds->ops->port_multicast_toggle(ds, p->port,
+						      attr->u.mc_disabled);
+
+	return 0;
+}
+
 static int dsa_slave_vlan_filtering(struct net_device *dev,
 				    const struct switchdev_attr *attr,
 				    struct switchdev_trans *trans)
@@ -453,6 +515,9 @@ static int dsa_slave_port_attr_set(struct net_device *dev,
 	case SWITCHDEV_ATTR_ID_BRIDGE_AGEING_TIME:
 		ret = dsa_slave_ageing_time(dev, attr, trans);
 		break;
+	case SWITCHDEV_ATTR_ID_BRIDGE_MC_DISABLED:
+		ret = dsa_slave_multicast_toggle(dev, attr, trans);
+		break;
 	default:
 		ret = -EOPNOTSUPP;
 		break;
@@ -465,6 +530,9 @@ static int dsa_slave_port_obj_add(struct net_device *dev,
 				  const struct switchdev_obj *obj,
 				  struct switchdev_trans *trans)
 {
+	struct dsa_slave_priv *p = netdev_priv(dev);
+	struct dsa_switch *ds = p->parent;
+	s8 cpu_port = ds->dst->cpu_port;
 	int err;
 
 	/* For the prepare phase, ensure the full set of changes is feasable in
@@ -482,6 +550,16 @@ static int dsa_slave_port_obj_add(struct net_device *dev,
 		err = dsa_slave_port_mdb_add(dev, SWITCHDEV_OBJ_PORT_MDB(obj),
 					     trans);
 		break;
+	case SWITCHDEV_OBJ_ID_HOST_MDB:
+		/* DSA can directly translate this to a normal MDB add,
+		 * but on the CPU port.
+		 */
+		if (ds->ops->port_mdb_add)
+			ds->ops->port_mdb_add(ds, cpu_port,
+					      SWITCHDEV_OBJ_PORT_MDB(obj),
+					      trans);
+		err = 0;
+		break;
 	case SWITCHDEV_OBJ_ID_PORT_VLAN:
 		err = dsa_slave_port_vlan_add(dev,
 					      SWITCHDEV_OBJ_PORT_VLAN(obj),
@@ -498,6 +576,9 @@ static int dsa_slave_port_obj_add(struct net_device *dev,
 static int dsa_slave_port_obj_del(struct net_device *dev,
 				  const struct switchdev_obj *obj)
 {
+	struct dsa_slave_priv *p = netdev_priv(dev);
+	struct dsa_switch *ds = p->parent;
+	s8 cpu_port = ds->dst->cpu_port;
 	int err;
 
 	switch (obj->id) {
@@ -507,6 +588,14 @@ static int dsa_slave_port_obj_del(struct net_device *dev,
 		break;
 	case SWITCHDEV_OBJ_ID_PORT_MDB:
 		err = dsa_slave_port_mdb_del(dev, SWITCHDEV_OBJ_PORT_MDB(obj));
+		break;
+	case SWITCHDEV_OBJ_ID_HOST_MDB:
+		/* DSA can directly translate this to a normal MDB add,
+		 * but on the CPU port.
+		 */
+		if (ds->ops->port_mdb_del)
+			err = ds->ops->port_mdb_del(ds, cpu_port,
+						    SWITCHDEV_OBJ_PORT_MDB(obj));
 		break;
 	case SWITCHDEV_OBJ_ID_PORT_VLAN:
 		err = dsa_slave_port_vlan_del(dev,
@@ -555,6 +644,9 @@ static int dsa_slave_bridge_port_join(struct net_device *dev,
 	struct dsa_slave_priv *p = netdev_priv(dev);
 	struct dsa_switch *ds = p->parent;
 	int ret = -EOPNOTSUPP;
+
+	/* Remove existing MC addresses that might have been programmed */
+	__hw_addr_unsync_dev(&dev->mc, dev, dsa_slave_unsync_mdb_addr);
 
 	p->bridge_dev = br;
 
@@ -1031,6 +1123,52 @@ static u16 dsa_slave_select_queue(struct net_device *dev, struct sk_buff *skb,
 	return skb_get_queue_mapping(skb);
 }
 
+static int dsa_slave_vlan_rx_add_vid(struct net_device *dev, __be16 proto,
+				     u16 vid)
+{
+	struct dsa_slave_priv *p = netdev_priv(dev);
+	struct switchdev_obj_port_vlan vlan = { };
+	int ret = 0;
+
+	/* If the port is bridged and the bridge is VLAN aware, let the bridge
+	 * manage VLAN */
+	if (dsa_port_is_bridged(p) && br_vlan_enabled(p->bridge_dev))
+		return -EINVAL;
+
+	/* This API only allows programming tagged, non-PVID VIDs */
+	vlan.vid_begin = vid;
+	vlan.vid_end = vid;
+
+	ret = dsa_slave_port_vlan_add(dev, &vlan, NULL);
+	if (ret == -EOPNOTSUPP)
+		ret = 0;
+
+	return ret;
+}
+
+static int dsa_slave_vlan_rx_kill_vid(struct net_device *dev, __be16 proto,
+				      u16 vid)
+{
+	struct dsa_slave_priv *p = netdev_priv(dev);
+	struct switchdev_obj_port_vlan vlan = { };
+	int ret = 0;
+
+	/* If the port is bridged and the bridge is VLAN aware, let the bridge
+	 * manage VLAN */
+	if (dsa_port_is_bridged(p) && br_vlan_enabled(p->bridge_dev))
+		return -EINVAL;
+
+	/* This API only allows programming tagged, non-PVID VIDs */
+	vlan.vid_begin = vid;
+	vlan.vid_end = vid;
+
+	ret = dsa_slave_port_vlan_del(dev, &vlan);
+	if (ret == -EOPNOTSUPP)
+		ret = 0;
+
+	return ret;
+}
+
 static const struct ethtool_ops dsa_slave_ethtool_ops = {
 	.get_settings		= dsa_slave_get_settings,
 	.set_settings		= dsa_slave_set_settings,
@@ -1075,6 +1213,8 @@ static const struct net_device_ops dsa_slave_netdev_ops = {
 	.ndo_bridge_dellink	= switchdev_port_bridge_dellink,
 	.ndo_select_queue	= dsa_slave_select_queue,
 	.ndo_get_phys_port_name	= dsa_slave_get_phys_port_name,
+	.ndo_vlan_rx_add_vid	= dsa_slave_vlan_rx_add_vid,
+	.ndo_vlan_rx_kill_vid	= dsa_slave_vlan_rx_kill_vid,
 };
 
 static const struct switchdev_ops dsa_slave_switchdev_ops = {
@@ -1300,7 +1440,8 @@ int dsa_slave_create(struct dsa_switch *ds, struct device *parent,
 	if (slave_dev == NULL)
 		return -ENOMEM;
 
-	slave_dev->features = master->vlan_features;
+	slave_dev->features = master->vlan_features |
+			      NETIF_F_HW_VLAN_CTAG_FILTER;
 	slave_dev->ethtool_ops = &dsa_slave_ethtool_ops;
 	eth_hw_addr_inherit(slave_dev, master);
 	slave_dev->priv_flags |= IFF_NO_QUEUE;

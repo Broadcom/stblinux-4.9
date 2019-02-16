@@ -53,6 +53,7 @@ config ARCH_BRCMSTB
 	select SOC_BRCMSTB
 	select BRCMSTB
 	select PINCTRL
+	select ARCH_HAS_RESET_CONTROLLER
 	help
 	  This enables support for Broadcom's ARMv8 Set Top Box SoCs
 

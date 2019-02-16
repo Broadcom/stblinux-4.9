@@ -7,7 +7,7 @@
 BRCMROOT_VERSION = $(call qstrip,$(BR2_BRCM_STB_TOOLS_VERSION))
 
 MOCA2_VERSION = $(BRCMROOT_VERSION)
-MOCA2_SITE = git://stbgit.broadcom.com/mm940762/stbtools.git
+MOCA2_SITE = git://stbgit.broadcom.com/queue/stbtools.git
 MOCA2_SOURCE = stbtools-$(BRCMROOT_VERSION).tar.gz
 MOCA2_DL_SUBDIR = brcm-pm
 MOCA2_LICENSE = Proprietary

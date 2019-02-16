@@ -187,7 +187,7 @@ struct net_bridge_mdb_entry
 	struct rcu_head			rcu;
 	struct timer_list		timer;
 	struct br_ip			addr;
-	bool				mglist;
+	bool				host_joined;
 };
 
 struct net_bridge_mdb_htable
@@ -829,10 +829,6 @@ static inline u16 br_get_pvid(const struct net_bridge_vlan_group *vg)
 	return vg->pvid;
 }
 
-static inline int br_vlan_enabled(struct net_bridge *br)
-{
-	return br->vlan_enabled;
-}
 #else
 static inline bool br_allowed_ingress(const struct net_bridge *br,
 				      struct net_bridge_vlan_group *vg,
@@ -915,11 +911,6 @@ static inline u16 br_vlan_get_tag(const struct sk_buff *skb, u16 *tag)
 }
 
 static inline u16 br_get_pvid(const struct net_bridge_vlan_group *vg)
-{
-	return 0;
-}
-
-static inline int br_vlan_enabled(struct net_bridge *br)
 {
 	return 0;
 }

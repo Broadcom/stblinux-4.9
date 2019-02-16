@@ -380,6 +380,8 @@ struct dsa_switch_ops {
 	/*
 	 * Multicast database
 	 */
+	int	(*port_multicast_toggle)(struct dsa_switch *ds, int port,
+					 bool mc_disabled);
 	int	(*port_mdb_prepare)(struct dsa_switch *ds, int port,
 				    const struct switchdev_obj_port_mdb *mdb,
 				    struct switchdev_trans *trans);

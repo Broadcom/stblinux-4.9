@@ -11,6 +11,7 @@ Required properties:
 - compatible: should be one of the following
   - "brcm,bcm7425-sdhci"
   - "brcm,bcm7445-sdhci"
+  - "brcm,bcm7216-sdhci"
 
 Refer to clocks/clock-bindings.txt for generic clock consumer properties.
 

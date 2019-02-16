@@ -484,6 +484,8 @@ use HTTP::Tiny;
 use Safe;
 use MetaCPAN::API::Tiny;
 use Digest::SHA qw(sha256_hex);
+use Text::Wrap;
+$Text::Wrap::columns = 62;
 
 # Below, 5.026 should be aligned with the version of perl actually
 # bundled in Buildroot:
@@ -519,12 +521,22 @@ my %need_host;          # name -> 1 if host package is needed
 my %need_dlopen;        # name -> 1 if requires dynamic library
 my %deps_build;         # name -> list of host dependencies
 my %deps_runtime;       # name -> list of target dependencies
-my %deps_optional;      # name -> list of optional target dependencies
 my %license_files;      # name -> hash of license files
 my %checksum;           # author -> list of checksum
 my $mirror = 'http://cpan.metacpan.org';        # a CPAN mirror
 my $mcpan = MetaCPAN::API::Tiny->new(base_url => 'http://fastapi.metacpan.org/v1');
 my $ua = HTTP::Tiny->new();
+my $new_pkgs;
+
+my %white_list = (
+    'ExtUtils-Config' => 1,
+    'ExtUtils-InstallPaths' => 1,
+    'ExtUtils-Helpers' => 1,
+    'File-ShareDir-Install' => 1,
+    'Module-Build' => 1,
+    'Module-Build-Tiny' => 1,
+);
+my @info = ();
 
 sub get_checksum {
     my ($url) = @_;
@@ -555,6 +567,9 @@ sub find_license_files {
         push @license_files, $_ if m/(ARTISTIC|COPYING|COPYRIGHT|LICENSE)/i;
     }
     if (scalar @license_files == 0 && $manifest =~ m/(README)[\n\s]/i) {
+        @license_files = ($1);
+    }
+    if (scalar @license_files == 0 && $manifest =~ m/(README\.md)[\n\s]/i) {
         @license_files = ($1);
     }
     return @license_files;
@@ -595,6 +610,7 @@ sub fetch {
             # we could use the host Module::CoreList data, because host perl and
             # target perl have the same major version
             next if ${$dep}{phase} eq q{develop};
+            next if ${$dep}{phase} eq q{x_Dist_Zilla};
             next if !($test && $top) && ${$dep}{phase} eq q{test};
             my $distname = $mcpan->module( $modname )->{distribution};
             if (${$dep}{phase} eq q{runtime}) {
@@ -607,11 +623,12 @@ sub fetch {
             }
             else { # configure, build
                 $build{$distname} = 1;
+                push @info, qq{[$name] suspicious dependency on $distname}
+                    unless exists $white_list{$distname};
             }
         }
         $deps_build{$name} = [keys %build];
         $deps_runtime{$name} = [keys %runtime];
-        $deps_optional{$name} = [keys %optional];
         foreach my $distname (@{$deps_build{$name}}) {
             fetch( $distname, 0, 1 );
         }
@@ -619,7 +636,7 @@ sub fetch {
             fetch( $distname, $need_target, $need_host );
             $need_dlopen{$name} ||= $need_dlopen{$distname};
         }
-        foreach my $distname (@{$deps_optional{$name}}) {
+        foreach my $distname (keys %optional) {
             fetch( $distname, $need_target, $need_host );
         }
     }
@@ -646,6 +663,24 @@ sub brname {
     return uc $name;
 }
 
+# Buildroot requires license name as in http://spdx.org/licenses/
+sub brlicense {
+    my $license = shift;
+    $license =~ s|apache_1_1|Apache-1.1|;
+    $license =~ s|apache_2_0|Apache-2.0|;
+    $license =~ s|artistic_2|Artistic-2.0|;
+    $license =~ s|artistic|Artistic-1.0|;
+    $license =~ s|lgpl_2_1|LGPL-2.1|;
+    $license =~ s|lgpl_3_0|LGPL-3.0|;
+    $license =~ s|gpl_2|GPL-2.0|;
+    $license =~ s|gpl_3|GPL-3.0|;
+    $license =~ s|mit|MIT|;
+    $license =~ s|mozilla_1_1|Mozilla-1.1|;
+    $license =~ s|openssl|OpenSSL|;
+    $license =~ s|perl_5|Artistic or GPL-1.0+|;
+    return $license;
+}
+
 while (my ($distname, $dist) = each %dist) {
     my $fsname = fsname( $distname );
     my $dirname = q{package/} . $fsname;
@@ -653,9 +688,14 @@ while (my ($distname, $dist) = each %dist) {
     my $mkname = $dirname . q{/} . $fsname . q{.mk};
     my $hashname = $dirname . q{/} . $fsname . q{.hash};
     my $brname = brname( $fsname );
-    mkdir $dirname unless -d $dirname;
+    unless (-d $dirname) {
+        mkdir $dirname;
+        $new_pkgs = 1;
+    }
     if ($need_target{$distname} && ($force || !-f $cfgname)) {
-        my $abstract = $dist->{abstract};
+        $dist->{abstract} =~ s|\s+$||;
+        $dist->{abstract} .= q{.} unless $dist->{abstract} =~ m|\.$|;
+        my $abstract = wrap( q{}, qq{\t  }, $dist->{abstract} );
         my $homepage = $dist->{resources}->{homepage} || qq{https://metacpan.org/release/${distname}};
         say qq{write ${cfgname}} unless $quiet;
         open my $fh, q{>}, $cfgname;
@@ -664,7 +704,7 @@ while (my ($distname, $dist) = each %dist) {
         say {$fh} qq{\tdepends on !BR2_STATIC_LIBS} if $need_dlopen{$distname};
         foreach my $dep (sort @{$deps_runtime{$distname}}) {
             my $brdep = brname( fsname( $dep ) );
-            say {$fh} qq{\tselect BR2_PACKAGE_${brdep}};
+            say {$fh} qq{\tselect BR2_PACKAGE_${brdep} # runtime};
         }
         say {$fh} qq{\thelp};
         say {$fh} qq{\t  ${abstract}\n} if $abstract;
@@ -683,20 +723,21 @@ while (my ($distname, $dist) = each %dist) {
         # the auth part is not used, because we use $(BR2_CPAN_MIRROR)
         my ($filename, $directories, $suffix) = fileparse( $path, q{tar.gz}, q{tgz} );
         $directories =~ s|/$||;
-        my $dependencies = join q{ }, map( { q{host-} . fsname( $_ ); } sort @{$deps_build{$distname}} ),
-                                      map( { fsname( $_ ); } sort @{$deps_runtime{$distname}} );
-        my $host_dependencies = join q{ }, map { q{host-} . fsname( $_ ); } sort( @{$deps_build{$distname}},
-                                                                                  @{$deps_runtime{$distname}} );
-        my $license = ref $dist->{license} eq 'ARRAY'
-                    ? join q{ or }, @{$dist->{license}}
-                    : $dist->{license};
-        # BR requires license name as in http://spdx.org/licenses/
-        $license =~ s|apache_2_0|Apache-2.0|;
-        $license =~ s|artistic_2|Artistic-2.0|;
-        $license =~ s|mit|MIT|;
-        $license =~ s|openssl|OpenSSL|;
-        $license =~ s|perl_5|Artistic or GPL-1.0+|;
-        my $license_files = join q{ }, keys %{$license_files{$distname}};
+        my @dependencies = map( { q{host-} . fsname( $_ ); } sort @{$deps_build{$distname}} );
+        my $dependencies = join qq{ \\\n\t}, @dependencies;
+        $dependencies = qq{\\\n\t} . $dependencies if scalar @dependencies > 1;
+        my @host_dependencies = map { q{host-} . fsname( $_ ); } sort( @{$deps_build{$distname}},
+                                                                       @{$deps_runtime{$distname}} );
+        my $host_dependencies = join qq{ \\\n\t}, @host_dependencies;
+        $host_dependencies = qq{\\\n\t} . $host_dependencies if scalar @host_dependencies > 1;
+        my $license = brlicense( ref $dist->{license} eq 'ARRAY'
+                               ? join q{ or }, @{$dist->{license}}
+                               : $dist->{license} );
+        my $license_files = join q{ }, sort keys %{$license_files{$distname}};
+        if ($license_files && (!$license || $license eq q{unknown})) {
+            push @info, qq{[$distname] undefined LICENSE, see $license_files};
+            $license = q{???};
+        }
         say qq{write ${mkname}} unless $quiet;
         open my $fh, q{>}, $mkname;
         say {$fh} qq{################################################################################};
@@ -710,18 +751,10 @@ while (my ($distname, $dist) = each %dist) {
         say {$fh} qq{${brname}_SITE = \$(BR2_CPAN_MIRROR)${directories}};
         say {$fh} qq{${brname}_DEPENDENCIES = ${dependencies}} if $need_target{$distname} && $dependencies;
         say {$fh} qq{HOST_${brname}_DEPENDENCIES = ${host_dependencies}} if $need_host{$distname} && $host_dependencies;
-        say {$fh} qq{${brname}_LICENSE = ${license}} if $license && $license ne q{unknown};
+        say {$fh} qq{${brname}_LICENSE = ${license}} if $license;
         say {$fh} qq{${brname}_LICENSE_FILES = ${license_files}} if $license_files;
+        say {$fh} qq{${brname}_DISTNAME = ${distname}};
         say {$fh} qq{};
-        foreach (sort @{$deps_optional{$distname}}) {
-            next if grep { $_ eq $distname; } @{$deps_runtime{$_}};     # avoid cyclic dependencies
-            my $opt_brname = brname( $_ );
-            my $opt_fsname = fsname( $_ );
-            say {$fh} qq{ifeq (\$(BR2_PACKAGE_PERL_${opt_brname}),y)};
-            say {$fh} qq{${brname}_DEPENDENCIES += ${opt_fsname}};
-            say {$fh} qq{endif};
-            say {$fh} qq{};
-        }
         say {$fh} qq{\$(eval \$(perl-package))} if $need_target{$distname};
         say {$fh} qq{\$(eval \$(host-perl-package))} if $need_host{$distname};
         close $fh;
@@ -735,10 +768,12 @@ while (my ($distname, $dist) = each %dist) {
         say {$fh} qq{# retrieved by scancpan from ${mirror}/};
         say {$fh} qq{md5    ${md5} ${filename}};
         say {$fh} qq{sha256 ${sha256} ${filename}};
-        if (scalar keys %{$license_files{$distname}}) {
+        my %license_files =  %{$license_files{$distname}};
+        if (scalar keys %license_files) {
             say {$fh} q{};
             say {$fh} qq{# computed by scancpan};
-            while (my ($license, $digest) = each %{$license_files{$distname}}) {
+            foreach my $license (sort keys %license_files) {
+                my $digest = $license_files{$license};
                 say {$fh} qq{sha256 ${digest} ${license}};
             }
         }
@@ -746,24 +781,28 @@ while (my ($distname, $dist) = each %dist) {
     }
 }
 
-my %pkg;
-my $cfgname = q{package/Config.in};
-if (-f $cfgname) {
-    open my $fh, q{<}, $cfgname;
-    while (<$fh>) {
-        chomp;
-        $pkg{$_} = 1 if m|package/perl-|;
+if ($new_pkgs) {
+    my %pkg;
+    my $cfgname = q{package/Config.in};
+    if (-f $cfgname) {
+        open my $fh, q{<}, $cfgname;
+        while (<$fh>) {
+            chomp;
+            $pkg{$_} = 1 if m|package/perl-|;
+        }
+        close $fh;
     }
-    close $fh;
+
+    foreach my $distname (keys %need_target) {
+        my $fsname = fsname( $distname );
+        $pkg{qq{\tsource "package/${fsname}/Config.in"}} = 1;
+    }
+
+    say qq{${cfgname} must contain the following lines:};
+    say join qq{\n}, sort keys %pkg;
 }
 
-foreach my $distname (keys %need_target) {
-    my $fsname = fsname( $distname );
-    $pkg{qq{\tsource "package/${fsname}/Config.in"}} = 1;
-}
-
-say qq{${cfgname} must contain the following lines:};
-say join qq{\n}, sort keys %pkg;
+say join qq{\n}, @info;
 
 __END__
 

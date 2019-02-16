@@ -310,6 +310,43 @@ out:
 	return err;
 }
 
+static int vlan_dev_sync_unsync_mc_addr(struct net_device *dev,
+                                        const unsigned char *addr,
+                                        bool add)
+{
+	struct net_device *real_dev = vlan_dev_priv(dev)->real_dev;
+	struct switchdev_obj_port_mdb mdb = {
+		.obj = {
+			.orig_dev = dev,
+			.id = SWITCHDEV_OBJ_ID_HOST_MDB,
+			.flags = SWITCHDEV_F_DEFER,
+		},
+		.vid = vlan_dev_vlan_id(dev),
+	};
+	int ret = -EOPNOTSUPP;
+
+	ether_addr_copy(mdb.addr, addr);
+        if (add)
+		ret = switchdev_port_obj_add(real_dev, &mdb.obj);
+        else
+		ret = switchdev_port_obj_del(real_dev, &mdb.obj);
+
+	return ret;
+}
+
+static int vlan_dev_sync_mc_addr(struct net_device *dev,
+                                 const unsigned char *addr)
+{
+	return vlan_dev_sync_unsync_mc_addr(dev, addr, true);
+}
+
+static int vlan_dev_unsync_mc_addr(struct net_device *dev,
+                                   const unsigned char *addr)
+{
+	return vlan_dev_sync_unsync_mc_addr(dev, addr, false);
+}
+
+
 static int vlan_dev_stop(struct net_device *dev)
 {
 	struct vlan_dev_priv *vlan = vlan_dev_priv(dev);
@@ -317,6 +354,7 @@ static int vlan_dev_stop(struct net_device *dev)
 
 	dev_mc_unsync(real_dev, dev);
 	dev_uc_unsync(real_dev, dev);
+	__hw_addr_unsync_dev(&dev->mc, dev, vlan_dev_unsync_mc_addr);
 	if (dev->flags & IFF_ALLMULTI)
 		dev_set_allmulti(real_dev, -1);
 	if (dev->flags & IFF_PROMISC)
@@ -481,6 +519,8 @@ static void vlan_dev_change_rx_flags(struct net_device *dev, int change)
 
 static void vlan_dev_set_rx_mode(struct net_device *vlan_dev)
 {
+	__hw_addr_sync_dev(&vlan_dev->mc, vlan_dev, vlan_dev_sync_mc_addr,
+			   vlan_dev_unsync_mc_addr);
 	dev_mc_sync(vlan_dev_priv(vlan_dev)->real_dev, vlan_dev);
 	dev_uc_sync(vlan_dev_priv(vlan_dev)->real_dev, vlan_dev);
 }

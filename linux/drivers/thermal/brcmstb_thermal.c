@@ -115,6 +115,11 @@ enum {
 	AVS_TMON_ZONE_DRIVER,
 };
 
+struct brcmstb_thermal_params {
+	unsigned int offset;
+	unsigned int mult;
+};
+
 struct brcmstb_thermal_priv {
 	void __iomem *tmon_base;
 	struct device *dev;
@@ -126,12 +131,19 @@ struct brcmstb_thermal_priv {
 	 * or as a zone (AVS_TMON_ZONE_DRIVER)
 	 */
 	int regtype;
+
+	/* Process specific thermal parameters used for calculations */
+	struct brcmstb_thermal_params temp_params;
 };
 
 /* Convert a HW code to a temperature reading (millidegree celsius) */
-static inline int avs_tmon_code_to_temp(u32 code)
+static inline int avs_tmon_code_to_temp(struct brcmstb_thermal_priv *priv,
+					u32 code)
 {
-	return (410040 - (int)((code & 0x3FF) * 487));
+	int offset = priv->temp_params.offset;
+	int mult = priv->temp_params.mult;
+
+	return (offset - (int)((code & 0x3FF) * mult));
 }
 
 /*
@@ -140,18 +152,22 @@ static inline int avs_tmon_code_to_temp(u32 code)
  * @temp: temperature to convert
  * @low: if true, round toward the low side
  */
-static inline u32 avs_tmon_temp_to_code(int temp, bool low)
+static inline u32 avs_tmon_temp_to_code(struct brcmstb_thermal_priv *priv,
+					int temp, bool low)
 {
+	int offset = priv->temp_params.offset;
+	int mult = priv->temp_params.mult;
+
 	if (temp < -88161)
 		return 0x3FF;	/* Maximum code value */
 
-	if (temp >= 410040)
+	if (temp >= offset)
 		return 0;	/* Minimum code value */
 
 	if (low)
-		return (u32)(DIV_ROUND_UP(410040 - temp, 487));
+		return (u32)(DIV_ROUND_UP(offset - temp, mult));
 	else
-		return (u32)((410040 - temp) / 487);
+		return (u32)((offset - temp) / mult);
 }
 
 static int brcmstb_get_temp(void *data, int *temp)
@@ -170,7 +186,7 @@ static int brcmstb_get_temp(void *data, int *temp)
 
 	val = (val & AVS_TMON_STATUS_data_msk) >> AVS_TMON_STATUS_data_shift;
 
-	t = avs_tmon_code_to_temp(val);
+	t = avs_tmon_code_to_temp(priv, val);
 	if (t < 0)
 		*temp = 0;
 	else
@@ -213,7 +229,7 @@ static int avs_tmon_get_trip_temp(struct brcmstb_thermal_priv *priv,
 	val &= trip->reg_msk;
 	val >>= trip->reg_shift;
 
-	return avs_tmon_code_to_temp(val);
+	return avs_tmon_code_to_temp(priv, val);
 }
 
 static void avs_tmon_set_trip_temp(struct brcmstb_thermal_priv *priv,
@@ -226,7 +242,7 @@ static void avs_tmon_set_trip_temp(struct brcmstb_thermal_priv *priv,
 	pr_debug("set temp %d to %d\n", type, temp);
 
 	/* round toward low temp for the low interrupt */
-	val = avs_tmon_temp_to_code(temp, type == TMON_TRIP_TYPE_LOW);
+	val = avs_tmon_temp_to_code(priv, temp, type == TMON_TRIP_TYPE_LOW);
 
 	/* TODO: Check for overflow? */
 	val <<= trip->reg_shift;
@@ -243,7 +259,7 @@ static int avs_tmon_get_intr_temp(struct brcmstb_thermal_priv *priv)
 	u32 val;
 
 	val = __raw_readl(priv->tmon_base + AVS_TMON_TEMP_INT_CODE);
-	return avs_tmon_code_to_temp(val);
+	return avs_tmon_code_to_temp(priv, val);
 }
 
 static irqreturn_t brcmstb_tmon_irq_thread(int irq, void *data)
@@ -312,8 +328,19 @@ static struct thermal_zone_of_device_ops of_ops = {
 	.set_trips	= brcmstb_set_trips,
 };
 
+static const struct brcmstb_thermal_params brcmstb_16nm_params = {
+	.offset	= 457829,
+	.mult	= 557,
+};
+
+static const struct brcmstb_thermal_params brcmstb_28nm_params = {
+	.offset	= 410040,
+	.mult	= 487,
+};
+
 static const struct of_device_id brcmstb_thermal_id_table[] = {
-	{ .compatible = "brcm,avs-tmon" },
+	{ .compatible = "brcm,avs-tmon-bcm7216", .data = &brcmstb_16nm_params },
+	{ .compatible = "brcm,avs-tmon", .data = &brcmstb_28nm_params },
 	{},
 };
 MODULE_DEVICE_TABLE(of, brcmstb_thermal_id_table);
@@ -345,10 +372,18 @@ static int brcmstb_thermal_zone_probe(struct platform_device *pdev,
 
 static int brcmstb_thermal_probe(struct platform_device *pdev)
 {
+	const struct brcmstb_thermal_params *params;
+	const struct of_device_id *of_id = NULL;
 	struct thermal_zone_device *thermal;
 	struct brcmstb_thermal_priv *priv;
 	struct resource *res;
 	int irq, ret;
+
+	of_id = of_match_node(brcmstb_thermal_id_table, pdev->dev.of_node);
+	if (!of_id || !of_id->data)
+		return -EINVAL;
+
+	params = of_id->data;
 
 	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -359,6 +394,7 @@ static int brcmstb_thermal_probe(struct platform_device *pdev)
 	if (IS_ERR(priv->tmon_base))
 		return PTR_ERR(priv->tmon_base);
 
+	memcpy(&priv->temp_params, params, sizeof(priv->temp_params));
 	priv->dev = &pdev->dev;
 	platform_set_drvdata(pdev, priv);
 

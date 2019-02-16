@@ -38,26 +38,17 @@ static __initconst const struct brcmstb_spi_controller spi_ctls[] = {
 	},
 };
 
-static int __init brcmstb_register_spi_devices(void)
+static int __init brcmstb_register_spi_one(struct device_node *dn,
+					   unsigned int max_cs)
 {
-	struct device_node *dn = NULL, *child;
 	struct spi_board_info *spi_bdinfo;
 	u32 addr, dt_enabled_cs = 0;
+	struct device_node *child;
 	struct spi_board_info *bd;
-	unsigned int cs, i;
+	unsigned int cs;
 	int ret;
 
-	for (i = 0; i < ARRAY_SIZE(spi_ctls); i++) {
-		dn = of_find_compatible_node(NULL, NULL, spi_ctls[i].compat);
-		if (dn)
-			break;
-	}
-
-	if (!dn)
-		return 0;
-
-	spi_bdinfo = kcalloc(spi_ctls[i].max_cs, sizeof(*spi_bdinfo),
-			     GFP_KERNEL);
+	spi_bdinfo = kcalloc(max_cs, sizeof(*spi_bdinfo), GFP_KERNEL);
 	if (!spi_bdinfo)
 		return -ENOMEM;
 
@@ -71,7 +62,7 @@ static int __init brcmstb_register_spi_devices(void)
 	}
 
 	/* Populate SPI board info with non DT enabled SPI devices */
-	for (cs = 0; cs < spi_ctls[i].max_cs; cs++) {
+	for (cs = 0; cs < max_cs; cs++) {
 		bd = &spi_bdinfo[cs];
 
 		/* Skip over DT enabled CS */
@@ -84,12 +75,34 @@ static int __init brcmstb_register_spi_devices(void)
 		bd->max_speed_hz = 13500000;
 	}
 
-	ret = spi_register_board_info(spi_bdinfo, spi_ctls[i].max_cs);
+	ret = spi_register_board_info(spi_bdinfo, max_cs);
 	if (ret)
 		pr_err("Failed to register SPI devices: %d\n", ret);
 
 	/* spi_register_board_info copies the structure so this can be freed */
 	kfree(spi_bdinfo);
+
+	return ret;
+}
+
+static int __init brcmstb_register_spi_devices(void)
+{
+	struct device_node *dn = NULL;
+	unsigned int i;
+	int ret = 0;
+
+	for (i = 0; i < ARRAY_SIZE(spi_ctls); i++) {
+		for_each_compatible_node(dn, NULL, spi_ctls[i].compat) {
+			if (!of_device_is_available(dn))
+				continue;
+
+			ret = brcmstb_register_spi_one(dn, spi_ctls[i].max_cs);
+			if (ret) {
+				of_node_put(dn);
+				return ret;
+			}
+		}
+	}
 
 	return ret;
 }

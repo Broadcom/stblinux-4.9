@@ -348,7 +348,8 @@ static void b53_set_forwarding(struct b53_device *dev, int enable)
 	}
 }
 
-static void b53_enable_vlan(struct b53_device *dev, bool enable)
+static void b53_enable_vlan(struct b53_device *dev, bool enable,
+			    bool enable_filtering)
 {
 	u8 mgmt, vc0, vc1, vc4 = 0, vc5;
 
@@ -367,14 +368,17 @@ static void b53_enable_vlan(struct b53_device *dev, bool enable)
 		b53_read8(dev, B53_VLAN_PAGE, B53_VLAN_CTRL5, &vc5);
 	}
 
-	mgmt &= ~SM_SW_FWD_MODE;
-
 	if (enable) {
 		vc0 |= VC0_VLAN_EN | VC0_VID_CHK_EN | VC0_VID_HASH_VID;
 		vc1 |= VC1_RX_MCST_UNTAG_EN | VC1_RX_MCST_FWD_EN;
 		vc4 &= ~VC4_ING_VID_CHECK_MASK;
-		vc4 |= VC4_ING_VID_VIO_DROP << VC4_ING_VID_CHECK_S;
-		vc5 |= VC5_DROP_VTABLE_MISS;
+		if (enable_filtering) {
+			vc4 |= VC4_ING_VID_VIO_DROP << VC4_ING_VID_CHECK_S;
+			vc5 |= VC5_DROP_VTABLE_MISS;
+		} else {
+			vc4 |= VC4_ING_VID_VIO_FWD << VC4_ING_VID_CHECK_S;
+			vc5 &= ~VC5_DROP_VTABLE_MISS;
+		}
 
 		if (is5325(dev))
 			vc0 &= ~VC0_RESERVED_1;
@@ -424,6 +428,9 @@ static void b53_enable_vlan(struct b53_device *dev, bool enable)
 	}
 
 	b53_write8(dev, B53_CTRL_PAGE, B53_SWITCH_MODE, mgmt);
+
+	dev->vlan_enabled = enable;
+	dev->vlan_filtering_enabled = enable_filtering;
 }
 
 static int b53_set_jumbo(struct b53_device *dev, bool enable, bool allow_10_100)
@@ -563,24 +570,34 @@ static void b53_enable_mib(struct b53_device *dev)
 	b53_write8(dev, B53_MGMT_PAGE, B53_GLOBAL_CONFIG, gc);
 }
 
+static u16 b53_default_pvid(struct b53_device *dev)
+{
+	if (is5325(dev) || is5365(dev))
+		return 1;
+	else
+		return 0;
+}
+
 static int b53_configure_vlan(struct b53_device *dev)
 {
 	struct b53_vlan vl = { 0 };
-	int i;
+	int i, def_vid;
+
+	def_vid = b53_default_pvid(dev);
 
 	/* clear all vlan entries */
 	if (is5325(dev) || is5365(dev)) {
-		for (i = 1; i < dev->num_vlans; i++)
+		for (i = def_vid; i < dev->num_vlans; i++)
 			b53_set_vlan_entry(dev, i, &vl);
 	} else {
 		b53_do_vlan_op(dev, VTA_CMD_CLEAR);
 	}
 
-	b53_enable_vlan(dev, false);
+	b53_enable_vlan(dev, false, dev->vlan_filtering_enabled);
 
 	b53_for_each_port(dev, i)
 		b53_write16(dev, B53_VLAN_PAGE,
-			    B53_VLAN_PORT_DEF_TAG(i), 1);
+			    B53_VLAN_PORT_DEF_TAG(i), def_vid);
 
 	if (!is5325(dev) && !is5365(dev))
 		b53_set_jumbo(dev, dev->enable_jumbo, false);
@@ -934,6 +951,45 @@ static void b53_adjust_link(struct dsa_switch *ds, int port,
 static int b53_vlan_filtering(struct dsa_switch *ds, int port,
 			      bool vlan_filtering)
 {
+	struct b53_device *dev = ds->priv;
+	struct net_device *bridge_dev;
+	unsigned int i;
+	u16 pvid, new_pvid;
+
+	/* Handle the case were multiple bridges span the same switch device
+	 * and one of them has a different setting than what is being requested
+	 * which would be breaking filtering semantics for any of the other
+	 * bridge devices.
+	 */
+	b53_for_each_port(dev, i) {
+		bridge_dev = dev->ports[i].bridge_dev;
+		if (bridge_dev && bridge_dev != dev->ports[port].bridge_dev &&
+		    br_vlan_enabled(bridge_dev) != vlan_filtering) {
+			netdev_err(bridge_dev,
+				   "VLAN filtering is global to the switch!\n");
+			return -EINVAL;
+		}
+	}
+
+	b53_read16(dev, B53_VLAN_PAGE, B53_VLAN_PORT_DEF_TAG(port), &pvid);
+	new_pvid = pvid;
+	if (dev->vlan_filtering_enabled && !vlan_filtering) {
+		/* Filtering is currently enabled, use the default PVID since
+		 * the bridge does not expect tagging anymore
+		 */
+		dev->ports[port].pvid = pvid;
+		new_pvid = b53_default_pvid(dev);
+	} else if (!dev->vlan_filtering_enabled && vlan_filtering) {
+		/* Filtering is currently disabled, restore the previous PVID */
+		new_pvid = dev->ports[port].pvid;
+	}
+
+	if (pvid != new_pvid)
+		b53_write16(dev, B53_VLAN_PAGE, B53_VLAN_PORT_DEF_TAG(port),
+			    new_pvid);
+
+	b53_enable_vlan(dev, dev->vlan_enabled, vlan_filtering);
+
 	return 0;
 }
 
@@ -949,7 +1005,7 @@ static int b53_vlan_prepare(struct dsa_switch *ds, int port,
 	if (vlan->vid_end > dev->num_vlans)
 		return -ERANGE;
 
-	b53_enable_vlan(dev, true);
+	b53_enable_vlan(dev, true, dev->vlan_filtering_enabled);
 
 	return 0;
 }
@@ -972,10 +1028,9 @@ static void b53_vlan_add(struct dsa_switch *ds, int port,
 
 		vl->members |= BIT(port) | BIT(cpu_port);
 		if (untagged)
-			vl->untag |= BIT(port);
+			vl->untag |= BIT(port) | BIT(cpu_port);
 		else
-			vl->untag &= ~BIT(port);
-		vl->untag &= ~BIT(cpu_port);
+			vl->untag &= ~(BIT(port) | BIT(cpu_port));
 
 		b53_set_vlan_entry(dev, vid, vl);
 		b53_fast_age_vlan(dev, vid);
@@ -1006,12 +1061,8 @@ static int b53_vlan_del(struct dsa_switch *ds, int port,
 
 		vl->members &= ~BIT(port);
 
-		if (pvid == vid) {
-			if (is5325(dev) || is5365(dev))
-				pvid = 1;
-			else
-				pvid = 0;
-		}
+		if (pvid == vid)
+			pvid = b53_default_pvid(dev);
 
 		if (untagged)
 			vl->untag &= ~(BIT(port));
@@ -1169,11 +1220,25 @@ static int b53_arl_op(struct b53_device *dev, int op, int port,
 		idx = 1;
 	}
 
-	memset(&ent, 0, sizeof(ent));
-	ent.port = port;
+	/* For multicast address, the port is a bitmask and the validity
+	 * is determined by having at least one port being still active
+	 */
+	if (!is_multicast_ether_addr(addr)) {
+		ent.port = port;
+		ent.is_valid = is_valid;
+	} else {
+		if (is_valid)
+			ent.port |= BIT(port);
+		else
+			ent.port &= ~BIT(port);
+
+		ent.is_valid = !!(ent.port);
+	}
+
 	ent.is_valid = is_valid;
 	ent.vid = vid;
 	ent.is_static = true;
+	ent.is_age = false;
 	memcpy(ent.mac, addr, ETH_ALEN);
 	b53_arl_from_entry(&mac_vid, &fwd_entry, &ent);
 
@@ -1308,6 +1373,134 @@ static int b53_fdb_dump(struct dsa_switch *ds, int port,
 	return 0;
 }
 
+static int b53_multicast_toggle(struct dsa_switch *ds, int port,
+				bool mc_disabled)
+{
+	struct b53_device *dev = ds->priv;
+	u16 mc_ctrl;
+
+	if (is5325(dev) || is5365(dev))
+		return -EOPNOTSUPP;
+
+	/* Allow port to flood multicast */
+	b53_read16(dev, B53_CTRL_PAGE, B53_MC_FLOOD_MASK, &mc_ctrl);
+	if (mc_disabled)
+		mc_ctrl |= BIT(port);
+	else
+		mc_ctrl &= ~BIT(port);
+	b53_write16(dev, B53_CTRL_PAGE, B53_MC_FLOOD_MASK, mc_ctrl);
+
+	/* And flood IP multicast as well */
+	b53_read16(dev, B53_CTRL_PAGE, B53_IPMC_FLOOD_MASK, &mc_ctrl);
+	if (mc_disabled)
+		mc_ctrl |= BIT(port);
+	else
+		mc_ctrl &= ~BIT(port);
+	b53_write16(dev, B53_CTRL_PAGE, B53_IPMC_FLOOD_MASK, mc_ctrl);
+
+	return 0;
+}
+
+static int b53_mdb_prepare(struct dsa_switch *ds, int port,
+			   const struct switchdev_obj_port_mdb *mdb,
+			   struct switchdev_trans *trans)
+{
+	struct b53_device *priv = ds->priv;
+
+	/* 5325 and 5365 require some more massaging, but could
+	 * be supported eventually
+	 */
+	if (is5325(priv) || is5365(priv))
+		return -EOPNOTSUPP;
+
+	return 0;
+}
+
+static void b53_mdb_add(struct dsa_switch *ds, int port,
+			const struct switchdev_obj_port_mdb *mdb,
+			struct switchdev_trans *trans)
+{
+	struct b53_device *priv = ds->priv;
+	int ret;
+
+	ret = b53_arl_op(priv, 0, port, mdb->addr, mdb->vid, true);
+	if (ret)
+		dev_err(ds->dev, "failed to add MDB entry\n");
+}
+
+static int b53_mdb_del(struct dsa_switch *ds, int port,
+		       const struct switchdev_obj_port_mdb *mdb)
+{
+	struct b53_device *priv = ds->priv;
+	int ret;
+
+	ret = b53_arl_op(priv, 0, port, mdb->addr, mdb->vid, false);
+	if (ret)
+		dev_err(ds->dev, "failed to delete MDB entry\n");
+
+	return ret;
+}
+
+static int b53_mdb_copy(struct net_device *dev, int port,
+			const struct b53_arl_entry *ent,
+			struct switchdev_obj_port_mdb *mdb,
+			int (*cb)(struct switchdev_obj *obj))
+{
+	if (!ent->is_valid)
+		return 0;
+
+	if (!(BIT(port) & ent->port))
+		return 0;
+
+	if (!is_multicast_ether_addr(ent->mac))
+		return 0;
+
+	ether_addr_copy(mdb->addr, ent->mac);
+	mdb->vid = ent->vid;
+
+	return cb(&mdb->obj);
+}
+
+static int b53_mdb_dump(struct dsa_switch *ds, int port,
+			struct switchdev_obj_port_mdb *mdb,
+			int (*cb)(struct switchdev_obj *obj))
+{
+	struct b53_device *priv = ds->priv;
+	struct net_device *dev = ds->ports[port].netdev;
+	struct b53_arl_entry results[2];
+	unsigned int count = 0;
+	int ret;
+	u8 reg;
+
+	/* Start search operation */
+	reg = ARL_SRCH_STDN;
+	b53_write8(priv, B53_ARLIO_PAGE, B53_ARL_SRCH_CTL, reg);
+
+	do {
+		ret = b53_arl_search_wait(priv);
+		if (ret)
+			return ret;
+
+		b53_arl_search_rd(priv, 0, &results[0]);
+		ret = b53_mdb_copy(dev, port, &results[0], mdb, cb);
+		if (ret)
+			return ret;
+
+		if (priv->num_arl_entries > 2) {
+			b53_arl_search_rd(priv, 1, &results[1]);
+			ret = b53_mdb_copy(dev, port, &results[1], mdb, cb);
+			if (ret)
+				return ret;
+
+			if (!results[0].is_valid && !results[1].is_valid)
+				break;
+		}
+
+	} while (count++ < 1024);
+
+	return 0;
+}
+
 static int b53_br_join(struct dsa_switch *ds, int port,
 		       struct net_device *bridge)
 {
@@ -1384,10 +1577,7 @@ static void b53_br_leave(struct dsa_switch *ds, int port)
 	dev->ports[port].vlan_ctl_mask = pvlan;
 	dev->ports[port].bridge_dev = NULL;
 
-	if (is5325(dev) || is5365(dev))
-		pvid = 1;
-	else
-		pvid = 0;
+	pvid = b53_default_pvid(dev);
 
 	/* Make this port join all VLANs without VLAN entries */
 	if (is58xx(dev)) {
@@ -1402,6 +1592,9 @@ static void b53_br_leave(struct dsa_switch *ds, int port)
 		vl->untag |= BIT(port) | BIT(dev->cpu_port);
 		b53_set_vlan_entry(dev, pvid, vl);
 	}
+
+	/* Port is leaving the bridge we expect to filter MC traffic */
+	b53_multicast_toggle(ds, port, false);
 }
 
 static void b53_br_set_stp_state(struct dsa_switch *ds, int port, u8 state)
@@ -1474,6 +1667,11 @@ static struct dsa_switch_ops b53_switch_ops = {
 	.port_fdb_dump		= b53_fdb_dump,
 	.port_fdb_add		= b53_fdb_add,
 	.port_fdb_del		= b53_fdb_del,
+	.port_mdb_prepare	= b53_mdb_prepare,
+	.port_multicast_toggle	= b53_multicast_toggle,
+	.port_mdb_add		= b53_mdb_add,
+	.port_mdb_del		= b53_mdb_del,
+	.port_mdb_dump		= b53_mdb_dump,
 };
 
 struct b53_chip_data {

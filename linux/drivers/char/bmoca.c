@@ -2391,8 +2391,11 @@ static int moca_parse_dt_node(struct moca_priv_data *priv)
 
 	/* get the common clocks from bmoca node */
 	priv->clk = devm_clk_get(priv->dev, "sw_moca");
-	if (IS_ERR(priv->clk))
+	if (IS_ERR(priv->clk)) {
+		if (PTR_ERR(priv->clk) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
 		priv->clk = NULL;
+	};
 
 	priv->cpu_clk = devm_clk_get(priv->dev, "sw_moca_cpu");
 	if (IS_ERR(priv->cpu_clk))

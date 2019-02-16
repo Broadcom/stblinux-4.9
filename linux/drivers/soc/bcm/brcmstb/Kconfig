@@ -51,7 +51,7 @@ config BRCMSTB_MEMORY_API
 
 config BRCMSTB_AUTOMAP_BMEM
 	bool "Enable Auto Mapping of BMEM regions"
-	default y
+	default n
 	depends on ARM64 && BRCMSTB_BMEM
 	select PAGE_AUTOMAP
 	help
@@ -105,6 +105,14 @@ config BRCMSTB_NEXUS_SPI_API
 	tristate
 	depends on SPI_MASTER
 	default SPI_BRCMSTB_MSPI || SPI_BCM2835
+
+config BRCMSTB_NEXUS_CLK_API
+	bool
+	depends on BRCMSTB_NEXUS_API
+	default BRCMSTB_NEXUS_API
+	help
+	   Provides an API for Nexus to enable and disable select
+	   Linux clocks using an integer clock id.
 
 config BRCMSTB_BBSI
 	tristate "Support for BBSI chips"

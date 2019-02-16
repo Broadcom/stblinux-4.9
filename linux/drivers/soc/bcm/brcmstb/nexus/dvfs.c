@@ -30,6 +30,7 @@
 
 enum brcm_protocol_cmd {
 	BRCM_SEND_AVS_CMD = 0x3,
+	BRCM_CLK_SHOW_CMD = 0x4,
 };
 
 static const struct scmi_handle *handle;
@@ -103,6 +104,31 @@ static int brcm_send_avs_cmd_via_scmi(const struct scmi_handle *handle,
 	return ret ? ret : avs_ret_to_linux_ret(avs_ret);
 }
 
+static int __maybe_unused brcm_send_brcm_cmd_via_scmi(
+				const struct scmi_handle *handle,
+				unsigned int cmd)
+{
+	int ret, avs_ret;
+	struct scmi_xfer *t;
+	__le32 *p;
+
+	ret = scmi_one_xfer_init(handle, cmd, SCMI_PROTOCOL_BRCM,
+				 0, 0, &t);
+	if (ret)
+		return ret;
+
+	ret = scmi_do_xfer(handle, t);
+
+	if (!ret) {
+		p = t->rx.buf;
+		avs_ret = le32_to_cpu(p[0]);
+	}
+
+	scmi_one_xfer_put(handle, t);
+
+	return ret ? ret : avs_ret_to_linux_ret(avs_ret);
+}
+
 static int scmi_brcm_protocol_init(struct scmi_handle *handle)
 {
 	u32 version;
@@ -122,6 +148,72 @@ static int __init scmi_brcm_init(void)
 }
 subsys_initcall(scmi_brcm_init);
 
+static int brcmstb_send_avs_cmd(unsigned int cmd, unsigned int in,
+			    unsigned int out, u32 args[AVS_MAX_PARAMS])
+{
+	int ret = -ENODEV;
+
+	if (handle)
+		ret = brcm_send_avs_cmd_via_scmi(handle, cmd,
+						 in, out, args);
+	else if (cpufreq_dev)
+		ret = brcmstb_issue_avs_command(cpufreq_dev, cmd,
+						in, out, args);
+	return ret;
+}
+
+#ifdef CONFIG_DEBUG_FS
+#include <linux/debugfs.h>
+
+static struct dentry *rootdir;
+
+static int brcm_scmi_clk_summary_show(struct seq_file *s, void *data)
+{
+	brcm_send_brcm_cmd_via_scmi(handle, BRCM_CLK_SHOW_CMD);
+
+	return 0;
+}
+
+static int brcm_scmi_clk_summary_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, brcm_scmi_clk_summary_show, inode->i_private);
+}
+
+static const struct file_operations brcm_scmi_clk_summary_fops = {
+	.open		= brcm_scmi_clk_summary_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+/**
+ * brcm_scmi_debug_init - lazily populate the debugfs brcm_scmi directory
+ *
+ * clks are often initialized very early during boot before memory can be
+ * dynamically allocated and well before debugfs is setup. This function
+ * populates the debugfs brcm_scmi directory once at boot-time when we
+ * know that debugfs is setup. It should only be called once at boot-time.
+ */
+static int __init brcm_scmi_debug_init(void)
+{
+	struct dentry *d;
+
+	rootdir = debugfs_create_dir("brcm-scmi", NULL);
+
+	if (!rootdir)
+		return -ENOMEM;
+
+	d = debugfs_create_file("clk_summary", S_IRUGO, rootdir, NULL,
+				&brcm_scmi_clk_summary_fops);
+
+	if (!d)
+		return -ENOMEM;
+
+	return 0;
+}
+late_initcall(brcm_scmi_debug_init);
+#endif
+
 /**
  * brcmstb_stb_dvfs_get_pstate() - Get the pstate for a core/island.
  *
@@ -140,13 +232,7 @@ int brcmstb_stb_dvfs_get_pstate(unsigned int idx, unsigned int *pstate,
 
 	args[0] = idx;
 
-	if (handle) {
-		ret = brcm_send_avs_cmd_via_scmi(handle, AVS_CMD_GET_PSTATE,
-						 1, 2, args);
-	} else if (cpufreq_dev) {
-		ret = brcmstb_issue_avs_command(
-			cpufreq_dev, AVS_CMD_GET_PSTATE, 1, 2, args);
-	}
+	ret = brcmstb_send_avs_cmd(AVS_CMD_GET_PSTATE, 1, 2, args);
 	if (!ret) {
 		*pstate = args[0];
 		*info = args[1];
@@ -209,18 +295,9 @@ int brcmstb_stb_avs_read_debug(unsigned int debug_idx, u32 *value)
 
 	args[0] = debug_idx;
 
-	if (handle) {
-		ret = brcm_send_avs_cmd_via_scmi(handle, AVS_CMD_READ_DEBUG,
-						 1, 2, args);
-	} else if (cpufreq_dev) {
-		/*
-		 * If we are here, we are using the older AVS API and there
-		 * is no READ_DEBUG command.  In the future we may want
-		 * to emulate it in cpufreq-avs-brcmstb.c, as it can "see"
-		 * all of the debug values, but that's not implemented now.
-		 */
-		ret = -ENODEV;
-	}
+	ret = brcmstb_send_avs_cmd(AVS_CMD_READ_DEBUG, 1, 2, args);
+	if (ret)
+		return ret;
 
 	if (!ret)
 		*value = args[1];
@@ -228,6 +305,225 @@ int brcmstb_stb_avs_read_debug(unsigned int debug_idx, u32 *value)
 	return ret;
 }
 EXPORT_SYMBOL(brcmstb_stb_avs_read_debug);
+
+/**
+ * brcmstb_stb_avs_get_pmic_info -- get PMIC information via EL3/AVS.
+ *
+ * @info: PMIC information (out).
+ *
+ * Return: 0 on success.
+ */
+int brcmstb_stb_avs_get_pmic_info(struct brcmstb_avs_pmic_info *info)
+{
+	u32 args[AVS_MAX_PARAMS];
+	unsigned int i, byte_offset;
+	int ret;
+
+	ret = brcmstb_send_avs_cmd(AVS_CMD_GET_PMIC_INFO, 0, 4, args);
+	if (ret)
+		return ret;
+
+	/* Now fill in the structure */
+	info->num_pmic_devices = args[0];
+	info->num_regulators = args[0] >> 8;
+	info->num_gpios = args[0] >> 16;
+	for (i = 0; i < ARRAY_SIZE(info->ext_infos); i++) {
+		byte_offset = 8 * i;
+		info->ext_infos[i].i2c_addr = args[1] >> byte_offset;
+		info->ext_infos[i].chip_id = args[2] >> byte_offset;
+		info->ext_infos[i].caps = args[3] >> byte_offset;
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL(brcmstb_stb_avs_get_pmic_info);
+
+/**
+ * brcmstb_stb_avs_set_pmic_config -- set PMIC configuration via EL3/AVS.
+ *
+ * @pmic: PMIC index (in)
+ * @ovr_temp: over-temperature threshold (in)
+ * @standby_regulators: regulators selected for S3_STANDBY
+ *
+ * Return: 0 on success.
+ */
+int brcmstb_stb_avs_set_pmic_config(u8 pmic,
+				    u32 ovr_temp,
+				    u32 standby_regulators)
+{
+	u32 num_in = 3, num_out = 1;
+	u32 args[AVS_MAX_PARAMS];
+	int ret;
+
+	args[0] = pmic;
+	args[1] = ovr_temp;
+	args[2] = standby_regulators;
+
+	ret = brcmstb_send_avs_cmd(AVS_CMD_SET_PMIC_CONFIG, num_in, num_out,
+				   args);
+	if (ret)
+		return ret;
+
+	if ((args[0] & 0xff) != pmic) {
+		pr_err("Invalid PMIC return value: %d vs %d\n",
+		       pmic, args[0]);
+		ret = -EINVAL;
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL(brcmstb_stb_avs_set_pmic_config);
+
+/**
+ * brcmstb_stb_avs_get_pmic_status -- get PMIC status via EL3/AVS.
+ *
+ * @pmic: PMIC index (in)
+ * @die_temp: PMIC die temperature (out)
+ * @ext_therm_temp: External thermistor temperature (out)
+ * @overall_power: Overall power consumption (out)
+ *
+ * Return: 0 on success.
+ */
+int brcmstb_stb_avs_get_pmic_status(u8 pmic,
+				    u32 *die_temp,
+				    u32 *ext_therm_temp,
+				    u32 *overall_power)
+{
+	u32 num_in = 1, num_out = 4;
+	u32 args[AVS_MAX_PARAMS];
+	int ret;
+
+	args[0] = pmic;
+
+	ret = brcmstb_send_avs_cmd(AVS_CMD_GET_PMIC_STATUS, num_in, num_out,
+				   args);
+	if (ret)
+		return ret;
+
+	if ((args[0] & 0xff) != pmic) {
+		pr_err("Invalid PMIC return value: %d vs %d\n",
+		       pmic, args[0]);
+		return -EINVAL;
+	}
+
+	*die_temp = args[1];
+	*ext_therm_temp = args[2];
+	*overall_power = args[3];
+
+	return ret;
+}
+EXPORT_SYMBOL(brcmstb_stb_avs_get_pmic_status);
+
+/**
+ * brcmstb_stb_avs_get_pmic_reg_info -- get PMIC regulator configuration via
+ * EL3/AVS.
+ *
+ * @pmic: PMIC index (in)
+ * @die_temp: PMIC die temperature (out)
+ * @ext_therm_temp: External thermistor temperature (out)
+ * @overall_power: Overall power consumption (out)
+ *
+ * Return: 0 on success.
+ */
+int brcmstb_avs_get_pmic_reg_info(u8 regulator, u16 *nom_volt)
+{
+	u32 num_in = 1, num_out = 2;
+	u32 args[AVS_MAX_PARAMS];
+	int ret;
+
+	args[0] = regulator;
+
+	ret = brcmstb_send_avs_cmd(AVS_CMD_GET_PMIC_REG_INFO, num_in,
+			       num_out, args);
+	if (ret)
+		return ret;
+
+	if ((args[0] & 0xff) != regulator) {
+		pr_err("Invalid regulator return value: %d vs %d\n",
+		       regulator, args[0]);
+		ret = -EINVAL;
+	}
+
+	*nom_volt = args[1];
+
+	return ret;
+}
+EXPORT_SYMBOL(brcmstb_avs_get_pmic_reg_info);
+
+/**
+ * brcmstb_stb_avs_set_pmic_reg_config -- set PMIC regulator configuration via
+ * EL3/AVS.
+ *
+ * @pmic: PMIC index (in)
+ * @die_temp: PMIC die temperature (out)
+ * @ext_therm_temp: External thermistor temperature (out)
+ * @overall_power: Overall power consumption (out)
+ *
+ * Return: 0 on success.
+ */
+int brcmstb_avs_set_pmic_reg_config(u8 regulator, u16 voltage,
+				    u16 over_current_thres)
+{
+	u32 num_in = 2, num_out = 1;
+	u32 args[AVS_MAX_PARAMS];
+	int ret;
+
+	args[0] = regulator;
+	args[1] = voltage;
+	args[1] |= (u32)over_current_thres << 16;
+
+	ret = brcmstb_send_avs_cmd(AVS_CMD_SET_PMIC_REG_CONFIG, num_in, num_out,
+				   args);
+	if (ret)
+		return ret;
+
+	if ((args[0] & 0xff) != regulator) {
+		pr_err("Invalid regulator return value: %d vs %d\n",
+		       regulator, args[0]);
+		ret = -EINVAL;
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL(brcmstb_avs_set_pmic_reg_config);
+
+/**
+ * brcmstb_stb_avs_get_pmic_reg_status -- get PMIC regulator status via
+ * EL3/AVS.
+ *
+ * @pmic: PMIC index (in)
+ * @die_temp: PMIC die temperature (out)
+ * @ext_therm_temp: External thermistor temperature (out)
+ * @overall_power: Overall power consumption (out)
+ *
+ * Return: 0 on success.
+ */
+int brcmstb_avs_get_pmic_reg_status(u8 regulator, u16 *voltage,
+				    u16 *curr)
+{
+	u32 num_in = 1, num_out = 2;
+	u32 args[AVS_MAX_PARAMS];
+	int ret;
+
+	args[0] = regulator;
+
+	ret = brcmstb_send_avs_cmd(AVS_CMD_GET_PMIC_REG_STATUS, num_in, num_out,
+			       args);
+	if (ret)
+		return ret;
+
+	if ((args[0] & 0xff) != regulator) {
+		pr_err("Invalid regulator return value: %d vs %d\n",
+		       regulator, args[0]);
+		ret = -EINVAL;
+	}
+
+	*voltage = args[1];
+	*curr = args[1] >> 16;
+
+	return ret;
+}
+EXPORT_SYMBOL(brcmstb_avs_get_pmic_reg_status);
 
 static int brcm_scmi_dvfs_probe(struct scmi_device *sdev)
 {

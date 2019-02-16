@@ -1,10 +1,10 @@
 BRCMSTB_OUTPUT_DIR ?= output
 BRCMSTB_RELEASE_DIR = $(BRCMSTB_OUTPUT_DIR)/release
 
-BRCMSTB_VER := $(shell ./bin/linuxver.sh -dps misc/linux.master)
-BRCMSTB_LONG_VER := $(shell ./bin/linuxver.sh misc/linux.master)
+BRCMSTB_VER := $(shell ./bin/linuxver.sh -dpqs misc/linux.master)
+BRCMSTB_LONG_VER := $(shell ./bin/linuxver.sh -q misc/linux.master)
 
-VERSION		:= $(shell bin/linuxver.sh misc/linux.master)
+VERSION		:= $(shell bin/linuxver.sh -q misc/linux.master)
 DOTVERSION	:= $(patsubst 3%,3.%,$(patsubst 4%,4.%,$(patsubst 5%,5.%,$(VERSION))))
 MAJOR_VERSION	:= $(shell echo $(VERSION) | cut -d- -f1)
 STB_VERSION	:= stb-$(shell echo $(DOTVERSION) | cut -d- -f1)

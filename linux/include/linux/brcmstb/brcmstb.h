@@ -27,7 +27,7 @@
 #ifndef _ASM_BRCMSTB_BRCMSTB_H
 #define _ASM_BRCMSTB_BRCMSTB_H
 
-#define BRCMSTB_H_VERSION  11
+#define BRCMSTB_H_VERSION  12
 
 #if !defined(__ASSEMBLY__)
 
@@ -38,6 +38,7 @@
 #include <linux/brcmstb/irq_api.h>
 #include <linux/brcmstb/gpio_api.h>
 #include <linux/brcmstb/reg_api.h>
+#include <linux/brcmstb/clk_api.h>
 
 #if defined(CONFIG_MIPS)
 #include <asm/addrspace.h>
@@ -48,12 +49,24 @@
 #endif
 
 #if defined(CONFIG_ARM_BRCMSTB_AVS_CPUFREQ) || defined(CONFIG_ARM_SCMI_CPUFREQ)
+struct brcmstb_avs_pmic_info;
+
 int brcmstb_stb_dvfs_get_pstate(unsigned int idx, unsigned int *pstate,
 				u32 *info);
 int brcmstb_stb_dvfs_set_pstate(unsigned int idx, unsigned int pstate,
 				unsigned int num_clk_writes,
 				const u32 *clk_params);
 int brcmstb_stb_avs_read_debug(unsigned int debug_idx, u32 *value);
+int brcmstb_stb_avs_get_pmic_info(struct brcmstb_avs_pmic_info *info);
+int brcmstb_stb_avs_set_pmic_config(u8 pmic, u32 ovr_temp, u32 standby_regulators);
+int brcmstb_stb_avs_get_pmic_status(u8 pmic, u32 *die_temp,
+				    u32 *ext_therm_temp,
+				    u32 *overall_power);
+int brcmstb_avs_get_pmic_reg_info(u8 regulator, u16 *nom_volt);
+int brcmstb_avs_set_pmic_reg_config(u8 regulator, u16 voltage,
+				    u16 over_current_thres);
+int brcmstb_avs_get_pmic_reg_status(u8 regulator, u16 *voltage,
+				    u16 *curr);
 #endif
 
 #if defined(CONFIG_BRCMSTB_PM) && !defined(CONFIG_MIPS)

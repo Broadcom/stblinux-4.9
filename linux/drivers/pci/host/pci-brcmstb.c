@@ -31,6 +31,7 @@
 #include <linux/pci.h>
 #include <linux/printk.h>
 #include <linux/regulator/consumer.h>
+#include <linux/reset.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/soc/brcmstb/brcmstb.h>
@@ -46,6 +47,7 @@
 #define PCIE_RC_CFG_PCIE_LINK_STATUS_CONTROL_2		0x00dc
 #define PCIE_RC_CFG_VENDOR_VENDOR_SPECIFIC_REG1		0x0188
 #define PCIE_RC_CFG_PRIV1_ID_VAL3			0x043c
+#define PCIE_RC_DL_PDL_CTRL_4				0x1010
 #define PCIE_RC_DL_MDIO_ADDR				0x1100
 #define PCIE_RC_DL_MDIO_WR_DATA				0x1104
 #define PCIE_RC_DL_MDIO_RD_DATA				0x1108
@@ -65,6 +67,7 @@
 #define PCIE_MISC_CPU_2_PCIE_MEM_WIN0_BASE_HI		0x4080
 #define PCIE_MISC_CPU_2_PCIE_MEM_WIN0_LIMIT_HI		0x4084
 #define PCIE_MISC_HARD_PCIE_HARD_DEBUG			0x4204
+#define PCIE_DVT_PMU_PCIE_PHY_CTRL			0xc700
 
 /* Broadcom Settop Box PCIE Register Field Shift, Mask Info.  */
 #define PCIE_RC_CFG_PCIE_LINK_STATUS_CONTROL_NEG_LINK_WIDTH_MASK  0x3f00000
@@ -85,6 +88,8 @@
 #define PCIE_RC_CFG_VENDOR_VENDOR_SPECIFIC_REG1_ENDIAN_MODE_BAR3_SHIFT	0x4
 #define PCIE_RC_CFG_PRIV1_ID_VAL3_CLASS_CODE_MASK		0xffffff
 #define PCIE_RC_CFG_PRIV1_ID_VAL3_CLASS_CODE_SHIFT		0x0
+#define PCIE_RC_DL_PDL_CTRL_4_NPH_FC_INIT_MASK			0xFF000000
+#define PCIE_RC_DL_PDL_CTRL_4_NPH_FC_INIT_SHIFT			0x18
 #define PCIE_MISC_MISC_CTRL_SCB_ACCESS_EN_MASK			0x1000
 #define PCIE_MISC_MISC_CTRL_SCB_ACCESS_EN_SHIFT			0xc
 #define PCIE_MISC_MISC_CTRL_CFG_READ_UR_MODE_MASK		0x2000
@@ -138,6 +143,12 @@
 #define PCIE_MISC_HARD_PCIE_HARD_DEBUG_SERDES_IDDQ_SHIFT	0x1b
 #define PCIE_RGR1_SW_INIT_1_PERST_MASK				0x1
 #define PCIE_RGR1_SW_INIT_1_PERST_SHIFT				0x0
+#define PCIE_DVT_PMU_PCIE_PHY_CTRL_DEASSERT_DIG_RESET_MASK	0x4
+#define PCIE_DVT_PMU_PCIE_PHY_CTRL_DEASSERT_DIG_RESET_SHIFT	0x2
+#define PCIE_DVT_PMU_PCIE_PHY_CTRL_DEASSERT_RESET_MASK		0x2
+#define PCIE_DVT_PMU_PCIE_PHY_CTRL_DEASSERT_RESET_SHIFT		0x1
+#define PCIE_DVT_PMU_PCIE_PHY_CTRL_DEASSERT_PWRDN_MASK		0x1
+#define PCIE_DVT_PMU_PCIE_PHY_CTRL_DEASSERT_PWRDN_SHIFT		0x0
 
 #define BRCM_NUM_PCI_OUT_WINS		0x4
 #define BRCM_MAX_SCB			0x4
@@ -355,6 +366,7 @@ struct brcm_pcie {
 	struct pci_bus		*bus;
 	int			id;
 	bool			ep_wakeup_capable;
+	struct reset_control	*rescal;
 };
 
 struct of_pci_range *dma_ranges;
@@ -813,6 +825,51 @@ static void set_regulators(struct brcm_pcie *pcie, bool on)
 	}
 }
 
+static int bcm7216a0_quirks(struct brcm_pcie *pcie)
+{
+	/* See JIRA SWLINUX-5116 */
+	void __iomem *base = pcie->base;
+	int ret = 0;
+
+	/* Set block 0x2500 access */
+	if (!ret)
+		ret = mdio_write(base, MDIO_PORT0, SET_ADDR_OFFSET, 0x2500);
+	/* Reduce CP tail current */
+	if (!ret)
+		ret = mdio_write(base, MDIO_PORT0, 0x6, 0x0141);
+	/* turn off CP tal current boost */
+	if (!ret)
+		ret = mdio_write(base, MDIO_PORT0, 0x8, 0xC406);
+	/* Reset SDM */
+	if (!ret)
+		ret = mdio_write(base, MDIO_PORT0, 0xD, 0x1101);
+	if (!ret)
+		ret = mdio_write(base, MDIO_PORT0, 0xD, 0x1501);
+
+	/* Set block 0x6100 access */
+	if (!ret)
+		ret = mdio_write(base, MDIO_PORT0, SET_ADDR_OFFSET, 0x6100);
+	/* Reduce proportional path gain */
+	if (!ret)
+		ret = mdio_write(base, MDIO_PORT0, 0x2, 0x0049);
+	/* Turn off integral path */
+	if (!ret)
+		ret = mdio_write(base, MDIO_PORT0, 0x3, 0x0000);
+	if (!ret)
+		ret = mdio_write(base, MDIO_PORT0, 0x4, 0x0000);
+	/* Set expected ppm to 0 */
+	if (!ret)
+		ret = mdio_write(base, MDIO_PORT0, 0x1, 0x0000);
+	/* Set integrator clamps to 0 */
+	if (!ret)
+		ret = mdio_write(base, MDIO_PORT0, 0x7, 0x0100);
+
+	/* write 0x8 to value; HW flaw has it as 0x10 */
+	WR_FLD(base, PCIE_RC_DL_PDL_CTRL_4, NPH_FC_INIT, 8);
+
+	return ret;
+}
+
 static void brcm_pcie_setup_prep(struct brcm_pcie *pcie)
 {
 	void __iomem *base = pcie->base;
@@ -820,7 +877,7 @@ static void brcm_pcie_setup_prep(struct brcm_pcie *pcie)
 	u64 rc_bar2_size = 0, rc_bar2_offset = 0, total_mem_size = 0;
 	u64 msi_target_addr;
 	u32 tmp, burst;
-	int i;
+	int i, ret;
 
 	/* reset the bridge and the endpoint device */
 	/* field: PCIE_BRIDGE_SW_INIT = 1 */
@@ -971,6 +1028,14 @@ static void brcm_pcie_setup_prep(struct brcm_pcie *pcie)
 	if (pcie->gen)
 		set_gen(base, pcie->gen);
 
+	if (of_machine_is_compatible("brcm,bcm7216a0")) {
+		ret = bcm7216a0_quirks(pcie);
+		if (ret)
+			dev_err(pcie->dev, "failed to apply 7216a0 quirks\n");
+		else
+			dev_info(pcie->dev, "applied 7216a0 quirks\n");
+	}
+
 	/* take the EP device out of reset */
 	/* field: PCIE_SW_PERST = 0 */
 	brcm_pcie_perst_set(pcie, 0);
@@ -1080,6 +1145,50 @@ static void enter_l23(struct brcm_pcie *pcie)
 		dev_err(pcie->dev, "failed to enter L23\n");
 }
 
+static int brcm_phy_start(struct brcm_pcie *pcie)
+{
+	void __iomem *base = pcie->base;
+	const u32 mask = PCIE_DVT_PMU_PCIE_PHY_CTRL_DEASSERT_PWRDN_MASK
+		| PCIE_DVT_PMU_PCIE_PHY_CTRL_DEASSERT_RESET_MASK
+		| PCIE_DVT_PMU_PCIE_PHY_CTRL_DEASSERT_DIG_RESET_MASK;
+	u32 val;
+
+	if (!pcie->rescal)
+		return 0;
+
+	WR_FLD(base, PCIE_DVT_PMU_PCIE_PHY_CTRL, DEASSERT_PWRDN, 1);
+	usleep_range(50, 200);
+	WR_FLD(base, PCIE_DVT_PMU_PCIE_PHY_CTRL, DEASSERT_RESET, 1);
+	usleep_range(50, 200);
+	WR_FLD(base, PCIE_DVT_PMU_PCIE_PHY_CTRL, DEASSERT_DIG_RESET, 1);
+	usleep_range(50, 200);
+
+	val = bcm_readl(base + PCIE_DVT_PMU_PCIE_PHY_CTRL);
+	return (val & mask) == mask ? 0 : -EIO;
+}
+
+static int brcm_phy_stop(struct brcm_pcie *pcie)
+{
+	void __iomem *base = pcie->base;
+	const u32 mask = PCIE_DVT_PMU_PCIE_PHY_CTRL_DEASSERT_PWRDN_MASK
+		| PCIE_DVT_PMU_PCIE_PHY_CTRL_DEASSERT_RESET_MASK
+		| PCIE_DVT_PMU_PCIE_PHY_CTRL_DEASSERT_DIG_RESET_MASK;
+	u32 val;
+
+	if (!pcie->rescal)
+		return 0;
+
+	WR_FLD(base, PCIE_DVT_PMU_PCIE_PHY_CTRL, DEASSERT_DIG_RESET, 0);
+	usleep_range(50, 200);
+	WR_FLD(base, PCIE_DVT_PMU_PCIE_PHY_CTRL, DEASSERT_RESET, 0);
+	usleep_range(50, 200);
+	WR_FLD(base, PCIE_DVT_PMU_PCIE_PHY_CTRL, DEASSERT_PWRDN, 0);
+	usleep_range(50, 200);
+
+	val = bcm_readl(base + PCIE_DVT_PMU_PCIE_PHY_CTRL);
+	return (val & mask) == 0 ? 0 : -EIO;
+}
+
 static void turn_off(struct brcm_pcie *pcie)
 {
 	void __iomem *base = pcie->base;
@@ -1099,16 +1208,20 @@ static void turn_off(struct brcm_pcie *pcie)
 static int brcm_pcie_suspend(struct device *dev)
 {
 	struct brcm_pcie *pcie = dev_get_drvdata(dev);
+	int ret = 0;
 
 	if (!pcie->bridge_setup_done)
 		return 0;
 
 	turn_off(pcie);
+	ret = brcm_phy_stop(pcie);
+	if (ret)
+		dev_err(pcie->dev, "failed to stop phy\n");
 	clk_disable_unprepare(pcie->clk);
 	set_regulators(pcie, false);
 	pcie->suspended = true;
 
-	return 0;
+	return ret;
 }
 
 static int brcm_pcie_resume(struct device *dev)
@@ -1123,6 +1236,12 @@ static int brcm_pcie_resume(struct device *dev)
 	base = pcie->base;
 	set_regulators(pcie, true);
 	clk_prepare_enable(pcie->clk);
+
+	ret = brcm_phy_start(pcie);
+	if (ret) {
+		dev_err(pcie->dev, "failed to start phy\n");
+		return ret;
+	}
 
 	/* Take bridge out of reset so we can access the SERDES reg */
 	brcm_pcie_bridge_sw_init_set(pcie, 0);
@@ -1306,6 +1425,7 @@ static const struct of_device_id brcm_pci_match[] = {
 	{ .compatible = "brcm,bcm7425-pcie", .data = &bcm7425_cfg },
 	{ .compatible = "brcm,bcm7435-pcie", .data = &bcm7435_cfg },
 	{ .compatible = "brcm,bcm7278-pcie", .data = &bcm7278_cfg },
+	{ .compatible = "brcm,bcm7216-pcie", .data = &bcm7278_cfg },
 	{ .compatible = "brcm,bcm7211-pcie", .data = &generic_cfg },
 	{ .compatible = "brcm,pci-plat-dev", .data = &generic_cfg },
 	{},
@@ -1319,6 +1439,8 @@ static void _brcm_pcie_remove(struct brcm_pcie *pcie)
 
 	brcm_msi_remove(pcie->msi);
 	turn_off(pcie);
+	if (brcm_phy_stop(pcie))
+		dev_err(pcie->dev, "failed to stop phy\n");
 	clk_disable_unprepare(pcie->clk);
 	clk_put(pcie->clk);
 	set_regulators(pcie, false);
@@ -1367,6 +1489,26 @@ static int brcm_pcie_probe(struct platform_device *pdev)
 	pcie->dn = dn;
 	pcie->dev = &pdev->dev;
 
+	pcie->clk = of_clk_get_by_name(dn, "sw_pcie");
+	if (IS_ERR(pcie->clk)) {
+		if (PTR_ERR(pcie->clk) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		dev_err(&pdev->dev, "could not get clock\n");
+		pcie->clk = NULL;
+	}
+	ret = clk_prepare_enable(pcie->clk);
+
+	pcie->rescal = devm_reset_control_get_shared(&pdev->dev, "rescal");
+	if (IS_ERR(pcie->rescal)) {
+		if (PTR_ERR(pcie->rescal) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		pcie->rescal = NULL;
+	} else {
+		ret = reset_control_deassert(pcie->rescal);
+		if (ret)
+			dev_err(&pdev->dev, "failed to deassert 'rescal'\n");
+	}
+
 	INIT_LIST_HEAD(&pcie->pwr_supplies);
 	supplies = of_property_count_strings(dn, "supply-names");
 	if (supplies <= 0)
@@ -1402,18 +1544,18 @@ static int brcm_pcie_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	pcie->clk = of_clk_get_by_name(dn, "sw_pcie");
-	if (IS_ERR(pcie->clk)) {
-		dev_err(&pdev->dev, "could not get clock\n");
-		pcie->clk = NULL;
-	}
-	ret = clk_prepare_enable(pcie->clk);
 	if (ret) {
 		dev_err(&pdev->dev, "could not enable clock\n");
 		return ret;
 	}
 	pcie->base = base;
 	pcie->gen = 0;
+
+	ret = brcm_phy_start(pcie);
+	if (ret) {
+		dev_err(pcie->dev, "failed to start phy\n");
+		return ret;
+	}
 
 	if (of_property_read_u32(dn, "brcm,gen", &tmp) == 0)
 		pcie->gen = tmp;

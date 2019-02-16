@@ -123,6 +123,38 @@
 #define CM_EMMCCTL		0x1c0
 #define CM_EMMCDIV		0x1c4
 
+#define CM_ARGONCTL		0x1c8
+#define CM_ARGONDIV		0x1cc
+#define CM_EMMC2CTL		0x1d0
+#define CM_EMMC2DIV		0x1d4
+#define CM_GISBCTL		0x1d8
+#define CM_GISBDIV		0x1dc
+#define CM_ALTSCBCTL		0x1e0
+#define CM_ALTSCBDIV		0x1e4
+#define CM_GENET_250CTL		0x1e8
+#define CM_GENET_250DIV		0x1ec
+#define CM_STB27CTL		0x1f0
+#define CM_STB27DIV		0x1f4
+#define CM_STB54CTL		0x1f8
+#define CM_STB54DIV		0x1fc
+#define CM_STB108CTL		0x200
+#define CM_STB108DIV		0x204
+#define CM_PIXEL_BVBCTL		0x208
+#define CM_PIXEL_BVBDIV		0x20c
+#define CM_GENET_125CTL		0x210
+#define CM_GENET_125DIV		0x214
+#define CM_STBGENCTRL		0x218
+#define CM_M2MCCTL		0x22c
+#define CM_M2MCDIV		0x230
+#define CM_XPTCTL		0x234
+#define CM_XPTDIV		0x238
+#define CM_USBXHCICTL		0x23c
+#define CM_USBXHCIDIV		0x240
+
+/* bits for the CM_STBGENCTRL gate clock bits */
+#define CM_STBGENCTRL_HVDCPUALTEN_BIT	5
+#define CM_STBGENCTRL_HVDCOREALTEN_BIT	6
+
 /* General bits for the CM_*CTL regs */
 # define CM_ENABLE			BIT(4)
 # define CM_KILL			BIT(5)
@@ -152,6 +184,8 @@
 #define CM_OSCCOUNT		0x100
 
 #define CM_PLLA			0x104
+# define CM_PLLA_HOLDCORE3		BIT(10)
+# define CM_PLLA_HOLDCORE2		BIT(9)
 # define CM_PLL_ANARST			BIT(8)
 # define CM_PLLA_HOLDPER		BIT(7)
 # define CM_PLLA_LOADPER		BIT(6)
@@ -163,6 +197,8 @@
 # define CM_PLLA_LOADDSI0		BIT(0)
 
 #define CM_PLLC			0x108
+# define CM_PLLC_HOLDCORE3		BIT(10)
+# define CM_PLLC_HOLDCORE4		BIT(9)
 # define CM_PLLC_HOLDPER		BIT(7)
 # define CM_PLLC_LOADPER		BIT(6)
 # define CM_PLLC_HOLDCORE2		BIT(5)
@@ -173,6 +209,8 @@
 # define CM_PLLC_LOADCORE0		BIT(0)
 
 #define CM_PLLD			0x10c
+# define CM_PLLD_HOLDCORE3		BIT(10)
+# define CM_PLLD_HOLDCORE2		BIT(9)
 # define CM_PLLD_HOLDPER		BIT(7)
 # define CM_PLLD_LOADPER		BIT(6)
 # define CM_PLLD_HOLDCORE		BIT(5)
@@ -262,16 +300,22 @@
 #define A2W_PLL_DIV_BITS		8
 #define A2W_PLL_DIV_SHIFT		0
 
+#define A2W_PLLA_MOR_CORE2	0x1260
+#define A2W_PLLA_MOR_CORE3	0x1160
 #define A2W_PLLA_DSI0		0x1300
 #define A2W_PLLA_CORE		0x1400
 #define A2W_PLLA_PER		0x1500
 #define A2W_PLLA_CCP2		0x1600
 
+#define A2W_PLLC_MOR_CORE4	0x1280
+#define A2W_PLLC_MOR_CORE3	0x1180
 #define A2W_PLLC_CORE2		0x1320
 #define A2W_PLLC_CORE1		0x1420
 #define A2W_PLLC_PER		0x1520
 #define A2W_PLLC_CORE0		0x1620
 
+#define A2W_PLLD_MOR_CORE2	0x12a0
+#define A2W_PLLD_MOR_CORE3	0x11a0
 #define A2W_PLLD_DSI0		0x1340
 #define A2W_PLLD_CORE		0x1440
 #define A2W_PLLD_PER		0x1540
@@ -297,6 +341,8 @@
 #define LOCK_TIMEOUT_NS		100000000
 #define BCM2835_MAX_FB_RATE	1750000000u
 
+#define BCM7211B0_CLKS	(BCM2835_CLOCK_MAX - BCM2835_STBGENCTRL_HVDCPUALT)
+
 struct bcm2835_cprman {
 	struct device *dev;
 	void __iomem *regs;
@@ -307,8 +353,51 @@ struct bcm2835_cprman {
 	struct clk_hw_onecell_data onecell;
 };
 
+static inline int is_7211a0(struct device *dev)
+{
+	return of_device_is_compatible(dev->of_node, "brcm,bcm7211a0-cprman");
+}
+
+static inline int is_7211b0(struct device *dev)
+{
+	return of_device_is_compatible(dev->of_node, "brcm,bcm7211b0-cprman");
+}
+
+static inline int is_plat_7211(struct device *dev)
+{
+	return (is_7211a0(dev) || is_7211b0(dev));
+}
+
 static inline void cprman_write(struct bcm2835_cprman *cprman, u32 reg, u32 val)
 {
+	if (is_7211a0(cprman->dev))
+		if (/* CM_PLL{A/B/C/D} */
+		    reg == CM_PLLA ||
+		    reg == CM_PLLB ||
+		    reg == CM_PLLC ||
+		    reg == CM_PLLD ||
+		    /* A2W_PLL{A/B/C/D} */
+		    reg == A2W_PLLA_CTRL ||
+		    reg == A2W_PLLB_CTRL ||
+		    reg == A2W_PLLC_CTRL ||
+		    reg == A2W_PLLD_CTRL ||
+		    /* A2W_PLL{A/C/D}_CORE{''/0/1/2} */
+		    reg == A2W_PLLA_CORE ||
+		    reg == A2W_PLLC_CORE0 ||
+		    reg == A2W_PLLC_CORE1 ||
+		    reg == A2W_PLLC_CORE2 ||
+		    reg == A2W_PLLD_CORE ||
+		    /* A22_PLLA_CCP2 */
+		    reg == A2W_PLLA_CCP2 ||
+		    /* A2W_PLL{A/C/D}_MORE_CORE{2,3,4} */
+		    reg == A2W_PLLA_MOR_CORE2 ||
+		    reg == A2W_PLLA_MOR_CORE3 ||
+		    reg == A2W_PLLC_MOR_CORE3 ||
+		    reg == A2W_PLLC_MOR_CORE4 ||
+		    reg == A2W_PLLD_MOR_CORE2 ||
+		    reg == A2W_PLLD_MOR_CORE3)
+			return;
+
 	writel(CM_PASSWORD | val, cprman->regs + reg);
 }
 
@@ -455,6 +544,7 @@ struct bcm2835_gate_data {
 	const char *parent;
 
 	u32 ctl_reg;
+	u32 gate_bit;
 };
 
 struct bcm2835_pll {
@@ -494,8 +584,10 @@ static long bcm2835_pll_rate_from_divisors(unsigned long parent_rate,
 	if (pdiv == 0)
 		return 0;
 
+
 	rate = (u64)parent_rate * ((ndiv << A2W_PLL_FRAC_BITS) + fdiv);
 	do_div(rate, pdiv);
+
 	return rate >> A2W_PLL_FRAC_BITS;
 }
 
@@ -523,17 +615,27 @@ static unsigned long bcm2835_pll_get_rate(struct clk_hw *hw,
 	u32 ndiv, pdiv, fdiv;
 	bool using_prediv;
 
+	if (is_7211a0(cprman->dev))
+		return 0;
+
 	if (parent_rate == 0)
 		return 0;
 
 	fdiv = cprman_read(cprman, data->frac_reg) & A2W_PLL_FRAC_MASK;
 	ndiv = (a2wctrl & A2W_PLL_CTRL_NDIV_MASK) >> A2W_PLL_CTRL_NDIV_SHIFT;
 	pdiv = (a2wctrl & A2W_PLL_CTRL_PDIV_MASK) >> A2W_PLL_CTRL_PDIV_SHIFT;
-	using_prediv = cprman_read(cprman, data->ana_reg_base + 4) &
-		data->ana->fb_prediv_mask;
+
+	if (is_7211b0(cprman->dev))
+		using_prediv = false;
+	else
+		using_prediv = cprman_read(cprman, data->ana_reg_base + 4) &
+			data->ana->fb_prediv_mask;
 
 	if (using_prediv)
 		ndiv *= 2;
+
+	dev_dbg(cprman->dev, "%s: parent %lu ndiv %d fdiv %d pdiv %d\n",
+	       clk_hw_get_name(hw), parent_rate, ndiv, fdiv, pdiv);
 
 	return bcm2835_pll_rate_from_divisors(parent_rate, ndiv, fdiv, pdiv);
 }
@@ -546,9 +648,10 @@ static void bcm2835_pll_off(struct clk_hw *hw)
 
 	spin_lock(&cprman->regs_lock);
 	cprman_write(cprman, data->cm_ctrl_reg, CM_PLL_ANARST);
-	cprman_write(cprman, data->a2w_ctrl_reg,
-		     cprman_read(cprman, data->a2w_ctrl_reg) |
-		     A2W_PLL_CTRL_PWRDN);
+	if (!is_plat_7211(cprman->dev))
+		cprman_write(cprman, data->a2w_ctrl_reg,
+			     cprman_read(cprman, data->a2w_ctrl_reg) |
+			     A2W_PLL_CTRL_PWRDN);
 	spin_unlock(&cprman->regs_lock);
 }
 
@@ -559,9 +662,10 @@ static int bcm2835_pll_on(struct clk_hw *hw)
 	const struct bcm2835_pll_data *data = pll->data;
 	ktime_t timeout;
 
-	cprman_write(cprman, data->a2w_ctrl_reg,
-		     cprman_read(cprman, data->a2w_ctrl_reg) &
-		     ~A2W_PLL_CTRL_PWRDN);
+	if (!is_plat_7211(cprman->dev))
+		cprman_write(cprman, data->a2w_ctrl_reg,
+			     cprman_read(cprman, data->a2w_ctrl_reg) &
+			     ~A2W_PLL_CTRL_PWRDN);
 
 	/* Take the PLL out of reset. */
 	spin_lock(&cprman->regs_lock);
@@ -752,11 +856,12 @@ static void bcm2835_pll_divider_off(struct clk_hw *hw)
 	struct bcm2835_pll_divider *divider = bcm2835_pll_divider_from_hw(hw);
 	struct bcm2835_cprman *cprman = divider->cprman;
 	const struct bcm2835_pll_divider_data *data = divider->data;
+	u32 load_mask = is_plat_7211(cprman->dev) ? 0 : data->load_mask;
 
 	spin_lock(&cprman->regs_lock);
 	cprman_write(cprman, data->cm_reg,
 		     (cprman_read(cprman, data->cm_reg) &
-		      ~data->load_mask) | data->hold_mask);
+		      ~load_mask) | data->hold_mask);
 	cprman_write(cprman, data->a2w_reg,
 		     cprman_read(cprman, data->a2w_reg) |
 		     A2W_PLL_CHANNEL_DISABLE);
@@ -789,6 +894,7 @@ static int bcm2835_pll_divider_set_rate(struct clk_hw *hw,
 	struct bcm2835_cprman *cprman = divider->cprman;
 	const struct bcm2835_pll_divider_data *data = divider->data;
 	u32 cm, div, max_div = 1 << A2W_PLL_DIV_BITS;
+	u32 load_mask = is_plat_7211(cprman->dev) ? 0 : data->load_mask;
 
 	div = DIV_ROUND_UP_ULL(parent_rate, rate);
 
@@ -798,8 +904,8 @@ static int bcm2835_pll_divider_set_rate(struct clk_hw *hw,
 
 	cprman_write(cprman, data->a2w_reg, div);
 	cm = cprman_read(cprman, data->cm_reg);
-	cprman_write(cprman, data->cm_reg, cm | data->load_mask);
-	cprman_write(cprman, data->cm_reg, cm & ~data->load_mask);
+	cprman_write(cprman, data->cm_reg, cm | load_mask);
+	cprman_write(cprman, data->cm_reg, cm & ~load_mask);
 
 	return 0;
 }
@@ -933,6 +1039,9 @@ static unsigned long bcm2835_clock_get_rate(struct clk_hw *hw,
 	struct bcm2835_cprman *cprman = clock->cprman;
 	const struct bcm2835_clock_data *data = clock->data;
 	u32 div = cprman_read(cprman, data->div_reg);
+
+	dev_dbg(cprman->dev, "%s: parent %lu div %d\n",
+		clk_hw_get_name(&clock->hw), parent_rate, div);
 
 	return bcm2835_clock_rate_from_divisor(clock, parent_rate, div);
 }
@@ -1304,6 +1413,17 @@ static struct clk *bcm2835_register_gate(struct bcm2835_cprman *cprman,
 				 CM_GATE_BIT, 0, &cprman->regs_lock);
 }
 
+static struct clk *bcm2835_register_stbgenctrl_gate(
+					struct bcm2835_cprman *cprman,
+					const struct bcm2835_gate_data *data)
+{
+	return clk_register_gate(cprman->dev, data->name, data->parent,
+				 CLK_IGNORE_UNUSED | CLK_SET_RATE_GATE,
+				 cprman->regs + data->ctl_reg,
+				 data->gate_bit,
+				 0, &cprman->regs_lock);
+}
+
 typedef struct clk_hw *(*bcm2835_clk_register)(struct bcm2835_cprman *cprman,
 					       const void *data);
 struct bcm2835_clk_desc {
@@ -1326,6 +1446,11 @@ struct bcm2835_clk_desc {
 #define REGISTER_GATE(...)	_REGISTER(&bcm2835_register_gate,	\
 					  &(struct bcm2835_gate_data)	\
 					  {__VA_ARGS__})
+#define REGISTER_STBGENCTRL_GATE(...)	_REGISTER(			\
+		&bcm2835_register_stbgenctrl_gate,			\
+		&(struct bcm2835_gate_data)				\
+		{__VA_ARGS__})
+
 
 /* parent mux arrays plus helper macros */
 
@@ -1352,6 +1477,9 @@ static const char *const bcm2835_clock_per_parents[] = {
 	"pllc_per",
 	"plld_per",
 	"pllh_aux",
+	"pllc_core1",
+	"pllc_core0",
+
 };
 
 #define REGISTER_PER_CLK(...)	REGISTER_CLK(				\
@@ -1376,6 +1504,25 @@ static const char *const bcm2835_clock_vpu_parents[] = {
 #define REGISTER_VPU_CLK(...)	REGISTER_CLK(				\
 	.num_mux_parents = ARRAY_SIZE(bcm2835_clock_vpu_parents),	\
 	.parents = bcm2835_clock_vpu_parents,				\
+	__VA_ARGS__)
+
+/* main stb parent mux */
+static const char *const bcm2835_clock_stb_parents[] = {
+	"gnd",
+	"xosc",
+	"testdebug0",
+	"testdebug1",
+	"plla_per",
+	"pllc_core1",
+	"plld_core",
+	"pllc_core0",
+	"pllc_mor_core3",
+	"plla_ccp2",
+};
+
+#define REGISTER_STB_CLK(...)	REGISTER_CLK(				\
+	.num_mux_parents = ARRAY_SIZE(bcm2835_clock_stb_parents),	\
+	.parents = bcm2835_clock_stb_parents,				\
 	__VA_ARGS__)
 
 /*
@@ -1838,6 +1985,142 @@ static const struct bcm2835_clk_desc clk_desc_array[] = {
 		.ctl_reg = CM_PERIICTL),
 };
 
+
+/*
+ *   7211xx based clock descriptor
+ */
+#define BCM7211_CLK(a) (a - BCM2835_PLLA_MOR_CORE2)
+
+static const struct bcm2835_clk_desc clk_desc_stb_array[] = {
+	[BCM7211_CLK(BCM2835_PLLA_MOR_CORE2)]	= REGISTER_PLL_DIV(
+		.name = "plla_mor_core2",
+		.source_pll = "plla",
+		.cm_reg = CM_PLLA,
+		.a2w_reg = A2W_PLLA_MOR_CORE2,
+		.hold_mask = CM_PLLA_HOLDCORE2,
+		.fixed_divider = 1),
+
+	[BCM7211_CLK(BCM2835_PLLA_MOR_CORE3)]	= REGISTER_PLL_DIV(
+		.name = "plla_mor_core3",
+		.source_pll = "plla",
+		.cm_reg = CM_PLLA,
+		.a2w_reg = A2W_PLLA_MOR_CORE3,
+		.hold_mask = CM_PLLA_HOLDCORE3,
+		.fixed_divider = 1),
+
+	[BCM7211_CLK(BCM2835_PLLC_MOR_CORE3)]	= REGISTER_PLL_DIV(
+		.name = "pllc_mor_core3",
+		.source_pll = "pllc",
+		.cm_reg = CM_PLLC,
+		.a2w_reg = A2W_PLLC_MOR_CORE3,
+		.hold_mask = CM_PLLC_HOLDCORE3,
+		.fixed_divider = 1),
+
+	[BCM7211_CLK(BCM2835_CLOCK_ARGON)]	= REGISTER_PER_CLK(
+		.name = "argon",
+		.ctl_reg = CM_ARGONCTL,
+		.div_reg = CM_ARGONDIV,
+		.int_bits = 4,
+		.frac_bits = 8),
+
+	[BCM7211_CLK(BCM2835_CLOCK_EMMC2)]	= REGISTER_PER_CLK(
+		.name = "emmc2",
+		.ctl_reg = CM_EMMC2CTL,
+		.div_reg = CM_EMMC2DIV,
+		.int_bits = 4,
+		.frac_bits = 8),
+
+	[BCM7211_CLK(BCM2835_CLOCK_GISB)]	= REGISTER_STB_CLK(
+		.name = "gisb",
+		.ctl_reg = CM_GISBCTL,
+		.div_reg = CM_GISBDIV,
+		.int_bits = 4,
+		.frac_bits = 8),
+
+	[BCM7211_CLK(BCM2835_CLOCK_ALTSCB)]	= REGISTER_STB_CLK(
+		.name = "altscb",
+		.ctl_reg = CM_ALTSCBCTL,
+		.div_reg = CM_ALTSCBDIV,
+		.int_bits = 4,
+		.frac_bits = 8),
+
+	[BCM7211_CLK(BCM2835_CLOCK_GENET_250)]	= REGISTER_STB_CLK(
+		.name = "genet_250",
+		.ctl_reg = CM_GENET_250CTL,
+		.div_reg = CM_GENET_250DIV,
+		.int_bits = 4,
+		.frac_bits = 8),
+
+	[BCM7211_CLK(BCM2835_CLOCK_STB27)]	= REGISTER_STB_CLK(
+		.name = "stb27",
+		.ctl_reg = CM_STB27CTL,
+		.div_reg = CM_STB27DIV,
+		.int_bits = 4,
+		.frac_bits = 8),
+
+	[BCM7211_CLK(BCM2835_CLOCK_STB54)]	= REGISTER_STB_CLK(
+		.name = "stb54",
+		.ctl_reg = CM_STB54CTL,
+		.div_reg = CM_STB54DIV,
+		.int_bits = 4,
+		.frac_bits = 8),
+
+	[BCM7211_CLK(BCM2835_CLOCK_STB108)]	= REGISTER_STB_CLK(
+		.name = "stb108",
+		.ctl_reg = CM_STB108CTL,
+		.div_reg = CM_STB108DIV,
+		.int_bits = 4,
+		.frac_bits = 8),
+
+	[BCM7211_CLK(BCM2835_CLOCK_PIXEL_BVB)]	= REGISTER_STB_CLK(
+		.name = "pixel_bvb",
+		.ctl_reg = CM_PIXEL_BVBCTL,
+		.div_reg = CM_PIXEL_BVBDIV,
+		.int_bits = 4,
+		.frac_bits = 8),
+
+	[BCM7211_CLK(BCM2835_CLOCK_GENET_125)]	= REGISTER_STB_CLK(
+		.name = "genet_125",
+		.ctl_reg = CM_GENET_125CTL,
+		.div_reg = CM_GENET_125DIV,
+		.int_bits = 4,
+		.frac_bits = 8),
+
+	/* STBGENCTRL gates */
+	[BCM2835_STBGENCTRL_HVDCOREALT] = REGISTER_STBGENCTRL_GATE(
+		.name = "hvd_cpu_alt",
+		.parent = "argon",
+		.ctl_reg = CM_STBGENCTRL,
+		.gate_bit = CM_STBGENCTRL_HVDCPUALTEN_BIT),
+
+	[BCM2835_STBGENCTRL_HVDCOREALT] = REGISTER_STBGENCTRL_GATE(
+		.name = "hvd_core_alt",
+		.parent = "argon",
+		.ctl_reg = CM_STBGENCTRL,
+		.gate_bit = CM_STBGENCTRL_HVDCOREALTEN_BIT),
+
+	[BCM7211_CLK(BCM2835_CLOCK_M2MC)]	= REGISTER_STB_CLK(
+		.name = "m2mc",
+		.ctl_reg = CM_M2MCCTL,
+		.div_reg = CM_M2MCDIV,
+		.int_bits = 4,
+		.frac_bits = 8),
+
+	[BCM7211_CLK(BCM2835_CLOCK_XPT)]	= REGISTER_STB_CLK(
+		.name = "xpt",
+		.ctl_reg = CM_XPTCTL,
+		.div_reg = CM_XPTDIV,
+		.int_bits = 4,
+		.frac_bits = 8),
+
+	[BCM7211_CLK(BCM2835_CLOCK_USBXHCI)]	= REGISTER_STB_CLK(
+		.name = "usbxhci",
+		.ctl_reg = CM_USBXHCICTL,
+		.div_reg = CM_USBXHCIDIV,
+		.int_bits = 4,
+		.frac_bits = 8),
+};
+
 /*
  * Permanently take a reference on the parent of the SDRAM clock.
  *
@@ -1865,11 +2148,18 @@ static int bcm2835_clk_probe(struct platform_device *pdev)
 	struct resource *res;
 	const struct bcm2835_clk_desc *desc;
 	const size_t asize = ARRAY_SIZE(clk_desc_array);
-	size_t i;
+	size_t tot_clks = asize;
+	size_t i, j;
 	int ret;
 
+	if (is_7211a0(dev))
+		tot_clks += ARRAY_SIZE(clk_desc_stb_array) - BCM7211B0_CLKS;
+
+	if (is_7211b0(dev))
+		tot_clks += ARRAY_SIZE(clk_desc_stb_array);
+
 	cprman = devm_kzalloc(dev, sizeof(*cprman) +
-			      sizeof(*cprman->onecell.hws) * asize,
+			      sizeof(*cprman->onecell.hws) * tot_clks,
 			      GFP_KERNEL);
 	if (!cprman)
 		return -ENOMEM;
@@ -1887,13 +2177,21 @@ static int bcm2835_clk_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, cprman);
 
-	cprman->onecell.num = asize;
+	cprman->onecell.num = tot_clks;
 	hws = cprman->onecell.hws;
 
+	/* 2835 legacy clks */
 	for (i = 0; i < asize; i++) {
 		desc = &clk_desc_array[i];
 		if (desc->clk_register && desc->data)
 			hws[i] = desc->clk_register(cprman, desc->data);
+	}
+
+	/* 7211 stb clks */
+	for (j = 0; (i + j) < tot_clks; j++) {
+		desc = &clk_desc_stb_array[j];
+		if (desc->clk_register && desc->data)
+			hws[i + j] = desc->clk_register(cprman, desc->data);
 	}
 
 	ret = bcm2835_mark_sdc_parent_critical(hws[BCM2835_CLOCK_SDRAM]->clk);
@@ -1906,6 +2204,8 @@ static int bcm2835_clk_probe(struct platform_device *pdev)
 
 static const struct of_device_id bcm2835_clk_of_match[] = {
 	{ .compatible = "brcm,bcm2835-cprman", },
+	{ .compatible = "brcm,bcm7211a0-cprman", },
+	{ .compatible = "brcm,bcm7211b0-cprman", },
 	{}
 };
 MODULE_DEVICE_TABLE(of, bcm2835_clk_of_match);

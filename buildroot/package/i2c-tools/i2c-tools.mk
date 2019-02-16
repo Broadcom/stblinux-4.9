@@ -10,6 +10,7 @@ I2C_TOOLS_SITE = https://www.kernel.org/pub/software/utils/i2c-tools
 I2C_TOOLS_LICENSE = GPL-2.0+, GPL-2.0 (py-smbus), LGPL-2.1+ (libi2c)
 I2C_TOOLS_LICENSE_FILES = COPYING COPYING.LGPL README
 I2C_TOOLS_MAKE_OPTS = EXTRA=eeprog
+I2C_TOOLS_INSTALL_STAGING = YES
 
 ifeq ($(BR2_PACKAGE_PYTHON),y)
 I2C_TOOLS_DEPENDENCIES += python
@@ -61,6 +62,11 @@ define I2C_TOOLS_INSTALL_TARGET_CMDS
 		DESTDIR="$(TARGET_DIR)" prefix=/usr \
 		libdir=/usr/$(BR2_ROOTFS_LIB_DIR) -C $(@D) install
 	$(I2C_TOOLS_INSTALL_PYSMBUS)
+endef
+
+define I2C_TOOLS_INSTALL_STAGING_CMDS
+	$(MAKE) $(TARGET_CONFIGURE_OPTS) $(I2C_TOOLS_MAKE_OPTS) \
+		DESTDIR="$(STAGING_DIR)" prefix=/usr -C $(@D) install
 endef
 
 $(eval $(generic-package))

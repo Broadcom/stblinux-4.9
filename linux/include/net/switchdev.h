@@ -48,6 +48,7 @@ enum switchdev_attr_id {
 	SWITCHDEV_ATTR_ID_PORT_BRIDGE_FLAGS,
 	SWITCHDEV_ATTR_ID_BRIDGE_AGEING_TIME,
 	SWITCHDEV_ATTR_ID_BRIDGE_VLAN_FILTERING,
+	SWITCHDEV_ATTR_ID_BRIDGE_MC_DISABLED,
 };
 
 struct switchdev_attr {
@@ -62,6 +63,7 @@ struct switchdev_attr {
 		unsigned long brport_flags;		/* PORT_BRIDGE_FLAGS */
 		clock_t ageing_time;			/* BRIDGE_AGEING_TIME */
 		bool vlan_filtering;			/* BRIDGE_VLAN_FILTERING */
+		bool mc_disabled;			/* MC_DISABLED */
 	} u;
 };
 
@@ -70,6 +72,7 @@ enum switchdev_obj_id {
 	SWITCHDEV_OBJ_ID_PORT_VLAN,
 	SWITCHDEV_OBJ_ID_PORT_FDB,
 	SWITCHDEV_OBJ_ID_PORT_MDB,
+	SWITCHDEV_OBJ_ID_HOST_MDB,
 };
 
 struct switchdev_obj {

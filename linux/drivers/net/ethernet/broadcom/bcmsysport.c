@@ -134,6 +134,10 @@ static void bcm_sysport_set_rx_csum(struct net_device *dev,
 
 	priv->rx_chk_en = !!(wanted & NETIF_F_RXCSUM);
 	reg = rxchk_readl(priv, RXCHK_CONTROL);
+	/* Clear L2 header checks, which would prevent BPDUs
+	 * from being received.
+	 */
+	reg &= ~RXCHK_L2_HDR_DIS;
 	if (priv->rx_chk_en)
 		reg |= RXCHK_EN;
 	else
@@ -491,7 +495,6 @@ static void bcm_sysport_get_wol(struct net_device *dev,
 				struct ethtool_wolinfo *wol)
 {
 	struct bcm_sysport_priv *priv = netdev_priv(dev);
-	u32 reg;
 
 	wol->supported = WAKE_MAGIC | WAKE_MAGICSECURE | WAKE_FILTER;
 	wol->wolopts = priv->wolopts;
@@ -499,11 +502,7 @@ static void bcm_sysport_get_wol(struct net_device *dev,
 	if (!(priv->wolopts & WAKE_MAGICSECURE))
 		return;
 
-	/* Return the programmed SecureOn password */
-	reg = umac_readl(priv, UMAC_PSW_MS);
-	put_unaligned_be16(reg, &wol->sopass[0]);
-	reg = umac_readl(priv, UMAC_PSW_LS);
-	put_unaligned_be32(reg, &wol->sopass[2]);
+	memcpy(wol->sopass, priv->sopass, sizeof(priv->sopass));
 }
 
 static int bcm_sysport_set_wol(struct net_device *dev,
@@ -519,13 +518,8 @@ static int bcm_sysport_set_wol(struct net_device *dev,
 	if (wol->wolopts & ~supported)
 		return -EINVAL;
 
-	/* Program the SecureOn password */
-	if (wol->wolopts & WAKE_MAGICSECURE) {
-		umac_writel(priv, get_unaligned_be16(&wol->sopass[0]),
-			    UMAC_PSW_MS);
-		umac_writel(priv, get_unaligned_be32(&wol->sopass[2]),
-			    UMAC_PSW_LS);
-	}
+	if (wol->wolopts & WAKE_MAGICSECURE)
+		memcpy(priv->sopass, wol->sopass, sizeof(priv->sopass));
 
 	/* Flag the device and relevant IRQ as wakeup capable */
 	if (wol->wolopts) {
@@ -2290,7 +2284,7 @@ static int bcm_sysport_map_queues(struct bcm_sysport_priv *priv,
 	struct net_device *dev = priv->netdev;
 	struct bcm_sysport_tx_ring *ring;
 	unsigned int num_tx_queues;
-	unsigned int q, start, port;
+	unsigned int q, qp, port;
 
 	port = dsa_slave_dev_port_num(slave_dev);
 
@@ -2310,20 +2304,48 @@ static int bcm_sysport_map_queues(struct bcm_sysport_priv *priv,
 
 	priv->per_port_num_tx_queues = num_tx_queues;
 
-	start = find_first_zero_bit(&priv->queue_bitmap, dev->num_tx_queues);
-	for (q = 0; q < num_tx_queues; q++) {
-		ring = &priv->tx_rings[q + start];
+	for (q = 0, qp = 0; q < dev->num_tx_queues && qp < num_tx_queues;
+	     q++) {
+		ring = &priv->tx_rings[q];
+
+		if (ring->inspect)
+			continue;
 
 		/* Just remember the mapping actual programming done
 		 * during bcm_sysport_init_tx_ring
 		 */
-		ring->switch_queue = q;
+		ring->switch_queue = qp;
 		ring->switch_port = port;
 		ring->inspect = true;
 		priv->ring_map[q + port * num_tx_queues] = ring;
+		qp++;
+	}
 
-		/* Set all queues as being used now */
-		set_bit(q + start, &priv->queue_bitmap);
+	return NOTIFY_OK;
+}
+
+static int bcm_sysport_unmap_queues(struct bcm_sysport_priv *priv,
+				    struct net_device *slave_dev)
+{
+	struct net_device *dev = priv->netdev;
+	struct bcm_sysport_tx_ring *ring;
+	unsigned int num_tx_queues;
+	unsigned int q, port;
+
+	port = dsa_slave_dev_port_num(slave_dev);
+	num_tx_queues = slave_dev->real_num_tx_queues;
+
+	for (q = 0; q < dev->num_tx_queues; q++) {
+		ring = &priv->tx_rings[q];
+
+		if (ring->switch_port != port)
+			continue;
+
+		if (!ring->inspect)
+			continue;
+
+		ring->inspect = false;
+		priv->ring_map[q + port * num_tx_queues] = NULL;
 	}
 
 	return NOTIFY_OK;
@@ -2340,8 +2362,13 @@ static int bcm_sysport_notifier_event(struct notifier_block *nb,
 	if (!dsa_slave_dev_check(dev))
 		return NOTIFY_DONE;
 
-	if (event == NETDEV_REGISTER)
+	switch (event) {
+	case NETDEV_REGISTER:
 		return bcm_sysport_map_queues(priv, dev);
+
+	case NETDEV_UNREGISTER:
+		return bcm_sysport_unmap_queues(priv, dev);
+	}
 
 	return NOTIFY_DONE;
 }
@@ -2423,6 +2450,14 @@ static int bcm_sysport_probe(struct platform_device *pdev)
 	/* Initialize private members */
 	priv = netdev_priv(dev);
 
+	priv->clk = devm_clk_get(&pdev->dev, "sw_sysport");
+	if (IS_ERR(priv->clk)) {
+		if (PTR_ERR(priv->clk) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		dev_warn(&pdev->dev, "failed to request clock\n");
+		priv->clk = NULL;
+	}
+
 	/* Allocate number of TX rings */
 	priv->tx_rings = devm_kcalloc(&pdev->dev, txq,
 				      sizeof(struct bcm_sysport_tx_ring),
@@ -2499,12 +2534,6 @@ static int bcm_sysport_probe(struct platform_device *pdev)
 			       bcm_sysport_wol_isr, 0, dev->name, priv);
 	if (!ret)
 		device_set_wakeup_capable(&pdev->dev, 1);
-
-	priv->clk = devm_clk_get(&pdev->dev, "sw_sysport");
-	if (IS_ERR(priv->clk)) {
-		dev_warn(&pdev->dev, "failed to request clock\n");
-		priv->clk = NULL;
-	}
 
 	priv->wol_clk = devm_clk_get(&pdev->dev, "sw_sysportwol");
 	if (IS_ERR(priv->wol_clk))
@@ -2588,13 +2617,18 @@ static int bcm_sysport_suspend_to_wol(struct bcm_sysport_priv *priv)
 	unsigned int index, i = 0;
 	u32 reg;
 
-	/* Password has already been programmed */
 	reg = umac_readl(priv, UMAC_MPD_CTRL);
 	if (priv->wolopts & (WAKE_MAGIC | WAKE_MAGICSECURE))
 		reg |= MPD_EN;
 	reg &= ~PSW_EN;
-	if (priv->wolopts & WAKE_MAGICSECURE)
+	if (priv->wolopts & WAKE_MAGICSECURE) {
+		/* Program the SecureOn password */
+		umac_writel(priv, get_unaligned_be16(&priv->sopass[0]),
+			    UMAC_PSW_MS);
+		umac_writel(priv, get_unaligned_be32(&priv->sopass[2]),
+			    UMAC_PSW_LS);
 		reg |= PSW_EN;
+	}
 	umac_writel(priv, reg, UMAC_MPD_CTRL);
 
 	if (priv->wolopts & WAKE_FILTER) {

@@ -4,7 +4,10 @@ Thermal management core, provided by the AVS TMON hardware block.
 
 Required properties:
 
-- compatible: "brcm,avs-tmon-bcm7445" and/or "brcm,avs-tmon"
+- compatible: must be one of:
+	"brcm,avs-tmon-bcm7216"
+	"brcm,avs-tmon-bcm7445"
+	"brcm,avs-tmon"
 - reg: address range for the AVS TMON registers
 - interrupts: 'TMON' interrupt, for high/low threshold triggers
 - interrupt-names: "tmon"

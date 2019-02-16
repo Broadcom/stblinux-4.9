@@ -19,13 +19,17 @@
 
 use strict;
 use warnings;
+use Fcntl ':mode';
 use File::Basename;
 use File::Path qw(make_path);
 use Getopt::Std;
 use POSIX;
+use Socket;
 
 use constant AUTO_MK => qw(brcmstb.mk);
 use constant LOCAL_MK => qw(local.mk);
+use constant BR_MIRROR_HOST => qw(stbgit.broadcom.com);
+use constant BR_MIRROR_PATH => qw(/mirror/buildroot);
 use constant RECOMMENDED_TOOLCHAINS => ( qw(misc/toolchain.master
 					misc/toolchain) );
 use constant SHARED_OSS_DIR => qw(/projects/stbdev/open-source);
@@ -100,6 +104,34 @@ sub check_open_source_dir()
 	return  (-d SHARED_OSS_DIR) ? 1 : 0;
 }
 
+# Without this explicit function prototype, Perl will complain that the
+# recursive call inside fix_oss_permission() is happening too early to check the
+# prototype.
+sub fix_oss_permissions($);
+
+sub fix_oss_permissions($)
+{
+	my ($dir) = @_;
+	my $mode = (stat($dir))[2] & 0777;
+	my $dh;
+
+	# If directory doesn't have rwx permissions for group and other, we
+	# add them. We silently fail if the attempt is denied, since there is
+	# nothing more we can do.
+	if (($mode & (S_IRWXG | S_IRWXO)) != (S_IRWXG | S_IRWXO)) {
+		chmod(0777, $dir) && print("Fixed permissions of $dir...\n");
+	}
+	opendir($dh, $dir);
+	while (readdir($dh)) {
+		# Skip "." and ".."
+		next if (/^\.{1,2}$/);
+		if (-d "$dir/$_") {
+			fix_oss_permissions("$dir/$_");
+		}
+	}
+	closedir($dh);
+}
+
 
 # Check if the specified toolchain is the recommended one.
 sub check_toolchain($)
@@ -133,6 +165,8 @@ my @linux_build_artefacts = (
 	".config",
 	"vmlinux",
 	"*.o",
+	"*.s",
+	"generated/",
 	"vmlinuz",
 	"System.map",
 );
@@ -424,6 +458,7 @@ my $ret = 0;
 my $is_64bit = 0;
 my $relative_outputdir;
 my $br_outputdir;
+my $br_mirror;
 my $local_linux;
 my $toolchain;
 my $recommended_toolchain;
@@ -532,23 +567,36 @@ if (check_open_source_dir() && !defined($opts{'n'})) {
 		chmod(0777, $br_oss_cache);
 	}
 
+	# This is a best-effort attempt to fix up directory permissions in the
+	# shared download cache. It will only work if the directories with the
+	# wrong permissions are owned by the user running br_config.pl
+	fix_oss_permissions($br_oss_cache);
+
 	print("Using $br_oss_cache as download cache...\n");
 	$generic_config{'BR2_DL_DIR'} = $br_oss_cache;
+	$generic_config{'BR2_DL_DIR_OPTS'} = '-m 777';
+}
+
+if (defined($opts{'d'})) {
+	my $cfg = $opts{'d'};
+
+	# "defconfig" is a special case. It represents the default config for
+	# many architectures.
+	if ($cfg eq 'defconfig') {
+		$opts{'D'} = 1;
+		undef($opts{'d'});
+	} else {
+		# Buildroot expects the trailing "_defconfig" to be stripped.
+		$cfg =~ s/_?defconfig$//;
+		print("Using $cfg as Linux kernel configuration...\n");
+		$arch_config{$arch}{'BR2_LINUX_KERNEL_DEFCONFIG'} = $cfg;
+	}
 }
 
 if (defined($opts{'D'})) {
 	print("Using default Linux kernel configuration...\n");
 	$arch_config{$arch}{'BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG'} = 'y';
 	delete($arch_config{$arch}{'BR2_LINUX_KERNEL_DEFCONFIG'});
-}
-
-if (defined($opts{'d'})) {
-	my $cfg = $opts{'d'};
-
-	# Make it nice for the user and strip trailing _defconfig.
-	$cfg =~ s/_?defconfig$//;
-	print("Using $cfg as Linux kernel configuration...\n");
-	$arch_config{$arch}{'BR2_LINUX_KERNEL_DEFCONFIG'} = $cfg;
 }
 
 if (defined($opts{'j'})) {
@@ -626,6 +674,25 @@ if (defined($kernel_header_version)) {
 } else {
 	print("WARNING: couldn't detect kernel header version; build may ".
 		"fail\n");
+}
+
+if (defined($ENV{'BR_MIRROR'})) {
+	# If there is a user-specified mirror, use that.
+	$br_mirror = $ENV{'BR_MIRROR'};
+
+} else {
+	# Only use the Broadcom mirror if we can resolve the name, otherwise
+	# we'll run into a DNS timeout for every package we need to download.
+	if (gethostbyname(BR_MIRROR_HOST)) {
+		$br_mirror = "http://".BR_MIRROR_HOST.BR_MIRROR_PATH;
+	}
+}
+if (defined($br_mirror)) {
+	print("Using $br_mirror as Buildroot mirror...\n");
+	$generic_config{'BR2_PRIMARY_SITE'} = $br_mirror;
+
+} else {
+	print("Not using a Buildroot mirror...\n");
 }
 
 if ($is_64bit) {

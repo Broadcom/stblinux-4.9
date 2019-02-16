@@ -17,6 +17,7 @@
 
 #define pr_fmt(fmt) "clk-brcmstb: " fmt
 
+#include <linux/bitops.h>
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/delay.h>
@@ -34,6 +35,7 @@ static bool shut_off_unused_clks = true;
 static int bcm_full_clk = 2;
 static void __iomem *cpu_clk_div_reg;
 
+/* Gate clock structs */
 struct bcm_clk_gate {
 	struct clk_hw hw;
 	void __iomem *reg;
@@ -44,12 +46,77 @@ struct bcm_clk_gate {
 	struct clk_ops ops;
 };
 
+/* Multiplier clock structs and data */
+struct brcmstb_clk_mult_field_desc {
+	u8 offset;
+	u8 width;
+	u8 src_shift;
+	u8 dst_shift;
+};
+
+struct brcmstb_clk_mult_info {
+	unsigned int type;
+	unsigned int frac_width;
+	unsigned int int_width;
+	unsigned int nudge_width;
+	const struct brcmstb_clk_mult_field_desc *nudge_fields;
+	const struct brcmstb_clk_mult_field_desc *multval_fields;
+};
+
+struct bcm_clk_mult {
+	struct clk_hw hw;
+	void __iomem *reg;
+#define MULT_CLK_FLAGS_NUDGE_BIT	BIT(0)
+	unsigned long flags;
+	const struct brcmstb_clk_mult_info *info;
+	spinlock_t *lock;
+};
+
+const struct brcmstb_clk_mult_field_desc
+brcm_clk_mult_fields_multval_type0[] = {
+	{ .offset = 0,
+	  .width = 10,
+	  .src_shift = 0,
+	  .dst_shift = 20, },
+	{ .offset = 0,
+	  .width = 4,
+	  .src_shift = 10,
+	  .dst_shift = 0, },
+	{ .offset = 4,
+	  .width = 16,
+	  .src_shift = 0,
+	  .dst_shift = 4, },
+	{ /* terminating null element */ },
+};
+
+const struct brcmstb_clk_mult_field_desc brcm_clk_mult_fields_nudge_type0[] = {
+	{ .offset = 8,
+	  .width = 12,
+	  .src_shift = 0,
+	  .dst_shift = 0, },
+	{ /* terminating null element */ },
+};
+
+static const struct brcmstb_clk_mult_info brcmstb_clk_mult_dbase[] = {
+	/* Type 0 brcm mult clock */
+	{ .type = 0,
+	  .frac_width = 20,
+	  .int_width = 8,
+	  .nudge_width = 12,
+	  .multval_fields = brcm_clk_mult_fields_multval_type0,
+	  .nudge_fields = brcm_clk_mult_fields_nudge_type0,
+	},
+};
+
+
+/* SW clock structs */
 struct bcm_clk_sw {
 	struct clk_hw hw;
 	struct clk_ops ops;
 };
 
 #define to_brcmstb_clk_gate(p) container_of(p, struct bcm_clk_gate, hw)
+#define to_brcmstb_clk_mult(p) container_of(p, struct bcm_clk_mult, hw)
 #define to_brcmstb_clk_sw(p) container_of(p, struct bcm_clk_sw, hw)
 #define to_clk_mux(_hw) container_of(_hw, struct clk_mux, hw)
 
@@ -284,10 +351,104 @@ static u8 brcmstb_clk_get_parent(struct clk_hw *hw)
 	return 0;
 }
 
+static u64 brcmstb_clk_mult_combine_fields(struct bcm_clk_mult *mult,
+			   const struct brcmstb_clk_mult_field_desc *f)
+{
+	u64 val = 0;
+
+	while (f->width) {
+		u64 tmp = readl(mult->reg + f->offset);
+
+		tmp >>= f->src_shift;
+		tmp &= (1 << f->width) - 1;
+		val |= tmp << f->dst_shift;
+		f++;
+	}
+	return val;
+}
+
+static void brcmstb_clk_mult_get_mult_val(struct clk_hw *hw, u64 *int_part,
+					  u64 *frac_part)
+{
+	struct bcm_clk_mult *mult = to_brcmstb_clk_mult(hw);
+	const struct brcmstb_clk_mult_info *info = mult->info;
+	const struct brcmstb_clk_mult_field_desc *f
+		= mult->info->multval_fields;
+	const u64 val = brcmstb_clk_mult_combine_fields(mult, f);
+
+	*frac_part = val & GENMASK_ULL(info->frac_width - 1, 0);
+	*int_part = val >> info->frac_width;
+}
+
+static u64 brcmstb_clk_mult_get_nudge_val(struct bcm_clk_mult *mult)
+{
+	const struct brcmstb_clk_mult_field_desc *f = mult->info->nudge_fields;
+
+	if (f->width == 0 || !(mult->flags & MULT_CLK_FLAGS_NUDGE_BIT))
+		return 0;
+	return brcmstb_clk_mult_combine_fields(mult, f);
+}
+
+static unsigned long brcmstb_clk_mult_recalc_rate(struct clk_hw *hw,
+						unsigned long parent_rate)
+{
+	struct bcm_clk_mult *mult = to_brcmstb_clk_mult(hw);
+	const struct brcmstb_clk_mult_info *info = mult->info;
+	u64 multval, nudge, t0, t1, frac_part, int_part;
+	int i, extra;
+
+	if (parent_rate == 0)
+		return 0;
+
+	brcmstb_clk_mult_get_mult_val(hw, &int_part, &frac_part);
+	nudge = brcmstb_clk_mult_get_nudge_val(mult);
+	i = fls64((u64) parent_rate);
+	/* Extra bits for precision which may be needed */
+	extra = 64 - (info->frac_width + info->int_width + i + 1);
+
+	/* t0 = 2^frac_part_width - nudge */
+	t0 = (1 << info->frac_width) - nudge;
+
+	/* frac_part /= t0 */
+	t1 = frac_part << (info->frac_width + extra);
+	do_div(t1, (u32)t0);
+
+	/* multval = concat(int_part,frac_part) */
+	multval = (int_part << (info->frac_width + extra)) | t1;
+	return parent_rate * multval >> (info->frac_width + extra);
+}
+
+static long brcmstb_clk_mult_round_rate(struct clk_hw *hw, unsigned long rate,
+					unsigned long *parent_rate)
+{
+	/*
+	 * We currently do not implement setting this clock so the
+	 * only rate it can ever have is the one it currently has.
+	 */
+	return brcmstb_clk_mult_recalc_rate(hw, *parent_rate);
+}
+
+static int brcmstb_clk_mult_set_rate(struct clk_hw *hw,
+				      unsigned long rate,
+				      unsigned long parent_rate)
+{
+	/*
+	 * We currently do not implement setting this clock so the
+	 * only rate it can ever have is the one it currently has.
+	 */
+	return brcmstb_clk_mult_recalc_rate(hw, parent_rate);
+}
+
 static const struct clk_ops brcmstb_clk_gate_ops = {
 	.enable = brcmstb_clk_gate_enable,
 	.disable = brcmstb_clk_gate_disable,
 	.is_enabled = brcmstb_clk_gate_is_enabled,
+};
+
+static const struct clk_ops brcmstb_clk_mult_ops = {
+	.round_rate = brcmstb_clk_mult_round_rate,
+	.recalc_rate = brcmstb_clk_mult_recalc_rate,
+	.set_rate = brcmstb_clk_mult_set_rate,
 };
 
 static const struct clk_ops brcmstb_clk_gate_inhib_dis_ops = {
@@ -298,6 +459,63 @@ static const struct clk_ops brcmstb_clk_gate_inhib_dis_ops = {
 static const struct clk_ops brcmstb_clk_gate_ro_ops = {
 	.is_enabled = brcmstb_clk_gate_is_enabled,
 };
+
+/**
+ * brcm_clk_mult_register - register a bcm mult clock with the clock framework.
+ * @dev: device that is registering this clock
+ * @name: name of this clock
+ * @parent_name: name of this clock's parent
+ * @flags: framework-specific flags for this clock
+ * @reg: register address to control gating of this clock
+ * @type: type of bcm mult clock
+ * @lock: shared register lock for this clock
+ */
+static struct clk __init *brcm_clk_mult_register(
+	struct device *dev, const char *name, const char *parent_name,
+	unsigned long flags, void __iomem *reg, unsigned long clk_mult_flags,
+	unsigned int mult_type, spinlock_t *lock)
+
+{
+	const struct brcmstb_clk_mult_info *p = brcmstb_clk_mult_dbase;
+	struct bcm_clk_mult *mult;
+	struct clk *clk;
+	struct clk_init_data init;
+	int i;
+
+	/* allocate the mult */
+	mult = kzalloc(sizeof(struct bcm_clk_mult), GFP_KERNEL);
+	if (!mult)
+		return ERR_PTR(-ENOMEM);
+
+	init.name = name;
+	init.ops = &brcmstb_clk_mult_ops;
+	init.parent_names = (parent_name ? &parent_name : NULL);
+	init.num_parents = (parent_name ? 1 : 0);
+	init.flags = flags;
+	if (!shut_off_unused_clks)
+		init.flags |= CLK_IGNORE_UNUSED; /* FIXME */
+
+	/* struct bcm_mult assignments */
+	mult->reg = reg;
+	mult->flags = clk_mult_flags;
+	for (i = 0; i < ARRAY_SIZE(brcmstb_clk_mult_dbase); i++)
+		if (p[i].type == mult_type) {
+			mult->info = p;
+			break;
+		}
+	if (!mult->info)
+		return ERR_PTR(-EINVAL);
+
+	mult->lock = lock;
+	mult->hw.init = &init;
+
+	clk = clk_register(dev, &mult->hw);
+
+	if (IS_ERR(clk))
+		kfree(mult);
+
+	return clk;
+}
 
 /**
  * brcm_clk_gate_register - register a bcm gate clock with the clock framework.
@@ -329,8 +547,8 @@ static struct clk __init *brcm_clk_gate_register(
 	}
 
 	init.name = name;
-	init.ops = inhibit_disable ? &brcmstb_clk_gate_inhib_dis_ops
-		: read_only ? &brcmstb_clk_gate_ro_ops : &brcmstb_clk_gate_ops;
+	init.ops = read_only ? &brcmstb_clk_gate_ro_ops : inhibit_disable ?
+		&brcmstb_clk_gate_inhib_dis_ops : &brcmstb_clk_gate_ops;
 	init.parent_names = (parent_name ? &parent_name : NULL);
 	init.num_parents = (parent_name ? 1 : 0);
 	init.flags = flags;
@@ -459,6 +677,48 @@ static void __init of_brcmstb_clk_gate_setup(struct device_node *node)
 }
 CLK_OF_DECLARE(brcmstb_clk_gate, "brcm,brcmstb-gate-clk",
 		of_brcmstb_clk_gate_setup);
+CLK_OF_DECLARE(brcmstb_clk_gate_7211, "brcm,brcm7211-gate-clk",
+		of_brcmstb_clk_gate_setup);
+
+/**
+ * of_brcmstb_mult_clk_setup() - Setup function for brcmstb mult clock
+ */
+static void __init of_brcmstb_clk_mult_setup(struct device_node *node)
+{
+	struct clk *clk;
+	const char *clk_name = node->name;
+	void __iomem *reg;
+	const char *parent_name;
+	u8 clk_mult_flags = 0;
+	int ret;
+	u32 mult_type = 0;
+	unsigned long flags = 0;
+
+	reg = of_iomap(node, 0);
+	if (!reg)
+		return;
+
+	parent_name = of_clk_get_parent_name(node, 0);
+	if (of_property_read_bool(node, "brcm,has-nudge"))
+		clk_mult_flags |= MULT_CLK_FLAGS_NUDGE_BIT;
+	of_property_read_u32(node, "brcm,mult-type", &mult_type);
+
+	clk = brcm_clk_mult_register(NULL, clk_name, parent_name, flags, reg,
+				     clk_mult_flags, mult_type, &lock);
+
+	if (IS_ERR(clk)) {
+		iounmap(reg);
+	} else {
+		ret = of_clk_add_provider(node, of_clk_src_simple_get, clk);
+		if (ret == 0)
+			ret = clk_register_clkdev(clk, clk_name, NULL);
+		if (ret)
+			pr_err("%s: clk device registration failed for '%s'\n",
+			       __func__, clk_name);
+	}
+}
+CLK_OF_DECLARE(brcmstb_clk_mult, "brcm,brcmstb-mult-clk",
+		of_brcmstb_clk_mult_setup);
 
 static void __init of_brcmstb_clk_sw_setup(struct device_node *node)
 {
