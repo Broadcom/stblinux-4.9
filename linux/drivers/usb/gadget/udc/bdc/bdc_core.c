@@ -496,8 +496,14 @@ static int bdc_probe(struct platform_device *pdev)
 
 	dev_dbg(dev, "%s()\n", __func__);
 
+	bdc = devm_kzalloc(dev, sizeof(*bdc), GFP_KERNEL);
+	if (!bdc)
+		return -ENOMEM;
+
 	clk = devm_clk_get(dev, "sw_usbd");
 	if (IS_ERR(clk)) {
+		if (PTR_ERR(clk) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
 		dev_info(dev, "Clock not found in Device Tree\n");
 		clk = NULL;
 	}
@@ -506,10 +512,7 @@ static int bdc_probe(struct platform_device *pdev)
 		dev_err(dev, "could not enable clock\n");
 		return ret;
 	}
-
-	bdc = devm_kzalloc(dev, sizeof(*bdc), GFP_KERNEL);
-	if (!bdc)
-		return -ENOMEM;
+	bdc->clk = clk;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	bdc->regs = devm_ioremap_resource(dev, res);
@@ -545,16 +548,20 @@ static int bdc_probe(struct platform_device *pdev)
 			dev, dev->of_node, phy_num);
 		if (IS_ERR(bdc->phys[phy_num])) {
 			ret = PTR_ERR(bdc->phys[phy_num]);
+			if (ret == -EPROBE_DEFER) {
+				dev_dbg(bdc->dev, "DEFER, waiting for PHY\n");
+				return ret;
+			}
 			dev_info(bdc->dev,
 				"BDC phy specified but not found:%d\n", ret);
-			bdc->phys[phy_num] = NULL;
+			goto clk_cleanup;
 		}
 	}
 
 	ret = bdc_phy_init(bdc);
 	if (ret) {
 		dev_err(bdc->dev, "BDC phy init failure:%d\n", ret);
-		return ret;
+		goto clk_cleanup;
 	}
 
 	temp = bdc_readl(bdc->regs, BDC_BDCCAP1);
@@ -586,6 +593,8 @@ cleanup:
 	bdc_hw_exit(bdc);
 phycleanup:
 	bdc_phy_exit(bdc);
+clk_cleanup:
+	clk_disable_unprepare(bdc->clk);
 	return ret;
 }
 
@@ -598,6 +607,7 @@ static int bdc_remove(struct platform_device *pdev)
 	bdc_udc_exit(bdc);
 	bdc_hw_exit(bdc);
 	bdc_phy_exit(bdc);
+	clk_disable_unprepare(bdc->clk);
 
 	return 0;
 }
@@ -608,6 +618,7 @@ static int bdc_suspend(struct platform_device *pdev, pm_message_t mesg)
 
 	/* Halt the controller */
 	return bdc_stop(bdc);
+	clk_disable_unprepare(bdc->clk);
 }
 
 static int bdc_resume(struct platform_device *pdev)
@@ -615,6 +626,9 @@ static int bdc_resume(struct platform_device *pdev)
 	struct bdc *bdc = platform_get_drvdata(pdev);
 	int ret;
 
+	ret = clk_prepare_enable(bdc->clk);
+	if (ret)
+		return ret;
 	ret = bdc_reinit(bdc);
 	if (ret) {
 		dev_err(bdc->dev, "err in bdc reinit\n");

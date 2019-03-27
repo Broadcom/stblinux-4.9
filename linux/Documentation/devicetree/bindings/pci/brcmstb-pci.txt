@@ -72,6 +72,10 @@ Optional Properties:
       Documentation/devicetree/bindings/regulator/ for specific
       bindings. The number and order of phandles must match
       exactly the number of strings in the "supply-names" property.
+  brcm,aspm-en-l0s -- (boolean) Enable ASPM L0s as well as L1. By
+      default, only ASPM L1 is enabled as our measurements indicate
+      (a) l0s doesn't save that much power and (b) l0s may introduce
+      a formidable noise signal.
 
 Example Node:
 

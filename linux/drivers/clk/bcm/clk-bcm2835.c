@@ -517,6 +517,8 @@ struct bcm2835_pll_divider_data {
 	u32 load_mask;
 	u32 hold_mask;
 	u32 fixed_divider;
+
+	u32 flags;
 };
 
 struct bcm2835_clock_data {
@@ -1315,7 +1317,7 @@ bcm2835_register_pll_divider(struct bcm2835_cprman *cprman,
 	init.num_parents = 1;
 	init.name = divider_name;
 	init.ops = &bcm2835_pll_divider_clk_ops;
-	init.flags = CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED;
+	init.flags = CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED | data->flags;
 
 	divider = devm_kzalloc(cprman->dev, sizeof(*divider), GFP_KERNEL);
 	if (!divider)
@@ -1584,7 +1586,9 @@ static const struct bcm2835_clk_desc clk_desc_array[] = {
 		.a2w_reg = A2W_PLLA_CCP2,
 		.load_mask = CM_PLLA_LOADCCP2,
 		.hold_mask = CM_PLLA_HOLDCCP2,
-		.fixed_divider = 1),
+		.fixed_divider = 1,
+		.flags = CLK_IS_CRITICAL, /* SWLINUX-5145 */
+		),
 
 	/* PLLB is used for the ARM's clock. */
 	[BCM2835_PLLB]		= REGISTER_PLL(
@@ -1608,6 +1612,7 @@ static const struct bcm2835_clk_desc clk_desc_array[] = {
 		.a2w_reg = A2W_PLLB_ARM,
 		.load_mask = CM_PLLB_LOADARM,
 		.hold_mask = CM_PLLB_HOLDARM,
+		.flags = CLK_IS_CRITICAL, /* SWLINUX-5145 */
 		.fixed_divider = 1),
 
 	/*
@@ -1653,6 +1658,7 @@ static const struct bcm2835_clk_desc clk_desc_array[] = {
 		.a2w_reg = A2W_PLLC_CORE2,
 		.load_mask = CM_PLLC_LOADCORE2,
 		.hold_mask = CM_PLLC_HOLDCORE2,
+		.flags = CLK_IS_CRITICAL, /* SWLINUX-5145 */
 		.fixed_divider = 1),
 	[BCM2835_PLLC_PER]	= REGISTER_PLL_DIV(
 		.name = "pllc_per",
@@ -1998,6 +2004,7 @@ static const struct bcm2835_clk_desc clk_desc_stb_array[] = {
 		.cm_reg = CM_PLLA,
 		.a2w_reg = A2W_PLLA_MOR_CORE2,
 		.hold_mask = CM_PLLA_HOLDCORE2,
+		.flags = CLK_IS_CRITICAL, /* SWLINUX-5145 */
 		.fixed_divider = 1),
 
 	[BCM7211_CLK(BCM2835_PLLA_MOR_CORE3)]	= REGISTER_PLL_DIV(
@@ -2006,6 +2013,7 @@ static const struct bcm2835_clk_desc clk_desc_stb_array[] = {
 		.cm_reg = CM_PLLA,
 		.a2w_reg = A2W_PLLA_MOR_CORE3,
 		.hold_mask = CM_PLLA_HOLDCORE3,
+		.flags = CLK_IS_CRITICAL, /* SWLINUX-5145 */
 		.fixed_divider = 1),
 
 	[BCM7211_CLK(BCM2835_PLLC_MOR_CORE3)]	= REGISTER_PLL_DIV(
@@ -2056,6 +2064,7 @@ static const struct bcm2835_clk_desc clk_desc_stb_array[] = {
 		.ctl_reg = CM_STB27CTL,
 		.div_reg = CM_STB27DIV,
 		.int_bits = 4,
+		.flags = CLK_IS_CRITICAL, /* SWLINUX-5145 */
 		.frac_bits = 8),
 
 	[BCM7211_CLK(BCM2835_CLOCK_STB54)]	= REGISTER_STB_CLK(

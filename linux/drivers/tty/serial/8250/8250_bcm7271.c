@@ -148,6 +148,25 @@ static void brcmstb_set_termios(struct uart_port *up,
 		p8250->port.status |= UPSTAT_AUTOCTS;
 }
 
+static int brcmuart_handle_irq(struct uart_port *p)
+{
+	unsigned int iir = serial_port_in(p, UART_IIR);
+	unsigned int status = serial_port_in(p, UART_LSR);
+
+	/*
+	 * There's a bug in some 8250 cores where we get a timeout
+	 * interrupt but there is no data ready.  Do a bogus
+	 * read to clear it, otherwise we get continuous interrupts
+	 * until another character arrives.
+	 */
+	if (((iir & UART_IIR_ID) == UART_IIR_RX_TIMEOUT) &&
+	    ((status & UART_LSR_DR) == 0)) {
+		serial_port_in(p, UART_RX);
+		return 1;
+	}
+	return serial8250_handle_irq(p, iir);
+}
+
 static int brcmuart_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
@@ -204,6 +223,7 @@ static int brcmuart_probe(struct platform_device *pdev)
 	up.port.dev = &pdev->dev;
 	up.port.mapbase = res_mem->start;
 	up.port.irq = irq->start;
+	up.port.handle_irq = brcmuart_handle_irq;
 	up.port.regshift = 2;
 	up.port.iotype = of_device_is_big_endian(np) ?
 		UPIO_MEM32BE : UPIO_MEM32;

@@ -29,6 +29,7 @@
 #include <linux/of_pci.h>
 #include <linux/of_platform.h>
 #include <linux/pci.h>
+#include <linux/pci-aspm.h>
 #include <linux/printk.h>
 #include <linux/regulator/consumer.h>
 #include <linux/reset.h>
@@ -47,6 +48,7 @@
 #define PCIE_RC_CFG_PCIE_LINK_STATUS_CONTROL_2		0x00dc
 #define PCIE_RC_CFG_VENDOR_VENDOR_SPECIFIC_REG1		0x0188
 #define PCIE_RC_CFG_PRIV1_ID_VAL3			0x043c
+#define PCIE_RC_CFG_PRIV1_LINK_CAPABILITY		0x04dc
 #define PCIE_RC_DL_PDL_CTRL_4				0x1010
 #define PCIE_RC_DL_MDIO_ADDR				0x1100
 #define PCIE_RC_DL_MDIO_WR_DATA				0x1104
@@ -88,6 +90,8 @@
 #define PCIE_RC_CFG_VENDOR_VENDOR_SPECIFIC_REG1_ENDIAN_MODE_BAR3_SHIFT	0x4
 #define PCIE_RC_CFG_PRIV1_ID_VAL3_CLASS_CODE_MASK		0xffffff
 #define PCIE_RC_CFG_PRIV1_ID_VAL3_CLASS_CODE_SHIFT		0x0
+#define PCIE_RC_CFG_PRIV1_LINK_CAPABILITY_ASPM_SUPPORT_MASK	0xc00
+#define PCIE_RC_CFG_PRIV1_LINK_CAPABILITY_ASPM_SUPPORT_SHIFT	0xa
 #define PCIE_RC_DL_PDL_CTRL_4_NPH_FC_INIT_MASK			0xFF000000
 #define PCIE_RC_DL_PDL_CTRL_4_NPH_FC_INIT_SHIFT			0x18
 #define PCIE_MISC_MISC_CTRL_SCB_ACCESS_EN_MASK			0x1000
@@ -1062,7 +1066,7 @@ static int brcm_pcie_setup_bridge(struct brcm_pcie *pcie)
 	const int limit = pcie->suspended ? 1000 : 100;
 	unsigned int status;
 	int i, j, ret;
-	u32 neg_width, neg_speed;
+	u32 neg_width, neg_speed, aspm_support;
 	bool ssc_good = false;
 
 	/* Give the RC/EP time to wake up, before trying to configure RC.
@@ -1078,6 +1082,13 @@ static int brcm_pcie_setup_bridge(struct brcm_pcie *pcie)
 		dev_info(pcie->dev, "link down\n");
 		return -ENODEV;
 	}
+
+	/* Only support ASPM L1 unless L0s is explicitly desired */
+	aspm_support = PCIE_LINK_STATE_L1;
+	if (of_property_read_bool(pcie->dn, "brcm,aspm-en-l0s"))
+		aspm_support |= PCIE_LINK_STATE_L0S;
+	WR_FLD_RB(base, PCIE_RC_CFG_PRIV1_LINK_CAPABILITY,
+		  ASPM_SUPPORT, aspm_support);
 
 	for (i = 0; i < pcie->num_out_wins; i++)
 		set_pcie_outbound_win(pcie, i, pcie->out_wins[i].cpu_addr,

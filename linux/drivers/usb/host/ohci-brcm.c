@@ -90,11 +90,16 @@ static int ohci_brcm_probe(struct platform_device *pdev)
 
 	priv->phy = devm_of_phy_get_by_index(&pdev->dev, pdev->dev.of_node, 0);
 	if (IS_ERR(priv->phy)) {
-		dev_err(&pdev->dev, "USB Phy not found.\n");
 		err = PTR_ERR(priv->phy);
+		if (err == -EPROBE_DEFER)
+			dev_dbg(&pdev->dev, "DEFER, waiting for PHY\n");
+		else
+			dev_err(&pdev->dev, "USB Phy not found.\n");
 		goto err_clk;
 	}
-	phy_init(priv->phy);
+	err = phy_init(priv->phy);
+	if (err)
+		goto err_clk;
 
 	res_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	hcd->regs = devm_ioremap_resource(&pdev->dev, res_mem);

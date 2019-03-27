@@ -12,6 +12,21 @@ STB_VERSION	:= stb-$(shell echo $(DOTVERSION) | cut -d- -f1)
 BINARY_DST	= $(BRCMSTB_RELEASE_DIR)/buildroot-$(VERSION)
 SRC_DST		= $(BRCMSTB_RELEASE_DIR)/src
 
+
+define BRCMSTB_HELP_CMDS
+	@echo '  brcmstb-tarball       - buildroot tar-ball w/o package sources'
+	@echo '  brcmstb-diffs         - BR diff files containing BRCM changes'
+	@echo '  linux-release         - generates Linux tar-ball'
+	@echo '  linux-diffs           - Linux diff files containing BRCM changes'
+	@echo '  brcmstb-release*      - generates a full release package'
+	@echo '  brcmstb-<arch>        - build a single architecture'
+	@echo ''
+	@echo '  * this is the recommended target to generate a release'
+endef
+
+BRCMSTB_NAME	= Broadcom STB
+HELP_PACKAGES	+= BRCMSTB
+
 brcmstb-tarball:
 	@if [ "$(VERSION)" = "" ]; then exit 1; fi
 	@echo "Getting ready to wipe any existing buildroot builds."
@@ -63,6 +78,8 @@ brcmstb-release: brcmstb-diffs linux-diffs linux-release
 	for arch in `bin/get_archs.pl $(STB_VERSION)`; do \
 		bin/br_config.pl -o $(BRCMSTB_OUTPUT_DIR) -i -n \
 			-L misc/linux.master $${arch}; \
+		err=$$?; \
+		test $${err} = 0 || exit $${err}; \
 	done
 	mkdir -p $(BINARY_DST)
 	cp -a $(BRCMSTB_OUTPUT_DIR)/*/images/* $(BINARY_DST)

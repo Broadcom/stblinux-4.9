@@ -882,10 +882,13 @@ void __init brcmstb_memory_default_reserve(int (*setup)(phys_addr_t start,
 			 *  On ARM64 systems, force the first memory controller
 			 * to be partitioned the same way it would on ARM
 			 * (32-bit) by giving 256MB to the kernel, the rest to
-			 * BMEM
+			 * BMEM. If we have 4GB or more available on this MEMC,
+			 * give 512MB to the kernel.
 			 */
 #ifdef CONFIG_ARM64
-			if (limit > start + SZ_256M)
+			if (limit > start + SZ_512M && size >= VME_A32_MAX)
+				limit = start + SZ_512M;
+			else if (limit > start + SZ_256M)
 				limit = start + SZ_256M;
 #endif
 			if (end <= limit &&

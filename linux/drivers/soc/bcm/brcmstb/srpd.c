@@ -85,6 +85,9 @@ static ssize_t store_attr_srpd(struct device *dev,
 	unsigned int val;
 	int ret;
 
+	if (memc->srpd_offset == REG_MEMC_SRPD_CFG_21)
+		return -EOPNOTSUPP;
+
 	ret = kstrtouint(buf, 10, &val);
 	if (ret < 0)
 		return ret;

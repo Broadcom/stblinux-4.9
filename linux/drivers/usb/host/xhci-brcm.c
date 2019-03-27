@@ -138,13 +138,14 @@ static int xhci_brcm_probe(struct platform_device *pdev)
 	if (IS_ERR(hcd->phy)) {
 		ret = PTR_ERR(hcd->phy);
 		if (ret == -EPROBE_DEFER)
-			goto put_usb3_hcd;
-		hcd->phy = NULL;
-	} else {
-		ret = phy_init(hcd->phy);
-		if (ret)
-			goto put_usb3_hcd;
+			dev_dbg(&pdev->dev, "DEFER, waiting for PHY\n");
+		else
+			dev_err(&pdev->dev, "USB Phy not found.\n");
+		goto put_usb3_hcd;
 	}
+	ret = phy_init(hcd->phy);
+	if (ret)
+		goto put_usb3_hcd;
 
 	ret = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (ret)

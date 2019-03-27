@@ -139,7 +139,7 @@ static inline int brcm_get_clk_idx(unsigned int clk_id)
 	else if (brcm_is_hw_clk(clk_id))
 		idx = clk_id - BCLK_HW_OFFSET;
 	else
-		pr_err("brcmstb-clk: bad clk_id: 0x%x\n", clk_id);
+		pr_debug("brcmstb-clk: bad clk_id: 0x%x\n", clk_id);
 
 	return idx;
 }
@@ -173,7 +173,7 @@ int brcm_clk_prepare_enable(unsigned int clk_id)
 		clk = clk_get(NULL, name);
 		if (IS_ERR(clk)) {
 			ret = PTR_ERR(clk);
-			pr_err("brcmstb-clk: clk_get fail; clk_id=0x%x (%s)\n",
+			pr_debug("brcmstb-clk: clk_get fail; clk_id=0x%x(%s)\n",
 			       clk_id, name);
 		} else {
 			iface->clks[idx] = clk;
