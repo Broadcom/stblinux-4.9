@@ -1,0 +1,57 @@
+From f1b2f6ea5bae8f8c079216562954f5501808c4d7 Mon Sep 17 00:00:00 2001
+From: Markus Mayer <mmayer@broadcom.com>
+Date: Tue, 30 Apr 2019 09:41:47 -0700
+Subject: [PATCH] tftp: introduce CONFIG_FEATURE_TFTP_UMASK
+
+We make the umask being used by TFTP configurable. This way it is easy
+to make files transferred by TFTP executable if that is desired by the
+user.
+
+Signed-off-by: Markus Mayer <mmayer@broadcom.com>
+---
+ networking/tftp.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/networking/tftp.c b/networking/tftp.c
+index 4cd39186a0ea..2d74695c951a 100644
+--- a/networking/tftp.c
++++ b/networking/tftp.c
+@@ -73,6 +73,17 @@
+ //config:	Allow tftp to specify block size, and tftpd to understand
+ //config:	"blksize" and "tsize" options.
+ //config:
++//config:config FEATURE_TFTP_UMASK
++//config:	hex "UMASK for TFTP client and server to use"
++//config:	default 0x1b6
++//config:	depends on TFTP || TFTPD
++//config:	help
++//config:	Specify the UMASK to be used for new files being transferred
++//config:	via TFTP. Defaults to 0x1b6 (0666). Use 0x1ff (0777) if you
++//config:	want execute permissions on transferred files.
++//config:	(Must be specified in hex, since Kconfig doesn't support octal
++//config:	fields.)
++//config:
+ //config:config TFTP_DEBUG
+ //config:	bool "Enable debug"
+ //config:	default n
+@@ -397,7 +408,7 @@ static int tftp_protocol(
+ 
+ 	if (!ENABLE_TFTP || our_lsa) { /* tftpd */
+ 		/* Open file (must be after changing user) */
+-		local_fd = open(local_file, open_mode, 0666);
++		local_fd = open(local_file, open_mode, CONFIG_FEATURE_TFTP_UMASK);
+ 		if (local_fd < 0) {
+ 			G_error_pkt_reason = ERR_NOFILE;
+ 			strcpy(G_error_pkt_str, "can't open file");
+@@ -424,7 +435,7 @@ static int tftp_protocol(
+ 		/* Open file (must be after changing user) */
+ 		local_fd = CMD_GET(option_mask32) ? STDOUT_FILENO : STDIN_FILENO;
+ 		if (NOT_LONE_DASH(local_file))
+-			local_fd = xopen(local_file, open_mode);
++			local_fd = xopen3(local_file, open_mode, CONFIG_FEATURE_TFTP_UMASK);
+ /* Removing #if, or using if() statement instead of #if may lead to
+  * "warning: null argument where non-null required": */
+ #if ENABLE_TFTP
+-- 
+2.17.1
+

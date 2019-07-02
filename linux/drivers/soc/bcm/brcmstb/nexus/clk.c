@@ -28,87 +28,51 @@ struct brcm_clk_iface {
 
 static struct brcm_clk_iface *iface;
 
-static const char * const hw_names_7211[] = {
-	/* Hardware Clocks */
-	/* [ 0.. 4] */
-	"plla", "pllb", "pllc", "plld", "pllh",
-	/* [ 5.. 9] */
-	"plla_core", "plla_per", "pllb_arm", "pllc_core0", "pllc_core1",
-	/* [10..14] */
-	"pllc_core2", "pllc_per", "plld_core", "plld_per", "pllh_rcal_prediv",
-	/* [15..19] */
-	"pllh_aux", "pllh_pix_prediv", "timer", "otp", "uart",
-	/* [20..24] */
-	"vpu", "v3d", "isp", "h264", "vec",
-	/* [25..29] */
-	"hsm", "sdram", "tsens", "emmc", "peri_image",
-	/* [30..34] */
-	"pwm", "pcm", "plla_dsi0", "plla_ccp2", "plld_dsi0",
-	/* [35..39] */
-	"plld_dsi1", "aveo", "dft", "gp0", "gp1",
-	/* [40..44] */
-	"gp2", "slim", "smi", "tec", "dpi",
-	/* [45..49] */
-	"cam0", "cam1", "dsi0e", "dsi1e", "plla_mor_core2",
-	/* [50..54] */
-	"plla_mor_core3", "pllc_mor_core3", "argon", "emmc2", "gisb",
-	/* [55..59] */
-	"altscb", "genet_250", "stb27", "stb54", "stb108",
-	/* [60..64] */
-	"pixel_bvb", "genet_125", "hvd_cpu_alt", "hvd_core_alt", "m2mc",
-	/* [65..69] */
-	"xpt", "usbxhci",
-
-};
-
-static const char * const sw_names_7211[] = {
-	/* Software Clocks */
-	/* [00..0f] */
-	"sw_bvn", "sw_dvpht", "sw_genet0", "sw_genetwol0",
-	"sw_hvd0", "sw_pcie0", "sw_potp", "sw_sata3",
-	"sw_sdio0", "sw_sdio1", "sw_sid", "sw_v3d",
-	"sw_vec", "sw_xpt", "invalid", 	"invalid",
-
-	/* [10..1f] */
-	"invalid", "invalid", "invalid", "invalid",
-	"invalid", "invalid", "sw_m2mc0",
-};
-
-#define NUM_EXTRA_HW_CLKS_IN_7211B0	5
-#define NUM_EXTRA_SW_CLKS_IN_7211B0	10
-
-static const struct brcm_clk_cfg_data brcm7211a0_cfg = {
-	.hw_names = hw_names_7211,
-	.num_hw_clks = ARRAY_SIZE(hw_names_7211) - NUM_EXTRA_HW_CLKS_IN_7211B0,
-	.sw_names = sw_names_7211,
-	.num_sw_clks = ARRAY_SIZE(sw_names_7211) - NUM_EXTRA_SW_CLKS_IN_7211B0,
-};
-
+/* These strings' positions must align with the defs in clk_api.h */
 static const char * const sw_names_stb[] = {
-	/* Software Clocks */
+	/* Software Clocks and/or Cores */
 	/* [00..0f] */
-	"sw_bvn", "sw_dvpht", "sw_genet0", "sw_genetwol0",
-	"sw_hvd0", "sw_pcie0", "sw_potp", "sw_sata3",
-	"sw_sdio0", "sw_sdio1", "sw_sid", "sw_v3d",
-	"sw_vec", "sw_xpt", "sw_aio", "sw_aio_sram",
+	"sw_cpu_core", "sw_v3d", "sw_sysif", "sw_scb",
+	"sw_hvd0", "sw_raaga0", "sw_vice0", "sw_vice0_pss",
+	"sw_vice1", "sw_vice1_pss", "sw_xpt", "sw_m2mc0",
+	"sw_m2mc1", "sw_mipmap0", "sw_tsx0", "sw_smartcard0",
 
 	/* [10..1f] */
-	"sw_bvn_sram", "sw_dvphr", "sw_dvphr_sram", "sw_hvd0_cpu",
-	"sw_hvd0_sram",	"sw_itu656", "sw_m2mc0", "sw_m2mc0_sram",
-	"sw_m2mc1", "sw_m2mc1_sram", "sw_mmm2mc0", "sw_mmm2mc0_sram",
-	"sw_raaga0", "sw_raaga0_cpu", "sw_raaga0_sram", "sw_smartcard0",
+	"sw_smartcard1", "reserved", "reserved", "reserved",
+	"reserved", "reserved", "reserved", "reserved",
+	"reserved", "reserved", "reserved", "reserved",
+	"reserved", "reserved", "reserved", "reserved",
 
-	/* [1f..2f] */
-	"sw_smartcard1", "sw_v3d_cpu", "sw_v3d_sram", "sw_vec_sram",
-	"sw_vice0", "sw_vice0_sram", "sw_vice1", "sw_vice1_sram",
-	"sw_xpt_sram", "sw_xpt_wakeup",
-};
+	/* [20..2f] */
+	"reserved", "reserved", "reserved", "reserved",
+	"reserved", "reserved", "reserved", "reserved",
+	"reserved", "reserved", "reserved", "reserved",
+	"reserved", "reserved", "reserved", "reserved",
 
-static const struct brcm_clk_cfg_data brcm7211_cfg = {
-	.hw_names = hw_names_7211,
-	.num_hw_clks = ARRAY_SIZE(hw_names_7211),
-	.sw_names = sw_names_7211,
-	.num_sw_clks = ARRAY_SIZE(sw_names_7211),
+	/* Software Clocks ONLY */
+	/* [30..3f] */
+	"sw_aio", "sw_bvn", "sw_dvphr", "sw_dvpht",
+	"sw_genet0", "sw_genetwol0", "sw_hvd0_cpu", "sw_itu656",
+	"sw_mmm2mc0", "sw_pcie0", "sw_pcie1", "sw_potp",
+	"sw_raaga0_cpu", "sw_sata3", "sw_sdio0", "sw_sdio1",
+
+	/* [40..4f] */
+	"sw_sid", "sw_v3d_cpu", "sw_vec", "sw_xpt_wakeup",
+	"reserved", "reserved", "reserved", "reserved",
+	"reserved", "reserved", "reserved", "reserved",
+	"reserved", "reserved", "reserved", "reserved",
+
+	/* [50..5f] */
+	"reserved", "reserved", "reserved", "reserved",
+	"reserved", "reserved", "reserved", "reserved",
+	"reserved", "reserved", "reserved", "reserved",
+	"reserved", "reserved", "reserved", "reserved",
+
+	/* [60..6f] */
+	"sw_aio_sram", "sw_bvn_sram", "sw_dvphr_sram", "sw_hvd0_sram",
+	"sw_m2mc0_sram", "sw_m2mc1_sram", "sw_mmm2mc0_sram", "sw_raaga0_sram",
+	"sw_v3d_sram", "sw_vec_sram", "sw_vice0_sram", "sw_vice1_sram",
+	"sw_xpt_sram",
 };
 
 static const struct brcm_clk_cfg_data brcmstb_cfg = {
@@ -206,12 +170,7 @@ static int  __init brcm_clk_init(void)
 {
 	const struct brcm_clk_cfg_data *cfg;
 
-	if (of_find_compatible_node(NULL, NULL, "brcm,bcm7211b0-cprman"))
-		cfg = &brcm7211_cfg;
-	else if (of_find_compatible_node(NULL, NULL, "brcm,bcm7211a0-cprman"))
-		cfg = &brcm7211a0_cfg;
-	else
-		cfg = &brcmstb_cfg;
+	cfg = &brcmstb_cfg;
 
 	iface = kzalloc(sizeof(struct brcm_clk_iface), GFP_KERNEL);
 	if (!iface)

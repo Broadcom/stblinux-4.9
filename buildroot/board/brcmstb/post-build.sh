@@ -5,19 +5,24 @@ set -e
 
 prg=`basename $0`
 
+# BR config file
+DOT_CONFIG="${TARGET_DIR}/../.config"
 # Temp directory for old skeleton (not currently used)
 SKEL_DIR="${BUILD_DIR}/brcmstb_skel"
-# Use newest stbtools tar-ball if there's more than one
-STBTOOLS=`ls -1t dl/brcm-pm/stbtools-*.tar.gz 2>/dev/null | head -1`
+# stbtools version (GIT hash)
+STBTOOLS_VERSION=`grep BR2_BRCM_STB_TOOLS_VERSION= "${DOT_CONFIG}" | \
+	cut -d= -f2 | sed -e 's/"//g'`
+STBTOOLS_TAR="stbtools-${STBTOOLS_VERSION}.tar.gz"
+STBTOOLS="dl/brcm-pm/${STBTOOLS_TAR}"
 
 # If the stbtools tar-ball doesn't exist in the local download directory, check
 # if we have a download cache elsewhere.
 if [ ! -r "${STBTOOLS}" ]; then
-	dl_cache=`grep BR2_DL_DIR= "${TARGET_DIR}/../.config" | cut -d= -f2 | \
+	dl_cache=`grep BR2_DL_DIR= "${DOT_CONFIG}" | cut -d= -f2 | \
 		sed -e 's/"//g'`
 	if [ "${dl_cache}" != "" ]; then
 		echo "Attempting to find stbtools in ${dl_cache}..."
-		STBTOOLS=`ls -1t "${dl_cache}"/*/stbtools*.tar.gz 2>/dev/null | head -1`
+		STBTOOLS="${dl_cache}/brcm-pm/${STBTOOLS_TAR}"
 	fi
 fi
 
@@ -144,3 +149,9 @@ rm -rf ${TARGET_DIR}/usr/share/legal-info/
 mkdir ${TARGET_DIR}/usr/share/legal-info/
 grep "GPL-3.0" ${BASE_DIR}/legal-info/manifest.csv  | cut -d, -f1 > ${TARGET_DIR}/usr/share/legal-info/GPL-3.0-packages
 sed -i 's| -e /bin/gdbserver -o -e /bin/gdb | -s /usr/share/legal-info/GPL-3.0-packages |' ${rcS}
+
+# Copy directory structure from ${BASE_DIR}/files to the target
+echo "Copying supplemental files"
+if [ -d "${BASE_DIR}/files" ]; then
+	cp -fpR ${BASE_DIR}/files/* ${TARGET_DIR}
+fi

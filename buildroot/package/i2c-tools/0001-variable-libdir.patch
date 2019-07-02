@@ -1,0 +1,11 @@
+--- a/Makefile	2018-11-30 06:15:21.000000000 -0800
++++ b/Makefile	2019-01-03 10:28:26.816989507 -0800
+@@ -14,7 +14,7 @@
+ mandir	= $(PREFIX)/share/man
+ man8dir	= $(mandir)/man8
+ incdir	= $(PREFIX)/include
+-libdir	= $(PREFIX)/lib
++libdir	?= $(PREFIX)/lib
+ 
+ INSTALL		:= install
+ INSTALL_DATA	:= $(INSTALL) -m 644

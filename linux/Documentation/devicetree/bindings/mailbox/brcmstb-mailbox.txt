@@ -1,0 +1,26 @@
+Brcmstb mailbox
+
+The Brcmstb mailbox is used as the companion mailbox driver for SCMI
+communications.
+
+Refer to ./mailbox.txt for generic information about mailbox device-tree
+bindings.
+
+Required properties:
+
+ - compatible: should be one of the following.
+   - "brcm,brcmstb-mbox"
+ - interrupts: The interrupt number to the for the SCMI A2P channel
+	and optionally the interrupt number for the P2A channel.
+ - #mbox-cells: Common mailbox binding property to identify the number
+	of cells required for the mailbox specifier. Should be 1.
+
+Example:
+--------
+
+mbox: mbox@ff6b0000 {
+	compatible = "brcm,brcmstb-mbox";
+	interrupts = <GIC_SGI 13 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SGI 11 IRQ_TYPE_LEVEL_HIGH>;
+	#mbox-cells = <1>;
+};

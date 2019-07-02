@@ -13,6 +13,8 @@
 #include <linux/kernel.h>
 #include <linux/scmi_protocol.h>
 #include <linux/types.h>
+#include <linux/workqueue.h>
+#include <linux/idr.h>
 
 #define PROTOCOL_REV_MINOR_BITS	16
 #define PROTOCOL_REV_MINOR_MASK	((1U << PROTOCOL_REV_MINOR_BITS) - 1)
@@ -26,6 +28,9 @@ enum scmi_common_cmd {
 	PROTOCOL_ATTRIBUTES = 0x1,
 	PROTOCOL_MESSAGE_ATTRIBUTES = 0x2,
 };
+
+/* Holds the notify callback func for each protocol */
+extern struct idr scmi_prot_ntfy_cback;
 
 /**
  * struct scmi_msg_resp_prot_version - Response for a message
@@ -81,6 +86,10 @@ struct scmi_msg {
  *	message. If request-ACK protocol is used, we can reuse the same
  *	buffer for the rx path as we use for the tx path.
  * @done: completion event
+ * @async_agent_callback -- callback after command executes
+ * @defer_async_callback -- defer the callback via workqueue.
+ * @work -- only used if async_agent_callback is non-NULL and
+ *      defer_async_callback is true;
  */
 
 struct scmi_xfer {
@@ -89,6 +98,9 @@ struct scmi_xfer {
 	struct scmi_msg tx;
 	struct scmi_msg rx;
 	struct completion done;
+	scmi_cback_fn_t async_agent_callback;
+	bool defer_async_callback;
+	struct work_struct work;
 };
 
 void scmi_one_xfer_put(const struct scmi_handle *h, struct scmi_xfer *xfer);

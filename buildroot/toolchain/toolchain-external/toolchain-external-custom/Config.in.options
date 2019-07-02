@@ -123,6 +123,14 @@ choice
 	    m = ( LINUX_VERSION_CODE >> 8  ) & 0xFF
 	    p = ( LINUX_VERSION_CODE >> 0  ) & 0xFF
 
+config BR2_TOOLCHAIN_EXTERNAL_HEADERS_4_20
+	bool "4.20.x"
+	select BR2_TOOLCHAIN_HEADERS_AT_LEAST_4_20
+
+config BR2_TOOLCHAIN_EXTERNAL_HEADERS_4_19
+	bool "4.19.x"
+	select BR2_TOOLCHAIN_HEADERS_AT_LEAST_4_19
+
 config BR2_TOOLCHAIN_EXTERNAL_HEADERS_4_18
 	bool "4.18.x"
 	select BR2_TOOLCHAIN_HEADERS_AT_LEAST_4_18
@@ -412,6 +420,34 @@ config BR2_TOOLCHAIN_EXTERNAL_FORTRAN
 	  Select this option if your external toolchain has Fortran
 	  support. If you don't know, leave the default value,
 	  Buildroot will tell you if it's correct or not.
+
+config BR2_TOOLCHAIN_EXTERNAL_LIBASAN
+	bool "Toolchain has libasan support?"
+	select BR2_TOOLCHAIN_HAS_LIBASAN
+	help
+	  Select this option if your external toolchain has libasan
+	  support (-fsanitize=address).
+
+config BR2_TOOLCHAIN_EXTERNAL_LIBLSAN
+	bool "Toolchain has liblsan support?"
+	select BR2_TOOLCHAIN_HAS_LIBLSAN
+	help
+	  Select this option if your external toolchain has libasan
+	  support (-fsanitize=leak).
+
+config BR2_TOOLCHAIN_EXTERNAL_LIBTSAN
+	bool "Toolchain has libtsan support?"
+	select BR2_TOOLCHAIN_HAS_LIBTSAN
+	help
+	  Select this option if your external toolchain has libasan
+	  support (-fsanitize=thread).
+
+config BR2_TOOLCHAIN_EXTERNAL_LIBUBSAN
+	bool "Toolchain has libasan support?"
+	select BR2_TOOLCHAIN_HAS_LIBUBSAN
+	help
+	  Select this option if your external toolchain has libubsan
+	  support (-fsanitize=undefined).
 
 config BR2_TOOLCHAIN_EXTRA_EXTERNAL_LIBS
 	string "Extra toolchain libraries to be copied to target"

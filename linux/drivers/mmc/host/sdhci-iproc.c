@@ -281,7 +281,8 @@ static int sdhci_iproc_probe(struct platform_device *pdev)
 
 	pltfm_host->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(pltfm_host->clk)) {
-		if ((iproc_data->flags & IPROC_DATA_FLAGS_OPTIONAL_CLK) == 0) {
+		if ((iproc_data->flags & IPROC_DATA_FLAGS_OPTIONAL_CLK) == 0
+			|| PTR_ERR(pltfm_host->clk) == -EPROBE_DEFER) {
 			ret = PTR_ERR(pltfm_host->clk);
 			goto err;
 		}

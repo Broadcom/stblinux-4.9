@@ -438,8 +438,8 @@ int __init bcm7038_l1_of_init(struct device_node *dn,
 	register_syscore_ops(&bcm7038_l1_syscore_ops);
 #endif
 
-	pr_info("registered BCM7038 L1 intc (mem: 0x%p, IRQs: %d)\n",
-		intc->cpus[0]->map_base, IRQS_PER_WORD * intc->n_words);
+	pr_info("registered BCM7038 L1 intc (%s, IRQs: %d)\n",
+		dn->full_name, IRQS_PER_WORD * intc->n_words);
 
 	return 0;
 

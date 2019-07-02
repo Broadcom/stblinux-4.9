@@ -337,6 +337,6 @@ static int scmi_clock_protocol_init(struct scmi_handle *handle)
 static int __init scmi_clock_init(void)
 {
 	return scmi_protocol_register(SCMI_PROTOCOL_CLOCK,
-				      &scmi_clock_protocol_init);
+				      &scmi_clock_protocol_init, NULL);
 }
 subsys_initcall(scmi_clock_init);

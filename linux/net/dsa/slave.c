@@ -561,7 +561,9 @@ static int dsa_slave_port_obj_add(struct net_device *dev,
 		err = 0;
 		break;
 	case SWITCHDEV_OBJ_ID_PORT_VLAN:
-		err = dsa_slave_port_vlan_add(dev,
+		err = 0;
+		if (dsa_port_is_bridged(p) && br_vlan_enabled(p->bridge_dev))
+			err = dsa_slave_port_vlan_add(dev,
 					      SWITCHDEV_OBJ_PORT_VLAN(obj),
 					      trans);
 		break;
@@ -596,9 +598,13 @@ static int dsa_slave_port_obj_del(struct net_device *dev,
 		if (ds->ops->port_mdb_del)
 			err = ds->ops->port_mdb_del(ds, cpu_port,
 						    SWITCHDEV_OBJ_PORT_MDB(obj));
+		else
+			err = -EOPNOTSUPP;
 		break;
 	case SWITCHDEV_OBJ_ID_PORT_VLAN:
-		err = dsa_slave_port_vlan_del(dev,
+		err = 0;
+		if (dsa_port_is_bridged(p) && br_vlan_enabled(p->bridge_dev))
+			err = dsa_slave_port_vlan_del(dev,
 					      SWITCHDEV_OBJ_PORT_VLAN(obj));
 		break;
 	default:

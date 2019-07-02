@@ -14,3 +14,6 @@ endif
 ifdef CONFIG_ARM_BRCMSTB_AVS_CPUFREQ
 obj-y		+= dvfs.o
 endif
+ifdef CONFIG_BRCMSTB_SCMI_VPUCOM
+obj-y		+= vpucom.o
+endif

@@ -45,7 +45,7 @@ static int __init brcmstb_register_spi_one(struct device_node *dn,
 	u32 addr, dt_enabled_cs = 0;
 	struct device_node *child;
 	struct spi_board_info *bd;
-	unsigned int cs;
+	unsigned int cs, cs_count = 0;
 	int ret;
 
 	spi_bdinfo = kcalloc(max_cs, sizeof(*spi_bdinfo), GFP_KERNEL);
@@ -63,19 +63,17 @@ static int __init brcmstb_register_spi_one(struct device_node *dn,
 
 	/* Populate SPI board info with non DT enabled SPI devices */
 	for (cs = 0; cs < max_cs; cs++) {
-		bd = &spi_bdinfo[cs];
-
 		/* Skip over DT enabled CS */
 		if ((1 << cs) & dt_enabled_cs)
 			continue;
 
+		bd = &spi_bdinfo[cs_count++];
 		strcpy(bd->modalias, "nexus_spi_shim");
 		bd->of_node = dn;
 		bd->chip_select = cs;
 		bd->max_speed_hz = 13500000;
 	}
-
-	ret = spi_register_board_info(spi_bdinfo, max_cs);
+	ret = spi_register_board_info(spi_bdinfo, cs_count);
 	if (ret)
 		pr_err("Failed to register SPI devices: %d\n", ret);
 

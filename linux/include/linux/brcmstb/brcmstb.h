@@ -27,7 +27,7 @@
 #ifndef _ASM_BRCMSTB_BRCMSTB_H
 #define _ASM_BRCMSTB_BRCMSTB_H
 
-#define BRCMSTB_H_VERSION  12
+#define BRCMSTB_H_VERSION  13
 
 #if !defined(__ASSEMBLY__)
 
@@ -67,6 +67,14 @@ int brcmstb_avs_set_pmic_reg_config(u8 regulator, u16 voltage,
 				    u16 over_current_thres);
 int brcmstb_avs_get_pmic_reg_status(u8 regulator, u16 *voltage,
 				    u16 *curr);
+#endif
+
+#if defined(CONFIG_BRCMSTB_SCMI_VPUCOM)
+#define BRCMSTB_SCMI_VPUCOM_ASYNC_SUPPORT
+typedef void (*brcmstb_vpucom_callback_fn_t)(u32 *pmsg, size_t msg_words);
+int brcmstb_vpucom_register_callback(brcmstb_vpucom_callback_fn_t callback);
+int brcmstb_vpucom_unregister_callback(void);
+int brcmstb_vpucom_send_vpu_msg(u32 *pmsg, size_t msg_words);
 #endif
 
 #if defined(CONFIG_BRCMSTB_PM) && !defined(CONFIG_MIPS)

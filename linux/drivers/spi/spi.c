@@ -637,7 +637,8 @@ static void spi_match_master_to_boardinfo(struct spi_master *master,
 	struct spi_device *dev;
 
 	if (master->bus_num != bi->bus_num &&
-	    master->dev.of_node != bi->of_node)
+	    (!master->dev.of_node ||
+	    master->dev.of_node != bi->of_node))
 		return;
 
 	dev = spi_new_device(master, bi);

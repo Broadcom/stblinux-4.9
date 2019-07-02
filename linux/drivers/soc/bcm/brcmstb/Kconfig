@@ -121,6 +121,13 @@ config BRCMSTB_BBSI
 	help
 	    Provides APIs for accessing BBSI devices over SPI.
 
+config BRCMSTB_SCMI_VPUCOM
+	bool "Support for VPUCOM protocol via SCMI"
+	default ARM_SCMI_PROTOCOL
+	depends on ARM_SCMI_PROTOCOL
+	help
+	    Uses SCMI mailbox for VPUCOM messages.
+
 endif # SOC_BRCMSTB
 
 #####################################################################

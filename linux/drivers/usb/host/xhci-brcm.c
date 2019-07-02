@@ -111,7 +111,6 @@ static int xhci_brcm_probe(struct platform_device *pdev)
 	if (IS_ERR(clk)) {
 		if (PTR_ERR(clk) == -EPROBE_DEFER)
 			return -EPROBE_DEFER;
-		dev_warn(&pdev->dev, "Clock not found in Device Tree\n");
 		clk = NULL;
 	}
 	ret = clk_prepare_enable(clk);
@@ -143,6 +142,16 @@ static int xhci_brcm_probe(struct platform_device *pdev)
 			dev_err(&pdev->dev, "USB Phy not found.\n");
 		goto put_usb3_hcd;
 	}
+
+	/*
+	 * We delay printing this warning until now, otherwise
+	 * if we put it above where devm_of_phy() is invoked the
+	 * message may be printed multiple times as the phy may
+	 * be DEFERed multiple times.
+	 */
+	if (!clk)
+		dev_warn(&pdev->dev, "Clock not found in Device Tree\n");
+
 	ret = phy_init(hcd->phy);
 	if (ret)
 		goto put_usb3_hcd;

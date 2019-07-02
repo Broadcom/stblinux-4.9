@@ -36,11 +36,19 @@ static const u32 brcmstb_rate_table[] = {
 	MHZ(48),
 };
 
+static const u32 brcmstb_rate_table_7278[] = {
+	MHZ(81),
+	MHZ(108),
+	0,
+	MHZ(48),
+};
+
 struct brcmuart_priv {
 	int		line;
 	struct clk	*baud_mux_clk;
 	unsigned long	default_mux_rate;
 	u32		real_rates[ARRAY_SIZE(brcmstb_rate_table)];
+	const u32	*rate_table;
 };
 
 
@@ -58,11 +66,15 @@ static void init_real_clk_rates(struct device *dev, struct brcmuart_priv *priv)
 		priv->default_mux_rate);
 
 	for (x = 0; x < ARRAY_SIZE(priv->real_rates); x++) {
-		rc = clk_set_rate(priv->baud_mux_clk, brcmstb_rate_table[x]);
+		if (priv->rate_table[x] == 0) {
+			priv->real_rates[x] = 0;
+			continue;
+		}
+		rc = clk_set_rate(priv->baud_mux_clk, priv->rate_table[x]);
 		if (rc) {
 			dev_err(dev, "Error selecting BAUD MUX clock for %u\n",
-				brcmstb_rate_table[x]);
-			priv->real_rates[x] = brcmstb_rate_table[x];
+				priv->rate_table[x]);
+			priv->real_rates[x] = priv->rate_table[x];
 		} else {
 			priv->real_rates[x] = clk_get_rate(priv->baud_mux_clk);
 		}
@@ -91,6 +103,8 @@ static void set_clock_mux(struct uart_port *up, struct brcmuart_priv *priv,
 
 	/* Find the closest match for specified baud */
 	for (i = 0; i < ARRAY_SIZE(priv->real_rates); i++) {
+		if (priv->real_rates[i] == 0)
+			continue;
 		rate = priv->real_rates[i] / 16;
 		quot = DIV_ROUND_CLOSEST(rate, baud);
 		if (!quot)
@@ -128,6 +142,11 @@ static void set_clock_mux(struct uart_port *up, struct brcmuart_priv *priv,
 	if (rc)
 		dev_err(up->dev, "Error selecting BAUD MUX clock\n");
 
+	/* Error over 3 percent will cause data errors */
+	if (best_percent > 300)
+		dev_err(up->dev, "Error, baud: %d has %u.%u%% error\n",
+			baud, percent / 100, percent % 100);
+
 	dev_dbg(up->dev, "Selecting BAUD MUX rate: %u\n", rate);
 	dev_dbg(up->dev, "Requested baud: %u, Actual baud: %u\n",
 		baud, rate / 16 / best_quot);
@@ -151,7 +170,9 @@ static void brcmstb_set_termios(struct uart_port *up,
 static int brcmuart_handle_irq(struct uart_port *p)
 {
 	unsigned int iir = serial_port_in(p, UART_IIR);
-	unsigned int status = serial_port_in(p, UART_LSR);
+	unsigned int status;
+	unsigned long flags;
+	int handled = 0;
 
 	/*
 	 * There's a bug in some 8250 cores where we get a timeout
@@ -159,17 +180,37 @@ static int brcmuart_handle_irq(struct uart_port *p)
 	 * read to clear it, otherwise we get continuous interrupts
 	 * until another character arrives.
 	 */
-	if (((iir & UART_IIR_ID) == UART_IIR_RX_TIMEOUT) &&
-	    ((status & UART_LSR_DR) == 0)) {
-		serial_port_in(p, UART_RX);
-		return 1;
+	if ((iir & UART_IIR_ID) == UART_IIR_RX_TIMEOUT) {
+		spin_lock_irqsave(&p->lock, flags);
+		status = serial_port_in(p, UART_LSR);
+		if ((status & UART_LSR_DR) == 0) {
+			serial_port_in(p, UART_RX);
+			handled = 1;
+		}
+		spin_unlock_irqrestore(&p->lock, flags);
+		if (handled)
+			return 1;
 	}
 	return serial8250_handle_irq(p, iir);
 }
 
+static const struct of_device_id brcmuart_dt_ids[] = {
+	{
+		.compatible = "brcm,bcm7278-uart",
+		.data = brcmstb_rate_table_7278,
+	},
+	{
+		.compatible = "brcm,bcm7271-uart",
+		.data = brcmstb_rate_table,
+	},
+	{},
+};
+MODULE_DEVICE_TABLE(of, brcmuart_dt_ids);
+
 static int brcmuart_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
+	const struct of_device_id *of_id = NULL;
 	struct brcmuart_priv *priv;
 	struct clk *baud_mux_clk;
 	struct resource *res_mem;
@@ -187,6 +228,12 @@ static int brcmuart_probe(struct platform_device *pdev)
 			GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
+
+	of_id = of_match_node(brcmuart_dt_ids, np);
+	if (!of_id || !of_id->data)
+		priv->rate_table = brcmstb_rate_table;
+	else
+		priv->rate_table = of_id->data;
 
 	res_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res_mem) {
@@ -290,12 +337,6 @@ static int brcmuart_resume(struct device *dev)
 static const struct dev_pm_ops brcmuart_dev_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(brcmuart_suspend, brcmuart_resume)
 };
-
-static const struct of_device_id brcmuart_dt_ids[] = {
-	{ .compatible = "brcm,bcm7271-uart" },
-	{},
-};
-MODULE_DEVICE_TABLE(of, brcmuart_dt_ids);
 
 static struct platform_driver brcmuart_platform_driver = {
 	.driver = {

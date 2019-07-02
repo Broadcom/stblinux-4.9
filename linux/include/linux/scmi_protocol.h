@@ -87,6 +87,7 @@ struct scmi_clk_ops {
  * @device_domain_id: gets the scmi domain id for a given device
  * @get_transition_latency: gets the DVFS transition latency for a given device
  * @add_opps_to_device: adds all the OPPs for a given device
+ * @get_num_domain_opps: gets number of opps for a given domain
  * @freq_set: sets the frequency for a given device using sustained frequency
  *	to sustained performance level mapping
  * @freq_get: gets the frequency for a given device using sustained frequency
@@ -106,6 +107,8 @@ struct scmi_perf_ops {
 				      struct device *dev);
 	int (*add_opps_to_device)(const struct scmi_handle *handle,
 				  struct device *dev);
+	int (*get_num_domain_opps)(const struct scmi_handle *handle, u32 domain,
+				   u32 *num_opps);
 	int (*freq_set)(const struct scmi_handle *handle, u32 domain,
 			unsigned long rate, bool poll);
 	int (*freq_get)(const struct scmi_handle *handle, u32 domain,
@@ -140,6 +143,7 @@ struct scmi_power_ops {
 struct scmi_sensor_info {
 	u32 id;
 	u8 type;
+	s8 scale;
 	char name[SCMI_MAX_STR_SIZE];
 };
 
@@ -272,6 +276,9 @@ static inline void scmi_driver_unregister(struct scmi_driver *driver) {}
 #define module_scmi_driver(__scmi_driver)	\
 	module_driver(__scmi_driver, scmi_register, scmi_unregister)
 
+struct scmi_xfer;
+typedef void (*scmi_cback_fn_t)(struct scmi_xfer *);
 typedef int (*scmi_prot_init_fn_t)(struct scmi_handle *);
-int scmi_protocol_register(int protocol_id, scmi_prot_init_fn_t fn);
+int scmi_protocol_register(int protocol_id, scmi_prot_init_fn_t fn,
+	scmi_cback_fn_t ntfy_cb_fn);
 void scmi_protocol_unregister(int protocol_id);

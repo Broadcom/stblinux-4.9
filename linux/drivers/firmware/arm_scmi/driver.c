@@ -37,6 +37,17 @@
 #define MSG_PROTOCOL_ID_MASK	0xff
 #define MSG_TOKEN_ID_SHIFT	18
 #define MSG_TOKEN_ID_MASK	0x3ff
+
+#define MSG_TYPE_COMMAND	0
+#define MSG_TYPE_DELAYED	2
+#define MSG_TYPE_NOTIFY		3
+
+#define MSG_XTRACT_ID(header)	\
+	(((header) >> MSG_ID_SHIFT) & MSG_ID_MASK)
+#define MSG_XTRACT_TYPE(header)	\
+	(((header) >> MSG_TYPE_SHIFT) & MSG_TYPE_MASK)
+#define MSG_XTRACT_PROT_ID(header)	\
+	(((header) >> MSG_PROTOCOL_ID_SHIFT) & MSG_PROTOCOL_ID_MASK)
 #define MSG_XTRACT_TOKEN(header)	\
 	(((header) >> MSG_TOKEN_ID_SHIFT) & MSG_TOKEN_ID_MASK)
 
@@ -59,6 +70,8 @@ enum scmi_error_codes {
 static LIST_HEAD(scmi_list);
 /* Protection for the entire list */
 static DEFINE_MUTEX(scmi_list_mutex);
+
+static struct scmi_xfer *scmi_one_xfer_get(const struct scmi_handle *handle);
 
 /**
  * struct scmi_xfers_info - Structure to manage transfer information
@@ -201,8 +214,15 @@ static void scmi_fetch_response(struct scmi_xfer *xfer,
 	memcpy_fromio(xfer->rx.buf, mem->msg_payload + 4, xfer->rx.len);
 }
 
+static void scmi_work_func(struct work_struct *work)
+{
+	struct scmi_xfer *xfer = container_of(work, struct scmi_xfer, work);
+
+	(void)xfer->async_agent_callback(xfer);
+}
+
 /**
- * scmi_rx_callback() - mailbox client callback for receive messages
+ * scmi_a2p_rx_callback() - mailbox client callback for receive messages
  *
  * @cl: client pointer
  * @m: mailbox message
@@ -213,17 +233,20 @@ static void scmi_fetch_response(struct scmi_xfer *xfer,
  * NOTE: This function will be invoked in IRQ context, hence should be
  * as optimal as possible.
  */
-static void scmi_rx_callback(struct mbox_client *cl, void *m)
+static void scmi_a2p_rx_callback(struct mbox_client *cl, void *m)
 {
-	u16 xfer_id;
 	struct scmi_xfer *xfer;
 	struct scmi_chan_info *cinfo = client_to_scmi_chan_info(cl);
 	struct device *dev = cinfo->dev;
 	struct scmi_info *info = handle_to_scmi_info(cinfo->handle);
 	struct scmi_xfers_info *minfo = &info->minfo;
 	struct scmi_shared_mem __iomem *mem = cinfo->payload;
+	u32 hdr = ioread32(&mem->msg_header);
+	u16 xfer_id;
+	u8 msg_type;
 
-	xfer_id = MSG_XTRACT_TOKEN(ioread32(&mem->msg_header));
+	xfer_id = MSG_XTRACT_TOKEN(hdr);
+	msg_type = MSG_XTRACT_TYPE(hdr);
 
 	/*
 	 * Are we even expecting this?
@@ -234,8 +257,8 @@ static void scmi_rx_callback(struct mbox_client *cl, void *m)
 	}
 
 	xfer = &minfo->xfer_block[xfer_id];
-
 	scmi_dump_header_dbg(dev, &xfer->hdr);
+
 	/* Is the message of valid length? */
 	if (xfer->rx.len > info->desc->max_msg_size) {
 		dev_err(dev, "unable to handle %zu xfer(max %d)\n",
@@ -245,6 +268,22 @@ static void scmi_rx_callback(struct mbox_client *cl, void *m)
 
 	scmi_fetch_response(xfer, mem);
 	complete(&xfer->done);
+
+	if (msg_type == MSG_TYPE_DELAYED && xfer->async_agent_callback) {
+		/*
+		 * We typically expect the platform to come back with
+		 * MSG_TYPE_DELAYED when the user specifies an async
+		 * message.  If the platform decides to do it immediately
+		 * and respond on the a2p channel we still need to invoke
+		 * the callback.
+		 */
+		if (xfer->defer_async_callback) {
+			INIT_WORK(&xfer->work, scmi_work_func);
+			schedule_work(&xfer->work);
+		} else {
+			xfer->async_agent_callback(xfer);
+		}
+	}
 }
 
 /**
@@ -261,7 +300,7 @@ static inline u32 pack_scmi_header(struct scmi_msg_hdr *hdr)
 }
 
 /**
- * scmi_tx_prepare() - mailbox client callback to prepare for the transfer
+ * scmi_a2p_tx_prepare() - mailbox client callback to prepare for the transfer
  *
  * @cl: client pointer
  * @m: mailbox message
@@ -269,7 +308,7 @@ static inline u32 pack_scmi_header(struct scmi_msg_hdr *hdr)
  * This function prepares the shared memory which contains the header and the
  * payload.
  */
-static void scmi_tx_prepare(struct mbox_client *cl, void *m)
+static void scmi_a2p_tx_prepare(struct mbox_client *cl, void *m)
 {
 	struct scmi_xfer *t = m;
 	struct scmi_chan_info *cinfo = client_to_scmi_chan_info(cl);
@@ -283,6 +322,104 @@ static void scmi_tx_prepare(struct mbox_client *cl, void *m)
 	iowrite32(pack_scmi_header(&t->hdr), &mem->msg_header);
 	if (t->tx.buf)
 		memcpy_toio(mem->msg_payload, t->tx.buf, t->tx.len);
+}
+
+/**
+ * scmi_p2a_tx_prepare() - mailbox client callback to prepare for the transfer
+ *
+ * @cl: client pointer
+ * @m: mailbox message
+ *
+ */
+static void scmi_p2a_tx_prepare(struct mbox_client *cl, void *m)
+{
+	struct scmi_chan_info *cinfo = client_to_scmi_chan_info(cl);
+	struct scmi_shared_mem __iomem *mem = cinfo->payload;
+
+	/* Mark channel clear + clear error */
+	iowrite32(SCMI_SHMEM_CHAN_STAT_CHANNEL_FREE, &mem->channel_status);
+}
+
+/**
+ * scmi_p2a_rx_callback() - mailbox client callback for receive messages
+ *
+ * @cl: client pointer
+ * @m: mailbox message
+ *
+ * Processes one received message to appropriate transfer information and
+ * signals completion of the transfer.
+ *
+ * NOTE: This function will be invoked in IRQ context unless the caller
+ * has explicitly requested to defer the callback to a workqueue.
+ */
+static void scmi_p2a_rx_callback(struct mbox_client *cl, void *m)
+{
+	struct scmi_xfer *xfer;
+	struct scmi_chan_info *cinfo = client_to_scmi_chan_info(cl);
+	struct device *dev = cinfo->dev;
+	struct scmi_info *info = handle_to_scmi_info(cinfo->handle);
+	struct scmi_xfers_info *minfo = &info->minfo;
+	struct scmi_shared_mem __iomem *mem = cinfo->payload;
+	u32 hdr = ioread32(&mem->msg_header);
+	u16 xfer_id;
+	u8 msg_type, prot_id, msg_id;
+	scmi_cback_fn_t prot_callback;
+
+	xfer_id = MSG_XTRACT_TOKEN(hdr);
+	msg_type = MSG_XTRACT_TYPE(hdr);
+
+	if (msg_type == MSG_TYPE_NOTIFY) {
+		xfer = scmi_one_xfer_get(cinfo->handle);
+		if (IS_ERR(xfer)) {
+			dev_err(dev, "P2A ntfy msg xfer alloc fail! proto=%x\n",
+				prot_id);
+			return;
+		}
+
+		msg_id = MSG_XTRACT_ID(hdr);
+		prot_id = MSG_XTRACT_PROT_ID(hdr);
+		xfer->hdr.id = msg_id;
+		xfer->hdr.protocol_id = prot_id;
+		xfer->hdr.seq = 0;
+		scmi_dump_header_dbg(dev, &xfer->hdr);
+
+		xfer->rx.len = info->desc->max_msg_size;
+		scmi_fetch_response(xfer, mem);
+
+		prot_callback = idr_find(&scmi_prot_ntfy_cback, prot_id);
+		if (unlikely(!prot_callback)) {
+			dev_err(dev, "P2A ntfy msg no prot cback fn! proto=%x\n",
+				prot_id);
+			return;
+		}
+		prot_callback(xfer);
+
+	} else if (msg_type == MSG_TYPE_DELAYED) {
+		/*
+		 * Are we even expecting this?
+		 */
+		if (!test_bit(xfer_id, minfo->xfer_alloc_table)) {
+			dev_err(dev, "message for %d is not expected!\n",
+				xfer_id);
+			return;
+		}
+
+		xfer = &minfo->xfer_block[xfer_id];
+		scmi_dump_header_dbg(dev, &xfer->hdr);
+		scmi_fetch_response(xfer, mem);
+
+		if (xfer->async_agent_callback) {
+			if (xfer->defer_async_callback) {
+				INIT_WORK(&xfer->work, scmi_work_func);
+				schedule_work(&xfer->work);
+			} else {
+				xfer->async_agent_callback(xfer);
+			}
+		}
+	}
+
+	/* Acknowlege the message */
+	scmi_p2a_tx_prepare(&cinfo->cl, NULL);
 }
 
 /**
@@ -349,6 +486,9 @@ void scmi_one_xfer_put(const struct scmi_handle *handle, struct scmi_xfer *xfer)
 	spin_lock_irqsave(&minfo->xfer_lock, flags);
 	clear_bit(xfer->hdr.seq, minfo->xfer_alloc_table);
 	spin_unlock_irqrestore(&minfo->xfer_lock, flags);
+	/* Reset vars that help do an async callback */
+	xfer->async_agent_callback = NULL;
+	xfer->defer_async_callback = false;
 }
 
 static bool
@@ -708,22 +848,29 @@ scmi_mbox_chan_setup(struct scmi_info *info, struct device *dev, int prot_id)
 	struct device_node *shmem, *np = dev->of_node;
 	struct scmi_chan_info *cinfo;
 	struct mbox_client *cl;
+	void __iomem *pyld;
 
 	if (scmi_mailbox_check(np)) {
 		cinfo = idr_find(&info->tx_idr, SCMI_PROTOCOL_BASE);
 		goto idr_alloc;
 	}
 
-	cinfo = devm_kzalloc(info->dev, sizeof(*cinfo), GFP_KERNEL);
-	if (!cinfo)
-		return -ENOMEM;
+	cinfo = devm_kzalloc(info->dev, 2 * sizeof(struct scmi_chan_info),
+			     GFP_KERNEL);
 
-	cinfo->dev = dev;
-
-	cl = &cinfo->cl;
+	cinfo[0].dev = dev;
+	cl = &cinfo[0].cl;
 	cl->dev = dev;
-	cl->rx_callback = scmi_rx_callback;
-	cl->tx_prepare = scmi_tx_prepare;
+	cl->rx_callback = scmi_a2p_rx_callback;
+	cl->tx_prepare = scmi_a2p_tx_prepare;
+	cl->tx_block = false;
+	cl->knows_txdone = true;
+
+	cinfo[1].dev = dev;
+	cl = &cinfo[1].cl;
+	cl->dev = dev;
+	cl->rx_callback = scmi_p2a_rx_callback;
+	cl->tx_prepare = scmi_p2a_tx_prepare;
 	cl->tx_block = false;
 	cl->knows_txdone = true;
 
@@ -736,29 +883,42 @@ scmi_mbox_chan_setup(struct scmi_info *info, struct device *dev, int prot_id)
 	}
 
 	size = resource_size(&res);
-	cinfo->payload = devm_ioremap(info->dev, res.start, size);
-	if (!cinfo->payload) {
-		dev_err(dev, "failed to ioremap SCMI Tx payload\n");
+	pyld = devm_ioremap(info->dev, res.start, size);
+	if (!pyld) {
+		dev_err(dev, "failed to ioremap SCMI Tx/Rx payload\n");
 		return -EADDRNOTAVAIL;
 	}
+	cinfo[0].payload = pyld;
+	cinfo[1].payload = pyld + (size / 2);
 
-	/* Transmit channel is first entry i.e. index 0 */
-	cinfo->chan = mbox_request_channel(cl, 0);
-	if (IS_ERR(cinfo->chan)) {
-		ret = PTR_ERR(cinfo->chan);
+	/* a2p channel is first entry i.e. index 0 */
+	cinfo[0].chan = mbox_request_channel(&cinfo[0].cl, 0);
+	if (IS_ERR(cinfo[0].chan)) {
+		ret = PTR_ERR(cinfo[0].chan);
 		if (ret != -EPROBE_DEFER)
 			dev_err(dev, "failed to request SCMI Tx mailbox\n");
 		return ret;
 	}
 
+	/* p2a channel is second entry i.e. index 1 */
+	cinfo[1].chan = mbox_request_channel(&cinfo[1].cl, 1);
+	if (IS_ERR(cinfo[1].chan)) {
+		ret = PTR_ERR(cinfo[1].chan);
+		if (ret == -EPROBE_DEFER)
+			return ret;
+		dev_warn(dev, "failed to request SCMI Rx mailbox\n");
+	}
+
+	cinfo[0].handle = &info->handle;
+	cinfo[1].handle = &info->handle;
+
 idr_alloc:
-	ret = idr_alloc(&info->tx_idr, cinfo, prot_id, prot_id + 1, GFP_KERNEL);
+	ret = idr_alloc(&info->tx_idr, &cinfo[0], prot_id, prot_id + 1,
+			GFP_KERNEL);
 	if (ret != prot_id) {
 		dev_err(dev, "unable to allocate SCMI idr slot err %d\n", ret);
 		return ret;
 	}
-
-	cinfo->handle = &info->handle;
 	return 0;
 }
 

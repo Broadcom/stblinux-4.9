@@ -241,8 +241,8 @@ static int __init brcmstb_l2_intc_of_init(struct device_node *np,
 		enable_irq_wake(parent_irq);
 	}
 
-	pr_info("registered L2 intc (mem: 0x%p, parent irq: %d)\n",
-			base, parent_irq);
+	pr_info("registered L2 intc (%s, parent irq: %d)\n",
+		np->full_name, parent_irq);
 
 	return 0;
 

@@ -144,6 +144,22 @@ TOOLCHAIN_EXTERNAL_LIBS += libquadmath.so*
 endif
 endif
 
+ifeq ($(BR2_TOOLCHAIN_HAS_LIBASAN),y)
+TOOLCHAIN_EXTERNAL_LIBS += libasan.so*
+endif
+
+ifeq ($(BR2_TOOLCHAIN_HAS_LIBLSAN),y)
+TOOLCHAIN_EXTERNAL_LIBS += liblsan.so*
+endif
+
+ifeq ($(BR2_TOOLCHAIN_HAS_LIBTSAN),y)
+TOOLCHAIN_EXTERNAL_LIBS += libtsan.so*
+endif
+
+ifeq ($(BR2_TOOLCHAIN_HAS_LIBUBSAN),y)
+TOOLCHAIN_EXTERNAL_LIBS += libubsan.so*
+endif
+
 TOOLCHAIN_EXTERNAL_LIBS += $(call qstrip,$(BR2_TOOLCHAIN_EXTRA_EXTERNAL_LIBS))
 
 

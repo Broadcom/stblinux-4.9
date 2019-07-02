@@ -11,6 +11,7 @@
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/of_address.h>
+#include <linux/syscore_ops.h>
 
 #include <asm/cacheflush.h>
 
@@ -79,6 +80,15 @@ static void b53_rac_enable_all(void)
 	__raw_writel(enable, b53_rac_base + RAC_CONFIG0_REG);
 }
 
+static void b53_rac_resume(void)
+{
+	b53_rac_enable_all();
+}
+
+static struct syscore_ops b53_rac_syscore_ops = {
+	.resume		= b53_rac_resume,
+};
+
 static int __init b53_rac_init(void)
 {
 	struct device_node *dn, *cpu_dn;
@@ -112,10 +122,12 @@ static int __init b53_rac_init(void)
 	}
 	of_node_put(cpu_dn);
 
+	if (IS_ENABLED(CONFIG_PM_SLEEP))
+		register_syscore_ops(&b53_rac_syscore_ops);
+
 	b53_rac_enable_all();
 
-	pr_info("Broadcom Brahma-B53 read-ahead cache at: 0x%p\n",
-		b53_rac_base + RAC_CONFIG0_REG);
+	pr_info("%s: Broadcom Brahma-B53 read-ahead cache\n", dn->full_name);
 
 	goto out;
 

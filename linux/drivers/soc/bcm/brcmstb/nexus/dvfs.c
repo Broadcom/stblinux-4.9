@@ -1,19 +1,19 @@
-/*
- * System Control and Management Interface (SCMI) Performance Protocol
+/* System Control and Management Interface (SCMI) BRCM Protocol
  *
- * Copyright (C) 2017 ARM Ltd.
+ * Copyright (C) 2019, Broadcom Corporation
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program. If not, see <http://www.gnu.org/licenses/>.
+ * A copy of the GPL is available at
+ * http://www.broadcom.com/licenses/GPLv2.php or from the Free Software
+ * Foundation at https://www.gnu.org/licenses/ .
  */
 
 #include <linux/brcmstb/avs_dvfs.h>
@@ -22,19 +22,42 @@
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/types.h>
 
 #include "../../../../firmware/arm_scmi/common.h"
 
 #define SCMI_PROTOCOL_BRCM 0x80
+#define SCMI_MAX_STRINGLEN 116
+
+#define SEQ_PRINTF(m, x...)			\
+do {						\
+	if (m)					\
+		seq_printf(m, x);		\
+	else					\
+		printk(x);			\
+} while (0)
 
 enum brcm_protocol_cmd {
 	BRCM_SEND_AVS_CMD = 0x3,
 	BRCM_CLK_SHOW_CMD = 0x4,
+	BRCM_PMAP_SHOW_CMD = 0x5,
+	BRCM_CLK_SHOW_NEW_CMD = 0x6,
 };
 
 static const struct scmi_handle *handle;
 static struct platform_device *cpufreq_dev;
+static DEFINE_MUTEX(clk_api_mutex);
+
+static void clk_api_lock(void)
+{
+	mutex_lock(&clk_api_mutex);
+}
+
+static void clk_api_unlock(void)
+{
+	mutex_unlock(&clk_api_mutex);
+}
 
 static int avs_ret_to_linux_ret(int avs_ret)
 {
@@ -67,66 +90,97 @@ static int avs_ret_to_linux_ret(int avs_ret)
 	return ret;
 }
 
-static int brcm_send_avs_cmd_via_scmi(const struct scmi_handle *handle,
-				      unsigned int cmd, unsigned int num_in,
-				      unsigned int num_out, u32 *params)
+static int brcm_send_cmd_via_scmi(const struct scmi_handle *handle,
+				  unsigned int cmd, unsigned int sub_cmd,
+				  unsigned int protocol,
+				  unsigned int num_in, unsigned int num_out,
+				  u32 *params)
 {
-	int ret, avs_ret;
-	unsigned int i;
+	int ret, ret_out;
 	struct scmi_xfer *t;
 	__le32 *p;
+	int i, j = 0;
 
-	ret = scmi_one_xfer_init(handle, BRCM_SEND_AVS_CMD, SCMI_PROTOCOL_BRCM,
+	if ((num_in || num_out) && !params)
+		return -EINVAL;
+
+	ret = scmi_one_xfer_init(handle, cmd, protocol,
 				 sizeof(u32) * (num_in + 2),
 				 sizeof(u32) * (num_out + 1), &t);
 	if (ret)
 		return ret;
 
 	p = (__le32 *)t->tx.buf;
-	/* First word is meta-info to be used by EL3 */
-	p[0] = cpu_to_le32((num_out << 16) | (num_in << 8) | cmd);
-	/* Then the full AVS command */
-	p[1] = cpu_to_le32(cmd);
+	if (cmd == BRCM_SEND_AVS_CMD) {
+		/* First word is meta-info to be used by EL3 */
+		p[0] = cpu_to_le32((num_out << 16) | (num_in << 8) | sub_cmd);
+		/* Then the full AVS command */
+		p[1] = cpu_to_le32(sub_cmd);
+		j = 2;
+	}
+
 	for (i = 0; i < num_in; i++)
-		p[i + 2] = cpu_to_le32(params[i]);
+		p[i + j] = cpu_to_le32(params[i]);
 
 	ret = scmi_do_xfer(handle, t);
 
 	if (!ret) {
 		p = t->rx.buf;
-		avs_ret = le32_to_cpu(p[0]);
+		ret_out = le32_to_cpu(p[0]);
 		for (i = 0; i < num_out; i++)
 			params[i] = (u32)le32_to_cpu(p[i + 1]);
 	}
 
 	scmi_one_xfer_put(handle, t);
 
-	return ret ? ret : avs_ret_to_linux_ret(avs_ret);
+	if (cmd == BRCM_SEND_AVS_CMD)
+		ret = ret ? ret : avs_ret_to_linux_ret(ret_out);
+	else
+		ret = ret ? ret : ret_out;
+
+	return ret;
 }
 
-static int __maybe_unused brcm_send_brcm_cmd_via_scmi(
-				const struct scmi_handle *handle,
-				unsigned int cmd)
+static int brcm_send_avs_cmd_via_scmi(const struct scmi_handle *handle,
+				      unsigned int sub_cmd, unsigned int num_in,
+				      unsigned int num_out, u32 *params)
 {
-	int ret, avs_ret;
-	struct scmi_xfer *t;
-	__le32 *p;
+	int ret;
 
-	ret = scmi_one_xfer_init(handle, cmd, SCMI_PROTOCOL_BRCM,
-				 0, 0, &t);
-	if (ret)
-		return ret;
+	clk_api_lock();
+	ret = brcm_send_cmd_via_scmi(handle, BRCM_SEND_AVS_CMD, sub_cmd,
+				     SCMI_PROTOCOL_BRCM, num_in, num_out,
+				     params);
+	clk_api_unlock();
 
-	ret = scmi_do_xfer(handle, t);
+	return ret;
+}
 
-	if (!ret) {
-		p = t->rx.buf;
-		avs_ret = le32_to_cpu(p[0]);
-	}
+static int brcm_send_show_cmd_via_scmi(struct seq_file *s,
+				       const struct scmi_handle *handle,
+				       unsigned int cmd)
+{
+	int state = 0;
+	u32 params[SCMI_MAX_STRINGLEN/4 + 1]; /* state + string len */
+	char *str = (char *) &params[0]; /* out */;
 
-	scmi_one_xfer_put(handle, t);
+	do {
+		params[0] = state; /* in */
+		state = brcm_send_cmd_via_scmi(handle, cmd, 0,
+					     SCMI_PROTOCOL_BRCM,
+					     1, ARRAY_SIZE(params),
+					     params);
+		if (state <= 0)
+			break;
 
-	return ret ? ret : avs_ret_to_linux_ret(avs_ret);
+		SEQ_PRINTF(s, "%s\n", str);
+	} while (state);
+
+	if (state == 0)
+		/* last line if there is no scmi error */
+		SEQ_PRINTF(s, "%s\n", str);
+
+	return state ? state : 0;
 }
 
 static int scmi_brcm_protocol_init(struct scmi_handle *handle)
@@ -144,7 +198,7 @@ static int scmi_brcm_protocol_init(struct scmi_handle *handle)
 static int __init scmi_brcm_init(void)
 {
 	return scmi_protocol_register(SCMI_PROTOCOL_BRCM,
-				      &scmi_brcm_protocol_init);
+				      &scmi_brcm_protocol_init, NULL);
 }
 subsys_initcall(scmi_brcm_init);
 
@@ -162,6 +216,70 @@ static int brcmstb_send_avs_cmd(unsigned int cmd, unsigned int in,
 	return ret;
 }
 
+int brcm_pmap_show(void)
+{
+	int ret;
+
+	clk_api_lock();
+	ret = brcm_send_show_cmd_via_scmi(NULL, handle, BRCM_PMAP_SHOW_CMD);
+	clk_api_unlock();
+
+	return ret;
+}
+EXPORT_SYMBOL(brcm_pmap_show);
+
+int brcm_pmap_num_pstates(unsigned int clk_id, unsigned int *num_pstates)
+{
+	struct scmi_perf_ops *perf_ops = handle->perf_ops;
+	unsigned int domain = clk_id - BCLK_SW_OFFSET;
+	int ret;
+
+	if (clk_id <= BCLK_SW_OFFSET || clk_id >= BCLK_SW_NUM_CORES)
+		return -EINVAL;
+
+	clk_api_lock();
+	ret = perf_ops->get_num_domain_opps(handle, domain, num_pstates);
+	clk_api_unlock();
+
+	return (ret == 0 && *num_pstates == 0) ? -EINVAL : ret;
+}
+EXPORT_SYMBOL(brcm_pmap_num_pstates);
+
+int brcm_pmap_get_pstate(unsigned int clk_id, unsigned int *pstate)
+{
+	struct scmi_perf_ops *perf_ops = handle->perf_ops;
+	unsigned int domain = clk_id - BCLK_SW_OFFSET;
+	int ret;
+
+	if (clk_id <= BCLK_SW_OFFSET || clk_id >= BCLK_SW_NUM_CORES)
+		return -EINVAL;
+
+	clk_api_lock();
+	ret = perf_ops->level_get(handle, domain, pstate, false);
+	clk_api_unlock();
+
+	return ret;
+}
+EXPORT_SYMBOL(brcm_pmap_get_pstate);
+
+int brcm_pmap_set_pstate(unsigned int clk_id, unsigned int pstate)
+{
+
+	struct scmi_perf_ops *perf_ops = handle->perf_ops;
+	unsigned int domain = clk_id - BCLK_SW_OFFSET;
+	int ret;
+
+	if (clk_id <= BCLK_SW_OFFSET || clk_id >= BCLK_SW_NUM_CORES)
+		return -EINVAL;
+
+	clk_api_lock();
+	ret = perf_ops->level_set(handle, domain, pstate, false);
+	clk_api_unlock();
+
+	return ret;
+}
+EXPORT_SYMBOL(brcm_pmap_set_pstate);
+
 #ifdef CONFIG_DEBUG_FS
 #include <linux/debugfs.h>
 
@@ -169,9 +287,24 @@ static struct dentry *rootdir;
 
 static int brcm_scmi_clk_summary_show(struct seq_file *s, void *data)
 {
-	brcm_send_brcm_cmd_via_scmi(handle, BRCM_CLK_SHOW_CMD);
+	int ret;
 
-	return 0;
+	clk_api_lock();
+	ret = brcm_send_show_cmd_via_scmi(s, handle, BRCM_CLK_SHOW_NEW_CMD);
+	clk_api_unlock();
+
+	return ret;
+}
+
+static int brcm_scmi_pmap_show(struct seq_file *s, void *data)
+{
+	int ret;
+
+	clk_api_lock();
+	ret = brcm_send_show_cmd_via_scmi(s, handle, BRCM_PMAP_SHOW_CMD);
+	clk_api_unlock();
+
+	return ret;
 }
 
 static int brcm_scmi_clk_summary_open(struct inode *inode, struct file *file)
@@ -179,8 +312,20 @@ static int brcm_scmi_clk_summary_open(struct inode *inode, struct file *file)
 	return single_open(file, brcm_scmi_clk_summary_show, inode->i_private);
 }
 
+static int brcm_scmi_pmap_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, brcm_scmi_pmap_show, inode->i_private);
+}
+
 static const struct file_operations brcm_scmi_clk_summary_fops = {
 	.open		= brcm_scmi_clk_summary_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static const struct file_operations brcm_scmi_pmap_fops = {
+	.open		= brcm_scmi_pmap_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= single_release,
@@ -203,8 +348,14 @@ static int __init brcm_scmi_debug_init(void)
 	if (!rootdir)
 		return -ENOMEM;
 
-	d = debugfs_create_file("clk_summary", S_IRUGO, rootdir, NULL,
+	d = debugfs_create_file("clk_summary", 0444, rootdir, NULL,
 				&brcm_scmi_clk_summary_fops);
+
+	if (!d)
+		return -ENOMEM;
+
+	d = debugfs_create_file("pmap", 0444, rootdir, NULL,
+				&brcm_scmi_pmap_fops);
 
 	if (!d)
 		return -ENOMEM;

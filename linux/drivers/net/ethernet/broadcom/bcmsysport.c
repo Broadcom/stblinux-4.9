@@ -116,15 +116,6 @@ static inline void dma_desc_set_addr(struct bcm_sysport_priv *priv,
 	writel_relaxed(lower_32_bits(addr), d + DESC_ADDR_LO);
 }
 
-static inline void tdma_port_write_desc_addr(struct bcm_sysport_priv *priv,
-					     struct dma_desc *desc,
-					     unsigned int port)
-{
-	/* Ports are latched, so write upper address first */
-	tdma_writel(priv, desc->addr_status_len, TDMA_WRITE_PORT_HI(port));
-	tdma_writel(priv, desc->addr_lo, TDMA_WRITE_PORT_LO(port));
-}
-
 /* Ethtool operations */
 static void bcm_sysport_set_rx_csum(struct net_device *dev,
 				    netdev_features_t wanted)
@@ -1255,11 +1246,10 @@ static netdev_tx_t bcm_sysport_xmit(struct sk_buff *skb,
 	struct bcm_sysport_tx_ring *ring;
 	struct bcm_sysport_cb *cb;
 	struct netdev_queue *txq;
-	struct dma_desc *desc;
+	u32 len_status, addr_lo;
 	unsigned int skb_len;
 	unsigned long flags;
 	dma_addr_t mapping;
-	u32 len_status;
 	u16 queue;
 	int ret;
 
@@ -1314,10 +1304,7 @@ static netdev_tx_t bcm_sysport_xmit(struct sk_buff *skb,
 	dma_unmap_addr_set(cb, dma_addr, mapping);
 	dma_unmap_len_set(cb, dma_len, skb_len);
 
-	/* Fetch a descriptor entry from our pool */
-	desc = ring->desc_cpu;
-
-	desc->addr_lo = lower_32_bits(mapping);
+	addr_lo = lower_32_bits(mapping);
 	len_status = upper_32_bits(mapping) & DESC_ADDR_HI_MASK;
 	len_status |= (skb_len << DESC_LEN_SHIFT);
 	len_status |= (DESC_SOP | DESC_EOP | TX_STATUS_APP_CRC) <<
@@ -1330,16 +1317,9 @@ static netdev_tx_t bcm_sysport_xmit(struct sk_buff *skb,
 		ring->curr_desc = 0;
 	ring->desc_count--;
 
-	/* Ensure write completion of the descriptor status/length
-	 * in DRAM before the System Port WRITE_PORT register latches
-	 * the value
-	 */
-	wmb();
-	desc->addr_status_len = len_status;
-	wmb();
-
-	/* Write this descriptor address to the RING write port */
-	tdma_port_write_desc_addr(priv, desc, ring->index);
+	/* Ports are latched, so write upper address first */
+	tdma_writel(priv, len_status, TDMA_WRITE_PORT_HI(ring->index));
+	tdma_writel(priv, addr_lo, TDMA_WRITE_PORT_LO(ring->index));
 
 	/* Check ring space and update SW control flow */
 	if (ring->desc_count == 0)
@@ -1465,28 +1445,14 @@ static int bcm_sysport_init_tx_ring(struct bcm_sysport_priv *priv,
 				    unsigned int index)
 {
 	struct bcm_sysport_tx_ring *ring = &priv->tx_rings[index];
-	struct device *kdev = &priv->pdev->dev;
 	size_t size;
-	void *p;
 	u32 reg;
 
 	/* Simple descriptors partitioning for now */
 	size = 256;
 
-	/* We just need one DMA descriptor which is DMA-able, since writing to
-	 * the port will allocate a new descriptor in its internal linked-list
-	 */
-	p = dma_zalloc_coherent(kdev, sizeof(struct dma_desc), &ring->desc_dma,
-				GFP_KERNEL);
-	if (!p) {
-		netif_err(priv, hw, priv->netdev, "DMA alloc failed\n");
-		return -ENOMEM;
-	}
-
 	ring->cbs = kcalloc(size, sizeof(struct bcm_sysport_cb), GFP_KERNEL);
 	if (!ring->cbs) {
-		dma_free_coherent(kdev, sizeof(struct dma_desc),
-				  ring->desc_cpu, ring->desc_dma);
 		netif_err(priv, hw, priv->netdev, "CB allocation failed\n");
 		return -ENOMEM;
 	}
@@ -1499,7 +1465,6 @@ static int bcm_sysport_init_tx_ring(struct bcm_sysport_priv *priv,
 	ring->size = size;
 	ring->clean_index = 0;
 	ring->alloc_size = ring->size;
-	ring->desc_cpu = p;
 	ring->desc_count = ring->size;
 	ring->curr_desc = 0;
 
@@ -1554,8 +1519,8 @@ static int bcm_sysport_init_tx_ring(struct bcm_sysport_priv *priv,
 	napi_enable(&ring->napi);
 
 	netif_dbg(priv, hw, priv->netdev,
-		  "TDMA cfg, size=%d, desc_cpu=%p switch q=%d,port=%d\n",
-		  ring->size, ring->desc_cpu, ring->switch_queue,
+		  "TDMA cfg, size=%d, switch q=%d,port=%d\n",
+		  ring->size, ring->switch_queue,
 		  ring->switch_port);
 
 	return 0;
@@ -1565,7 +1530,6 @@ static void bcm_sysport_fini_tx_ring(struct bcm_sysport_priv *priv,
 				     unsigned int index)
 {
 	struct bcm_sysport_tx_ring *ring = &priv->tx_rings[index];
-	struct device *kdev = &priv->pdev->dev;
 	u32 reg;
 
 	/* Caller should stop the TDMA engine */
@@ -1587,12 +1551,6 @@ static void bcm_sysport_fini_tx_ring(struct bcm_sysport_priv *priv,
 
 	kfree(ring->cbs);
 	ring->cbs = NULL;
-
-	if (ring->desc_dma) {
-		dma_free_coherent(kdev, sizeof(struct dma_desc),
-				  ring->desc_cpu, ring->desc_dma);
-		ring->desc_dma = 0;
-	}
 	ring->size = 0;
 	ring->alloc_size = 0;
 
@@ -2570,11 +2528,11 @@ static int bcm_sysport_probe(struct platform_device *pdev)
 
 	priv->rev = topctrl_readl(priv, REV_CNTL) & REV_MASK;
 	dev_info(&pdev->dev,
-		 "Broadcom SYSTEMPORT%s" REV_FMT
-		 " at 0x%p (irqs: %d, %d, TXQs: %d, RXQs: %d)\n",
+		 "Broadcom SYSTEMPORT%s " REV_FMT
+		 " (irqs: %d, %d, TXQs: %d, RXQs: %d)\n",
 		 priv->is_lite ? " Lite" : "",
 		 (priv->rev >> 8) & 0xff, priv->rev & 0xff,
-		 priv->base, priv->irq0, priv->irq1, txq, rxq);
+		 priv->irq0, priv->irq1, txq, rxq);
 
 	clk_disable_unprepare(priv->clk);
 

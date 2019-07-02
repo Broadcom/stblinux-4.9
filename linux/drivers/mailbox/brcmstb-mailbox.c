@@ -13,30 +13,61 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/workqueue.h>
 #if defined(CONFIG_ARM64) || defined(CONFIG_ARM)
 #include <linux/arm-smccc.h>
 #endif
 
 #define BRCM_SCMI_SMC_OEM_FUNC	0x400
 
-static const u32 BRCM_FID = ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL,
-					       IS_ENABLED(CONFIG_ARM64),
-					       ARM_SMCCC_OWNER_OEM,
-					       BRCM_SCMI_SMC_OEM_FUNC);
-
-struct brcm_mbox {
-	struct mbox_controller mbox;
-	int irq;
+#define BRCM_FID(ch) ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, \
+			IS_ENABLED(CONFIG_ARM64), \
+			ARM_SMCCC_OWNER_OEM, \
+			BRCM_SCMI_SMC_OEM_FUNC + (ch))
+enum {
+	A2P_CHAN = 0,
+	P2A_CHAN,
+	NUM_CHAN
 };
 
-static struct mbox_chan *chans;
+struct brcm_work {
+	struct work_struct w;
+	unsigned int mbox_num;
+};
+
+struct chan_priv {
+	unsigned int mbox_num;
+	struct brcm_work work;
+	unsigned int ch;
+};
+
+struct brcm_mbox {
+	struct brcm_work work;
+	struct mbox_controller controller;
+	int irqs[NUM_CHAN];
+};
+
+static struct mbox_chan *brcm_mbox_of_xlate(struct mbox_controller *controller,
+					    const struct of_phandle_args *sp)
+{
+	unsigned int ch = sp->args[0];
+	struct brcm_mbox *mbox
+		= container_of(controller, struct brcm_mbox, controller);
+
+	if (!mbox || ch >= NUM_CHAN)
+		return ERR_PTR(-ENOENT);
+
+	return &mbox->controller.chans[ch];
+}
 
 #if defined(CONFIG_ARM64) || defined(CONFIG_ARM)
-static int announce_msg(void)
+static int announce_msg(unsigned int mbox_num, unsigned int ch)
 {
 	struct arm_smccc_res res;
 
-	arm_smccc_smc(BRCM_FID, 0, 0, 0, 0, 0, 0, 0, &res);
+	if (ch >= NUM_CHAN)
+		return -EIO;
+	arm_smccc_smc(BRCM_FID(ch), mbox_num, 0, 0, 0, 0, 0, 0, &res);
 	if (res.a0)
 		return -EIO;
 	return 0;
@@ -45,9 +76,19 @@ static int announce_msg(void)
 #error Func announce_msg() not defined for the current ARCH
 #endif
 
+static void p2a_work_func(struct work_struct *w)
+{
+	struct brcm_work *work = (struct brcm_work *)w;
+
+	/* Kick the platform's P2A Tx queue */
+	(void)announce_msg(work->mbox_num, P2A_CHAN);
+}
+
 static int brcm_mbox_send_data(struct mbox_chan *chan, void *data)
 {
-	return announce_msg();
+	struct chan_priv *priv = chan->con_priv;
+
+	return announce_msg(priv->mbox_num, priv->ch);
 }
 
 static int brcm_mbox_startup(struct mbox_chan *chan)
@@ -60,9 +101,32 @@ static const struct mbox_chan_ops brcm_mbox_ops = {
 	.startup = brcm_mbox_startup,
 };
 
-static irqreturn_t brcm_isr(void)
+static irqreturn_t brcm_a2p_isr(void *data)
 {
-	mbox_chan_received_data(&chans[0], NULL);
+	struct mbox_chan *chan = data;
+
+	mbox_chan_received_data(chan, NULL);
+	return IRQ_HANDLED;
+}
+
+static irqreturn_t brcm_p2a_isr(void *data)
+{
+	struct mbox_chan *chan = data;
+	struct chan_priv *priv = (struct chan_priv *) chan->con_priv;
+	struct work_struct *work = (struct work_struct *) &priv->work;
+
+	mbox_chan_received_data(chan, NULL);
+
+	/*
+	 * If we are getting this interrupt on the p2a channel
+	 * we need to kick the platform's queue. But, we have to
+	 * do it after the interrupt is cleared as the kick may
+	 * set the interrupt again.  So we schedule deferred
+	 * work to do the kick.
+	 */
+	if (!work_pending(work))
+		schedule_work(work);
+
 	return IRQ_HANDLED;
 }
 
@@ -71,6 +135,8 @@ static int brcm_mbox_probe(struct platform_device *pdev)
 	struct brcm_mbox *mbox;
 	struct device *dev = &pdev->dev;
 	struct device_node *np = dev->of_node;
+	struct chan_priv *chan_priv;
+	unsigned int mbox_num;
 	int ret;
 
 	if (!np)
@@ -80,31 +146,65 @@ static int brcm_mbox_probe(struct platform_device *pdev)
 	if (!mbox)
 		return -ENOMEM;
 
-	/* Allocate one channel */
-	chans = devm_kzalloc(&pdev->dev, sizeof(*chans), GFP_KERNEL);
-	if (!chans)
+	mbox_num = of_alias_get_id(np, "mailbox") < 0 ?
+		0 : (unsigned int)of_alias_get_id(np, "mailbox");
+
+	/* Allocate channels */
+	mbox->controller.chans = devm_kzalloc(
+		&pdev->dev, NUM_CHAN * sizeof(struct mbox_chan), GFP_KERNEL);
+	if (!mbox->controller.chans)
+		return -ENOMEM;
+	chan_priv = devm_kzalloc(
+		&pdev->dev, NUM_CHAN * sizeof(struct chan_priv), GFP_KERNEL);
+	if (!chan_priv)
 		return -ENOMEM;
 
-	/* Get SGI interrupt number */
-	ret = of_property_read_u32_index(np, "interrupts", 1, &mbox->irq);
+	/* Get SGI interrupt number for a2p */
+	ret = of_property_read_u32_index(np, "interrupts", 1,
+					 &mbox->irqs[A2P_CHAN]);
 	if (ret < 0) {
-		dev_err(&pdev->dev, "failed to get SGI intr from DT\n");
+		dev_err(&pdev->dev, "failed to get SGI a2p intr from DT\n");
 		return ret;
 	}
-
-	ret = set_ipi_handler(mbox->irq, brcm_isr,
-			      "brcm: EL3 to Linux SCMI reply msg");
+	ret = set_ipi_handler_priv(mbox->irqs[A2P_CHAN], brcm_a2p_isr,
+				   "brcm: SCMI a2p intr",
+				   &mbox->controller.chans[A2P_CHAN]);
 	if (ret) {
-		dev_err(&pdev->dev, "failed to setup IPI isr\n");
+		dev_err(&pdev->dev, "failed to setup SCMI a2p isr\n");
 		return -EINVAL;
 	}
+	chan_priv[A2P_CHAN].mbox_num = mbox_num;
+	chan_priv[A2P_CHAN].ch = A2P_CHAN;
+	mbox->controller.chans[A2P_CHAN].con_priv = &chan_priv[A2P_CHAN];
+	mbox->controller.num_chans++;
 
-	mbox->mbox.dev = &pdev->dev;
-	mbox->mbox.ops = &brcm_mbox_ops;
-	mbox->mbox.chans = chans;
-	mbox->mbox.num_chans = 1;
+	/* Get SGI interrupt number for p2a */
+	ret = of_property_read_u32_index(np, "interrupts", 4,
+					 &mbox->irqs[P2A_CHAN]);
+	if (ret < 0) {
+		dev_warn(&pdev->dev, "failed to get SGI p2a intr from DT\n");
+	} else {
+		ret = set_ipi_handler_priv(mbox->irqs[P2A_CHAN], brcm_p2a_isr,
+					   "brcm: SCMI p2a intr",
+					   &mbox->controller.chans[P2A_CHAN]);
+		if (ret) {
+			dev_err(&pdev->dev, "failed to setup SCMI p2a isr\n");
+			clear_ipi_handler(mbox->irqs[A2P_CHAN]);
+			return -EINVAL;
+		}
+		chan_priv[P2A_CHAN].mbox_num = mbox_num;
+		chan_priv[P2A_CHAN].ch = P2A_CHAN;
+		INIT_WORK((struct work_struct *)&chan_priv[P2A_CHAN].work,
+			  p2a_work_func);
+		mbox->controller.chans[P2A_CHAN].con_priv
+			= &chan_priv[P2A_CHAN];
+		mbox->controller.num_chans++;
+	}
 
-	ret = mbox_controller_register(&mbox->mbox);
+	mbox->controller.dev = &pdev->dev;
+	mbox->controller.ops = &brcm_mbox_ops;
+	mbox->controller.of_xlate = brcm_mbox_of_xlate;
+	ret = mbox_controller_register(&mbox->controller);
 	if (ret) {
 		dev_err(dev, "failed to register BrcmSTB mbox\n");
 		return ret;
@@ -118,8 +218,16 @@ static int brcm_mbox_remove(struct platform_device *pdev)
 {
 	struct brcm_mbox *mbox = platform_get_drvdata(pdev);
 
-	clear_ipi_handler(mbox->irq);
-	mbox_controller_unregister(&mbox->mbox);
+	clear_ipi_handler(mbox->irqs[A2P_CHAN]);
+	if (mbox->controller.num_chans == NUM_CHAN) {
+		struct chan_priv *priv = (struct chan_priv *)
+			mbox->controller.chans[P2A_CHAN].con_priv;
+
+		clear_ipi_handler(mbox->irqs[P2A_CHAN]);
+		cancel_work_sync((struct work_struct *)&priv->work);
+	}
+	mbox_controller_unregister(&mbox->controller);
+
 	return 0;
 }
 

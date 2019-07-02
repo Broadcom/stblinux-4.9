@@ -13,7 +13,7 @@ Signed-off-by: Justin Chen <justinpopo6@gmail.com>
  2 files changed, 28 insertions(+), 12 deletions(-)
 
 diff --git a/include/pathnames.h b/include/pathnames.h
-index 3d5052e..ed8ea33 100644
+index 3d5052e6f..ed8ea330d 100644
 --- a/include/pathnames.h
 +++ b/include/pathnames.h
 @@ -53,6 +53,7 @@
@@ -25,7 +25,7 @@ index 3d5052e..ed8ea33 100644
  #define _PATH_TERMCOLORS_DIRNAME "terminal-colors.d"
  #define _PATH_TERMCOLORS_DIR	"/etc/" _PATH_TERMCOLORS_DIRNAME
 diff --git a/sys-utils/rtcwake.c b/sys-utils/rtcwake.c
-index b63c646..029f00f 100644
+index b63c64627..029f00f9b 100644
 --- a/sys-utils/rtcwake.c
 +++ b/sys-utils/rtcwake.c
 @@ -28,6 +28,7 @@
@@ -82,5 +82,5 @@ index b63c646..029f00f 100644
  		break;
  	}
 -- 
-2.7.4
+2.17.1
 

@@ -21,7 +21,7 @@ use strict;
 use warnings;
 use Fcntl ':mode';
 use File::Basename;
-use File::Path qw(make_path);
+use File::Path qw(make_path remove_tree);
 use Getopt::Std;
 use POSIX;
 use Socket;
@@ -30,6 +30,7 @@ use constant AUTO_MK => qw(brcmstb.mk);
 use constant LOCAL_MK => qw(local.mk);
 use constant BR_MIRROR_HOST => qw(stbgit.broadcom.com);
 use constant BR_MIRROR_PATH => qw(/mirror/buildroot);
+use constant FORBIDDEN_PATHS => ( qw(. /tools/bin) );
 use constant RECOMMENDED_TOOLCHAINS => ( qw(misc/toolchain.master
 					misc/toolchain) );
 use constant SHARED_OSS_DIR => qw(/projects/stbdev/open-source);
@@ -37,6 +38,7 @@ use constant TOOLCHAIN_DIR => qw(/opt/toolchains);
 use constant VERSION_H => qw(/usr/include/linux/version.h);
 
 use constant SLEEP_TIME => 5;
+use constant STALE_THRESHOLD => 7 * 24 * 60 * 60; 	# days in seconds
 
 my %arch_config = (
 	'arm64' => {
@@ -58,6 +60,7 @@ my %arch_config = (
 		'BR2_MIPS_FP32_MODE_32' => 'y',
 		'BR2_LINUX_KERNEL_DEFCONFIG' => 'bmips_stb',
 		'BR2_LINUX_KERNEL_VMLINUX' => 'y',
+		'BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION' => 'stb-4.1',
 	},
 );
 
@@ -78,7 +81,7 @@ my %toolchain_config = (
 my %generic_config = (
 	'BR2_LINUX_KERNEL_CUSTOM_REPO_URL' =>
 				'git://stbgit.broadcom.com/queue/linux.git',
-	'BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION' => 'stb-4.1',
+	'BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION' => 'stb-4.9',
 );
 
 sub check_br()
@@ -122,16 +125,72 @@ sub fix_oss_permissions($)
 		chmod(0777, $dir) && print("Fixed permissions of $dir...\n");
 	}
 	opendir($dh, $dir);
-	while (readdir($dh)) {
+	while (my $entry = readdir($dh)) {
 		# Skip "." and ".."
-		next if (/^\.{1,2}$/);
-		if (-d "$dir/$_") {
-			fix_oss_permissions("$dir/$_");
+		next if ($entry =~ /^\.{1,2}$/);
+		if (-d "$dir/$entry") {
+			fix_oss_permissions("$dir/$entry");
 		}
 	}
 	closedir($dh);
 }
 
+# Find downloaded Linux tar-balls
+sub find_tarball($)
+{
+	my ($dir) = @_;
+	my @found = ();
+	my $dh;
+
+	opendir($dh, $dir);
+	while (readdir($dh)) {
+		if (/linux-stb.*\.tar/) {
+			push(@found, $_);
+		}
+	}
+	closedir($dh);
+
+	return @found;
+}
+
+# Search for outdated sources in the download directory and delete them.
+sub check_oss_stale_sources($$)
+{
+	my ($dir, $output_dir) = @_;
+	my $linux = "$dir/linux";
+	my @tar_balls;
+
+	print("Checking $dir for stale sources...\n");
+	if (-d $linux) {
+		my $now = time();
+		my $mtime;
+
+		if (-d "$linux/git") {
+			$mtime = (stat("$linux/git"))[9];
+		} else {
+			$mtime = (stat($linux))[9];
+		}
+
+		@tar_balls = find_tarball($linux);
+
+		if ($now - $mtime > STALE_THRESHOLD) {
+			print("$linux is stale, removing it...\n");
+			remove_tree($linux, {keep_root => 1});
+
+			# Use the tar-balls we found to remove Linux build
+			# directories if they exist.
+			foreach my $v (@tar_balls) {
+				my $linux_build;
+				$v =~ s/\.tar.*//;
+				$linux_build = "$output_dir/build/$v";
+				if (-d $linux_build) {
+					print("Removing $linux_build...\n");
+					remove_tree($linux_build);
+				}
+			}
+		}
+	}
+}
 
 # Check if the specified toolchain is the recommended one.
 sub check_toolchain($)
@@ -170,6 +229,26 @@ my @linux_build_artefacts = (
 	"vmlinuz",
 	"System.map",
 );
+
+# Check the host environment for troublesome settings.
+sub sanity_check($)
+{
+	my ($prg) = @_;
+	my @path = split(/:/, $ENV{'PATH'});
+
+	foreach my $p (@path) {
+		foreach my $f (FORBIDDEN_PATHS) {
+			if ($f eq $p) {
+				print(STDERR "$prg: \"$f\" must not be in ".
+					"your PATH\n");
+				print(STDERR $ENV{'PATH'}."\n");
+				return 0;
+			}
+		}
+	}
+
+	return 1;
+}
 
 # Check for some obvious build artifacts that show us the local Linux source
 # tree is not clean.
@@ -282,8 +361,7 @@ sub get_kernel_header_version($$)
 	if (defined($arch_config{$arch}->{'BR2_mipsel'})) {
 		$compiler_arch .= "el";
 	}
-	$sys_root = $toolchain;
-	$sys_root = `ls -d "$sys_root/$compiler_arch"*/sys*root 2>/dev/null`;
+	$sys_root = `ls -d "$toolchain/$compiler_arch"*/sys*root 2>/dev/null`;
 	chomp($sys_root);
 	if ($sys_root eq '') {
 		return undef;
@@ -389,10 +467,8 @@ sub write_brcmstbmk($$$)
 		"#\n".
 		"#" x 78, "\n\n".
 		"LINUX_OVERRIDE_SRCDIR = $linux_dir\n" .
-		"LINUX_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = \\\n");
-	foreach (@linux_build_artefacts) {
-		print(F "\t--exclude=\"$_\" \\\n");
-	}
+		"LINUX_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = \\\n" .
+		"\t--exclude-from=\"$linux_dir/.gitignore\"\n");
 	print(F "\n");
 	close(F);
 }
@@ -440,6 +516,7 @@ sub print_usage($)
 		"          -j <jobs>....run <jobs> parallel build jobs\n".
 		"          -L <path>....use local <path> as Linux kernel\n".
 		"          -l <url>.....use <url> as the Linux kernel repo\n".
+		"          -M <url>.....use <url> as BR mirror ('-' for none)\n".
 		"          -n...........do not use shared download cache\n".
 		"          -o <path>....use <path> as the BR output directory\n".
 		"          -t <path>....use <path> as toolchain directory\n".
@@ -466,7 +543,7 @@ my $kernel_header_version;
 my $arch;
 my %opts;
 
-getopts('3:bcDd:f:ij:L:l:no:t:v:', \%opts);
+getopts('3:bcDd:f:ij:L:l:M:no:t:v:', \%opts);
 $arch = $ARGV[0];
 
 if ($#ARGV < 0) {
@@ -492,6 +569,10 @@ if (!defined($arch_config{$arch})) {
 
 if (defined($opts{'L'}) && defined($opts{'l'})) {
 	print(STDERR "$prg: options -L and -l cannot be specified together\n");
+	exit(1);
+}
+
+if (!sanity_check($prg)) {
 	exit(1);
 }
 
@@ -575,6 +656,10 @@ if (check_open_source_dir() && !defined($opts{'n'})) {
 	print("Using $br_oss_cache as download cache...\n");
 	$generic_config{'BR2_DL_DIR'} = $br_oss_cache;
 	$generic_config{'BR2_DL_DIR_OPTS'} = '-m 777';
+
+	check_oss_stale_sources($br_oss_cache, $br_outputdir);
+} else {
+	check_oss_stale_sources('dl', $br_outputdir);
 }
 
 if (defined($opts{'d'})) {
@@ -676,18 +761,26 @@ if (defined($kernel_header_version)) {
 		"fail\n");
 }
 
+# Set custom Buildroot mirror
 if (defined($ENV{'BR_MIRROR'})) {
-	# If there is a user-specified mirror, use that.
 	$br_mirror = $ENV{'BR_MIRROR'};
+}
 
-} else {
+# Command line option -M supersedes environment to specify mirror
+if (defined($opts{'M'})) {
+	# Option "-M -" disables using a mirror. This overrides the environment
+	# variable BR_MIRROR and the built-in default.
+	$br_mirror = $opts{'M'};
+}
+
+if (!defined($br_mirror)) {
 	# Only use the Broadcom mirror if we can resolve the name, otherwise
 	# we'll run into a DNS timeout for every package we need to download.
 	if (gethostbyname(BR_MIRROR_HOST)) {
 		$br_mirror = "http://".BR_MIRROR_HOST.BR_MIRROR_PATH;
 	}
 }
-if (defined($br_mirror)) {
+if (defined($br_mirror) && $br_mirror ne '-') {
 	print("Using $br_mirror as Buildroot mirror...\n");
 	$generic_config{'BR2_PRIMARY_SITE'} = $br_mirror;
 
@@ -735,9 +828,9 @@ if ($is_64bit) {
 	}
 }
 
-write_config($arch_config{$arch}, $temp_config, 1);
+write_config(\%generic_config, $temp_config, 1);
+write_config($arch_config{$arch}, $temp_config, 0);
 write_config($toolchain_config{$arch}, $temp_config, 0);
-write_config(\%generic_config, $temp_config, 0);
 
 system("support/kconfig/merge_config.sh -m configs/brcmstb_defconfig ".
 	"\"$temp_config\"");

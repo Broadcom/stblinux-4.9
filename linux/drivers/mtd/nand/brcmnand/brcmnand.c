@@ -1095,7 +1095,7 @@ static int brcmnand_bch_ooblayout_ecc(struct mtd_info *mtd, int section,
 	if (section >= sectors)
 		return -ERANGE;
 
-	oobregion->offset = (section * (sas + 1)) - chip->ecc.bytes;
+	oobregion->offset = ((section + 1) * sas) - chip->ecc.bytes;
 	oobregion->length = chip->ecc.bytes;
 
 	return 0;
@@ -2277,6 +2277,17 @@ static int brcmnand_setup_dev(struct brcmnand_host *host)
 		dev_err(ctrl->dev, "invalid Hamming params: %d bits per %d bytes\n",
 			chip->ecc.strength, chip->ecc.size);
 		return -EINVAL;
+	}
+
+	if (chip->ecc.mode != NAND_ECC_NONE &&
+	    (!chip->ecc.size || !chip->ecc.strength)) {
+		if (chip->ecc_step_ds && chip->ecc_strength_ds) {
+			/* use detected ECC parameters */
+			chip->ecc.size = chip->ecc_step_ds;
+			chip->ecc.strength = chip->ecc_strength_ds;
+			dev_info(ctrl->dev, "Using ECC step-size %d, strength %d\n",
+				chip->ecc.size, chip->ecc.strength);
+		}
 	}
 
 	switch (chip->ecc.size) {

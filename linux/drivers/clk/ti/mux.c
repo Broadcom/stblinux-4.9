@@ -169,12 +169,12 @@ struct clk *ti_clk_register_mux(struct ti_clk *setup)
 }
 
 /**
- * of_mux_clk_setup - Setup function for simple mux rate clock
+ * ti_of_mux_clk_setup - Setup function for simple mux rate clock
  * @node: DT node for the clock
  *
  * Sets up a basic clock multiplexer.
  */
-static void of_mux_clk_setup(struct device_node *node)
+static void ti_of_mux_clk_setup(struct device_node *node)
 {
 	struct clk *clk;
 	void __iomem *reg;
@@ -225,7 +225,7 @@ static void of_mux_clk_setup(struct device_node *node)
 cleanup:
 	kfree(parent_names);
 }
-CLK_OF_DECLARE(mux_clk, "ti,mux-clock", of_mux_clk_setup);
+CLK_OF_DECLARE(mux_clk, "ti,mux-clock", ti_of_mux_clk_setup);
 
 struct clk_hw *ti_clk_build_component_mux(struct ti_clk_mux *setup)
 {

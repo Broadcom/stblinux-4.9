@@ -173,7 +173,23 @@
 #define ARMV8_IMPDEF_PERFCTR_L3D_CACHE_INVAL			0xA8
 
 /* ARMv8 Cortex-A53 specific event types. */
+#define ARMV8_A53_PERFCTR_EXT_MEM_REQ				0xC0
+#define ARMV8_A53_PERFCTR_NC_EXT_MEM_REQ			0xC1
 #define ARMV8_A53_PERFCTR_PREF_LINEFILL				0xC2
+#define ARMV8_A53_PERFCTR_I_CACHE_THROTTLE			0xC3
+#define ARMV8_A53_PERFCTR_ENT_READ_ALLOC			0xC4
+#define ARMV8_A53_PERFCTR_READ_ALLOC_MODE			0xC5
+#define ARMV8_A53_PERFCTR_PRE_DECODE_ERROR			0xC6
+#define ARMV8_A53_PERFCTR_DATA_WR_STALL				0xC7
+#define ARMV8_A53_PERFCTR_SCU_SNOOP_OTHER_CPU			0xC8
+#define ARMV8_A53_PERFCTR_COND_BRANCH_EXEC			0xC9
+#define ARMV8_A53_PERFCTR_INDIR_BRANCH_MISPRED			0xCA
+#define ARMV8_A53_PERFCTR_INDIR_BRANCH_MISPRED_COMP		0xCB
+#define ARMV8_A53_PERFCTR_COND_BRANCH_MISPRED			0xCC
+#define ARMV8_A53_PERFCTR_L1I_CACHE_MEM_ERR			0xD0
+#define ARMV8_A53_PERFCTR_L1D_CACHE_MEM_ERR			0xD1
+#define ARMV8_A53_PERFCTR_TLB_MEM_ERR				0xD2
+#define ARMV8_A53_PERFCTR_MAX_EVENTS				0xD3
 
 /* ARMv8 Cavium ThunderX specific event types. */
 #define ARMV8_THUNDER_PERFCTR_L1D_CACHE_MISS_ST			0xE9
@@ -454,55 +470,58 @@ ARMV8_EVENT_ATTR(l2i_tlb_refill, ARMV8_PMUV3_PERFCTR_L2I_TLB_REFILL);
 ARMV8_EVENT_ATTR(l2d_tlb, ARMV8_PMUV3_PERFCTR_L2D_TLB);
 ARMV8_EVENT_ATTR(l2i_tlb, ARMV8_PMUV3_PERFCTR_L2I_TLB);
 
+#define ARMV8_PMUV3_EVENT_ATTRS	\
+	&armv8_event_attr_sw_incr.attr.attr,			\
+	&armv8_event_attr_l1i_cache_refill.attr.attr,		\
+	&armv8_event_attr_l1i_tlb_refill.attr.attr,		\
+	&armv8_event_attr_l1d_cache_refill.attr.attr,		\
+	&armv8_event_attr_l1d_cache.attr.attr,			\
+	&armv8_event_attr_l1d_tlb_refill.attr.attr,		\
+	&armv8_event_attr_ld_retired.attr.attr,			\
+	&armv8_event_attr_st_retired.attr.attr,			\
+	&armv8_event_attr_inst_retired.attr.attr,		\
+	&armv8_event_attr_exc_taken.attr.attr,			\
+	&armv8_event_attr_exc_return.attr.attr,			\
+	&armv8_event_attr_cid_write_retired.attr.attr,		\
+	&armv8_event_attr_pc_write_retired.attr.attr,		\
+	&armv8_event_attr_br_immed_retired.attr.attr,		\
+	&armv8_event_attr_br_return_retired.attr.attr,		\
+	&armv8_event_attr_unaligned_ldst_retired.attr.attr,	\
+	&armv8_event_attr_br_mis_pred.attr.attr,		\
+	&armv8_event_attr_cpu_cycles.attr.attr,			\
+	&armv8_event_attr_br_pred.attr.attr,			\
+	&armv8_event_attr_mem_access.attr.attr,			\
+	&armv8_event_attr_l1i_cache.attr.attr,			\
+	&armv8_event_attr_l1d_cache_wb.attr.attr,		\
+	&armv8_event_attr_l2d_cache.attr.attr,			\
+	&armv8_event_attr_l2d_cache_refill.attr.attr,		\
+	&armv8_event_attr_l2d_cache_wb.attr.attr,		\
+	&armv8_event_attr_bus_access.attr.attr,			\
+	&armv8_event_attr_memory_error.attr.attr,		\
+	&armv8_event_attr_inst_spec.attr.attr,			\
+	&armv8_event_attr_ttbr_write_retired.attr.attr,		\
+	&armv8_event_attr_bus_cycles.attr.attr,			\
+	&armv8_event_attr_l1d_cache_allocate.attr.attr,		\
+	&armv8_event_attr_l2d_cache_allocate.attr.attr,		\
+	&armv8_event_attr_br_retired.attr.attr,			\
+	&armv8_event_attr_br_mis_pred_retired.attr.attr,	\
+	&armv8_event_attr_stall_frontend.attr.attr,		\
+	&armv8_event_attr_stall_backend.attr.attr,		\
+	&armv8_event_attr_l1d_tlb.attr.attr,			\
+	&armv8_event_attr_l1i_tlb.attr.attr,			\
+	&armv8_event_attr_l2i_cache.attr.attr,			\
+	&armv8_event_attr_l2i_cache_refill.attr.attr,		\
+	&armv8_event_attr_l3d_cache_allocate.attr.attr,		\
+	&armv8_event_attr_l3d_cache_refill.attr.attr,		\
+	&armv8_event_attr_l3d_cache.attr.attr,			\
+	&armv8_event_attr_l3d_cache_wb.attr.attr,		\
+	&armv8_event_attr_l2d_tlb_refill.attr.attr,		\
+	&armv8_event_attr_l2i_tlb_refill.attr.attr,		\
+	&armv8_event_attr_l2d_tlb.attr.attr,			\
+	&armv8_event_attr_l2i_tlb.attr.attr,			\
+
 static struct attribute *armv8_pmuv3_event_attrs[] = {
-	&armv8_event_attr_sw_incr.attr.attr,
-	&armv8_event_attr_l1i_cache_refill.attr.attr,
-	&armv8_event_attr_l1i_tlb_refill.attr.attr,
-	&armv8_event_attr_l1d_cache_refill.attr.attr,
-	&armv8_event_attr_l1d_cache.attr.attr,
-	&armv8_event_attr_l1d_tlb_refill.attr.attr,
-	&armv8_event_attr_ld_retired.attr.attr,
-	&armv8_event_attr_st_retired.attr.attr,
-	&armv8_event_attr_inst_retired.attr.attr,
-	&armv8_event_attr_exc_taken.attr.attr,
-	&armv8_event_attr_exc_return.attr.attr,
-	&armv8_event_attr_cid_write_retired.attr.attr,
-	&armv8_event_attr_pc_write_retired.attr.attr,
-	&armv8_event_attr_br_immed_retired.attr.attr,
-	&armv8_event_attr_br_return_retired.attr.attr,
-	&armv8_event_attr_unaligned_ldst_retired.attr.attr,
-	&armv8_event_attr_br_mis_pred.attr.attr,
-	&armv8_event_attr_cpu_cycles.attr.attr,
-	&armv8_event_attr_br_pred.attr.attr,
-	&armv8_event_attr_mem_access.attr.attr,
-	&armv8_event_attr_l1i_cache.attr.attr,
-	&armv8_event_attr_l1d_cache_wb.attr.attr,
-	&armv8_event_attr_l2d_cache.attr.attr,
-	&armv8_event_attr_l2d_cache_refill.attr.attr,
-	&armv8_event_attr_l2d_cache_wb.attr.attr,
-	&armv8_event_attr_bus_access.attr.attr,
-	&armv8_event_attr_memory_error.attr.attr,
-	&armv8_event_attr_inst_spec.attr.attr,
-	&armv8_event_attr_ttbr_write_retired.attr.attr,
-	&armv8_event_attr_bus_cycles.attr.attr,
-	&armv8_event_attr_l1d_cache_allocate.attr.attr,
-	&armv8_event_attr_l2d_cache_allocate.attr.attr,
-	&armv8_event_attr_br_retired.attr.attr,
-	&armv8_event_attr_br_mis_pred_retired.attr.attr,
-	&armv8_event_attr_stall_frontend.attr.attr,
-	&armv8_event_attr_stall_backend.attr.attr,
-	&armv8_event_attr_l1d_tlb.attr.attr,
-	&armv8_event_attr_l1i_tlb.attr.attr,
-	&armv8_event_attr_l2i_cache.attr.attr,
-	&armv8_event_attr_l2i_cache_refill.attr.attr,
-	&armv8_event_attr_l3d_cache_allocate.attr.attr,
-	&armv8_event_attr_l3d_cache_refill.attr.attr,
-	&armv8_event_attr_l3d_cache.attr.attr,
-	&armv8_event_attr_l3d_cache_wb.attr.attr,
-	&armv8_event_attr_l2d_tlb_refill.attr.attr,
-	&armv8_event_attr_l2i_tlb_refill.attr.attr,
-	&armv8_event_attr_l2d_tlb.attr.attr,
-	&armv8_event_attr_l2i_tlb.attr.attr,
+	ARMV8_PMUV3_EVENT_ATTRS
 	NULL,
 };
 
@@ -527,6 +546,226 @@ static struct attribute_group armv8_pmuv3_events_attr_group = {
 	.name = "events",
 	.attrs = armv8_pmuv3_event_attrs,
 	.is_visible = armv8pmu_event_attr_is_visible,
+};
+
+#define ARMV8_CORTEXA53_EVENT_ATTR_RESOLVE(m) #m
+#define ARMV8_CORTEXA53_EVENT_ATTR(name, config) \
+	PMU_EVENT_ATTR(name, armv8_cortex_a53_event_attr_##name, \
+		       config, armv8pmu_events_sysfs_show)
+
+ARMV8_CORTEXA53_EVENT_ATTR(ext_mem_req, ARMV8_A53_PERFCTR_EXT_MEM_REQ);
+ARMV8_CORTEXA53_EVENT_ATTR(nc_ext_mem_req, ARMV8_A53_PERFCTR_NC_EXT_MEM_REQ);
+ARMV8_CORTEXA53_EVENT_ATTR(pref_linefill, ARMV8_A53_PERFCTR_PREF_LINEFILL);
+ARMV8_CORTEXA53_EVENT_ATTR(i_cache_throttle, ARMV8_A53_PERFCTR_I_CACHE_THROTTLE);
+ARMV8_CORTEXA53_EVENT_ATTR(enter_read_allocate, ARMV8_A53_PERFCTR_ENT_READ_ALLOC);
+ARMV8_CORTEXA53_EVENT_ATTR(read_allocate_mode, ARMV8_A53_PERFCTR_READ_ALLOC_MODE);
+ARMV8_CORTEXA53_EVENT_ATTR(pre_decode_error, ARMV8_A53_PERFCTR_PRE_DECODE_ERROR);
+ARMV8_CORTEXA53_EVENT_ATTR(data_write_stall, ARMV8_A53_PERFCTR_DATA_WR_STALL);
+ARMV8_CORTEXA53_EVENT_ATTR(scu_snoop_other_cpu, ARMV8_A53_PERFCTR_SCU_SNOOP_OTHER_CPU);
+ARMV8_CORTEXA53_EVENT_ATTR(cond_branch_exec, ARMV8_A53_PERFCTR_COND_BRANCH_EXEC);
+ARMV8_CORTEXA53_EVENT_ATTR(indir_br_pred, ARMV8_A53_PERFCTR_INDIR_BRANCH_MISPRED);
+ARMV8_CORTEXA53_EVENT_ATTR(indir_br_pred_comp, ARMV8_A53_PERFCTR_INDIR_BRANCH_MISPRED_COMP);
+ARMV8_CORTEXA53_EVENT_ATTR(cond_br_mis_pred, ARMV8_A53_PERFCTR_COND_BRANCH_MISPRED);
+ARMV8_CORTEXA53_EVENT_ATTR(l1i_cache_mem_err, ARMV8_A53_PERFCTR_L1I_CACHE_MEM_ERR);
+ARMV8_CORTEXA53_EVENT_ATTR(l1d_cache_mem_err, ARMV8_A53_PERFCTR_L1D_CACHE_MEM_ERR);
+ARMV8_CORTEXA53_EVENT_ATTR(tlb_mem_err, ARMV8_A53_PERFCTR_TLB_MEM_ERR);
+
+static struct attribute *armv8_cortex_a53_event_attrs[] = {
+	ARMV8_PMUV3_EVENT_ATTRS
+	&armv8_cortex_a53_event_attr_ext_mem_req.attr.attr,
+	&armv8_cortex_a53_event_attr_nc_ext_mem_req.attr.attr,
+	&armv8_cortex_a53_event_attr_pref_linefill.attr.attr,
+	&armv8_cortex_a53_event_attr_i_cache_throttle.attr.attr,
+	&armv8_cortex_a53_event_attr_enter_read_allocate.attr.attr,
+	&armv8_cortex_a53_event_attr_read_allocate_mode.attr.attr,
+	&armv8_cortex_a53_event_attr_pre_decode_error.attr.attr,
+	&armv8_cortex_a53_event_attr_data_write_stall.attr.attr,
+	&armv8_cortex_a53_event_attr_scu_snoop_other_cpu.attr.attr,
+	&armv8_cortex_a53_event_attr_cond_branch_exec.attr.attr,
+	&armv8_cortex_a53_event_attr_indir_br_pred.attr.attr,
+	&armv8_cortex_a53_event_attr_indir_br_pred_comp.attr.attr,
+	&armv8_cortex_a53_event_attr_cond_br_mis_pred.attr.attr,
+	&armv8_cortex_a53_event_attr_l1i_cache_mem_err.attr.attr,
+	&armv8_cortex_a53_event_attr_l1d_cache_mem_err.attr.attr,
+	&armv8_cortex_a53_event_attr_tlb_mem_err.attr.attr,
+	NULL
+};
+
+static umode_t
+armv8_cortex_a53_pmu_event_attr_is_visible(struct kobject *kobj,
+					   struct attribute *attr, int unused)
+{
+	struct device *dev = kobj_to_dev(kobj);
+	struct pmu *pmu = dev_get_drvdata(dev);
+	struct arm_pmu *cpu_pmu = container_of(pmu, struct arm_pmu, pmu);
+	struct perf_pmu_events_attr *pmu_attr;
+
+	pmu_attr = container_of(attr, struct perf_pmu_events_attr, attr.attr);
+
+	if (test_bit(pmu_attr->id, cpu_pmu->pmceid_bitmap) ||
+	    (pmu_attr->id >= ARMV8_A53_PERFCTR_EXT_MEM_REQ &&
+	     pmu_attr->id < ARMV8_A53_PERFCTR_MAX_EVENTS))
+		return attr->mode;
+
+	return 0;
+}
+
+static struct attribute_group armv8_cortex_a53_attr_group = {
+	.name = "events",
+	.attrs = armv8_cortex_a53_event_attrs,
+	.is_visible = armv8_cortex_a53_pmu_event_attr_is_visible,
+};
+
+#define ARMV8_CORTEXA57_EVENT_ATTR_RESOLVE(m) #m
+#define ARMV8_CORTEXA57_EVENT_ATTR(name, config) \
+	PMU_EVENT_ATTR(name, armv8_cortex_a57_event_attr_##name, \
+		       config, armv8pmu_events_sysfs_show)
+
+ARMV8_CORTEXA57_EVENT_ATTR(l1d_cache_rd, ARMV8_IMPDEF_PERFCTR_L1D_CACHE_RD);
+ARMV8_CORTEXA57_EVENT_ATTR(l1d_cache_wr, ARMV8_IMPDEF_PERFCTR_L1D_CACHE_WR);
+ARMV8_CORTEXA57_EVENT_ATTR(l1d_cache_refill_rd, ARMV8_IMPDEF_PERFCTR_L1D_CACHE_REFILL_RD);
+ARMV8_CORTEXA57_EVENT_ATTR(l1d_cache_refill_wr, ARMV8_IMPDEF_PERFCTR_L1D_CACHE_REFILL_WR);
+ARMV8_CORTEXA57_EVENT_ATTR(l1d_cache_wb_victim, ARMV8_IMPDEF_PERFCTR_L1D_CACHE_WB_VICTIM);
+ARMV8_CORTEXA57_EVENT_ATTR(l1d_cache_wb_clean, ARMV8_IMPDEF_PERFCTR_L1D_CACHE_WB_CLEAN);
+ARMV8_CORTEXA57_EVENT_ATTR(l1d_cache_inval, ARMV8_IMPDEF_PERFCTR_L1D_CACHE_INVAL);
+ARMV8_CORTEXA57_EVENT_ATTR(l1d_tlb_refill_rd, ARMV8_IMPDEF_PERFCTR_L1D_TLB_REFILL_RD);
+ARMV8_CORTEXA57_EVENT_ATTR(l1d_tlb_refill_wr, ARMV8_IMPDEF_PERFCTR_L1D_TLB_REFILL_WR);
+ARMV8_CORTEXA57_EVENT_ATTR(l2d_cache_rd, ARMV8_IMPDEF_PERFCTR_L2D_CACHE_RD);
+ARMV8_CORTEXA57_EVENT_ATTR(l2d_cache_refill_rd, ARMV8_IMPDEF_PERFCTR_L2D_CACHE_REFILL_RD);
+ARMV8_CORTEXA57_EVENT_ATTR(l2d_cache_refill_wr, ARMV8_IMPDEF_PERFCTR_L2D_CACHE_REFILL_WR);
+ARMV8_CORTEXA57_EVENT_ATTR(l2d_cache_wb_victim, ARMV8_IMPDEF_PERFCTR_L2D_CACHE_WB_VICTIM);
+ARMV8_CORTEXA57_EVENT_ATTR(l2d_cache_wb_clean, ARMV8_IMPDEF_PERFCTR_L2D_CACHE_WB_CLEAN);
+ARMV8_CORTEXA57_EVENT_ATTR(l2d_cache_inval, ARMV8_IMPDEF_PERFCTR_L2D_CACHE_INVAL);
+ARMV8_CORTEXA57_EVENT_ATTR(bus_access_rd, ARMV8_IMPDEF_PERFCTR_BUS_ACCESS_RD);
+ARMV8_CORTEXA57_EVENT_ATTR(bus_access_wr, ARMV8_IMPDEF_PERFCTR_BUS_ACCESS_WR);
+ARMV8_CORTEXA57_EVENT_ATTR(bus_access_shared, ARMV8_IMPDEF_PERFCTR_BUS_ACCESS_SHARED);
+ARMV8_CORTEXA57_EVENT_ATTR(bus_access_not_shared, ARMV8_IMPDEF_PERFCTR_BUS_ACCESS_NOT_SHARED);
+ARMV8_CORTEXA57_EVENT_ATTR(bus_access_normal, ARMV8_IMPDEF_PERFCTR_BUS_ACCESS_NORMAL);
+ARMV8_CORTEXA57_EVENT_ATTR(bus_access_periph, ARMV8_IMPDEF_PERFCTR_BUS_ACCESS_PERIPH);
+ARMV8_CORTEXA57_EVENT_ATTR(mem_access_rd, ARMV8_IMPDEF_PERFCTR_MEM_ACCESS_RD);
+ARMV8_CORTEXA57_EVENT_ATTR(mem_access_wr, ARMV8_IMPDEF_PERFCTR_MEM_ACCESS_WR);
+ARMV8_CORTEXA57_EVENT_ATTR(unaligned_ld_spec, ARMV8_IMPDEF_PERFCTR_UNALIGNED_LD_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(unaligned_st_spec, ARMV8_IMPDEF_PERFCTR_UNALIGNED_ST_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(unaligned_ldst_spec, ARMV8_IMPDEF_PERFCTR_UNALIGNED_LDST_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(ldrex_spec, ARMV8_IMPDEF_PERFCTR_LDREX_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(strex_pass_spec, ARMV8_IMPDEF_PERFCTR_STREX_PASS_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(strex_fail_spec, ARMV8_IMPDEF_PERFCTR_STREX_FAIL_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(ld_spec, ARMV8_IMPDEF_PERFCTR_LD_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(st_spec, ARMV8_IMPDEF_PERFCTR_ST_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(ldst_spec, ARMV8_IMPDEF_PERFCTR_LDST_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(dp_spec, ARMV8_IMPDEF_PERFCTR_DP_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(ase_spec, ARMV8_IMPDEF_PERFCTR_ASE_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(vfp_spec, ARMV8_IMPDEF_PERFCTR_VFP_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(pc_write_spec, ARMV8_IMPDEF_PERFCTR_PC_WRITE_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(crypto_spec, ARMV8_IMPDEF_PERFCTR_CRYPTO_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(br_immed_spec, ARMV8_IMPDEF_PERFCTR_BR_IMMED_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(br_return_spec, ARMV8_IMPDEF_PERFCTR_BR_RETURN_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(br_indirect_spec, ARMV8_IMPDEF_PERFCTR_BR_INDIRECT_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(isb_spec, ARMV8_IMPDEF_PERFCTR_ISB_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(dsb_spec, ARMV8_IMPDEF_PERFCTR_DSB_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(dmb_spec, ARMV8_IMPDEF_PERFCTR_DMB_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(exc_undef, ARMV8_IMPDEF_PERFCTR_EXC_UNDEF);
+ARMV8_CORTEXA57_EVENT_ATTR(exc_svc, ARMV8_IMPDEF_PERFCTR_EXC_SVC);
+ARMV8_CORTEXA57_EVENT_ATTR(exc_pabort, ARMV8_IMPDEF_PERFCTR_EXC_PABORT);
+ARMV8_CORTEXA57_EVENT_ATTR(exc_dabort, ARMV8_IMPDEF_PERFCTR_EXC_DABORT);
+ARMV8_CORTEXA57_EVENT_ATTR(exc_irq, ARMV8_IMPDEF_PERFCTR_EXC_IRQ);
+ARMV8_CORTEXA57_EVENT_ATTR(exc_fiq, ARMV8_IMPDEF_PERFCTR_EXC_FIQ);
+ARMV8_CORTEXA57_EVENT_ATTR(exc_smc, ARMV8_IMPDEF_PERFCTR_EXC_SMC);
+ARMV8_CORTEXA57_EVENT_ATTR(exc_hvc, ARMV8_IMPDEF_PERFCTR_EXC_HVC);
+ARMV8_CORTEXA57_EVENT_ATTR(exc_trap_pabort, ARMV8_IMPDEF_PERFCTR_EXC_TRAP_PABORT);
+ARMV8_CORTEXA57_EVENT_ATTR(exc_trap_dabort, ARMV8_IMPDEF_PERFCTR_EXC_TRAP_DABORT);
+ARMV8_CORTEXA57_EVENT_ATTR(exc_trap_other, ARMV8_IMPDEF_PERFCTR_EXC_TRAP_OTHER);
+ARMV8_CORTEXA57_EVENT_ATTR(exc_trap_irq, ARMV8_IMPDEF_PERFCTR_EXC_TRAP_IRQ);
+ARMV8_CORTEXA57_EVENT_ATTR(exc_trap_fiq, ARMV8_IMPDEF_PERFCTR_EXC_TRAP_FIQ);
+ARMV8_CORTEXA57_EVENT_ATTR(rc_ld_spec, ARMV8_IMPDEF_PERFCTR_RC_LD_SPEC);
+ARMV8_CORTEXA57_EVENT_ATTR(rc_st_spec, ARMV8_IMPDEF_PERFCTR_RC_ST_SPEC);
+
+static struct attribute *armv8_cortex_a57_event_attrs[] = {
+	ARMV8_PMUV3_EVENT_ATTRS
+	&armv8_cortex_a57_event_attr_l1d_cache_rd.attr.attr,
+	&armv8_cortex_a57_event_attr_l1d_cache_wr.attr.attr,
+	&armv8_cortex_a57_event_attr_l1d_cache_refill_rd.attr.attr,
+	&armv8_cortex_a57_event_attr_l1d_cache_refill_wr.attr.attr,
+	&armv8_cortex_a57_event_attr_l1d_cache_wb_victim.attr.attr,
+	&armv8_cortex_a57_event_attr_l1d_cache_wb_clean.attr.attr,
+	&armv8_cortex_a57_event_attr_l1d_cache_inval.attr.attr,
+	&armv8_cortex_a57_event_attr_l1d_tlb_refill_rd.attr.attr,
+	&armv8_cortex_a57_event_attr_l1d_tlb_refill_wr.attr.attr,
+	&armv8_cortex_a57_event_attr_l2d_cache_rd.attr.attr,
+	&armv8_cortex_a57_event_attr_l2d_cache_refill_rd.attr.attr,
+	&armv8_cortex_a57_event_attr_l2d_cache_refill_wr.attr.attr,
+	&armv8_cortex_a57_event_attr_l2d_cache_wb_victim.attr.attr,
+	&armv8_cortex_a57_event_attr_l2d_cache_wb_clean.attr.attr,
+	&armv8_cortex_a57_event_attr_l2d_cache_inval.attr.attr,
+	&armv8_cortex_a57_event_attr_bus_access_rd.attr.attr,
+	&armv8_cortex_a57_event_attr_bus_access_wr.attr.attr,
+	&armv8_cortex_a57_event_attr_bus_access_shared.attr.attr,
+	&armv8_cortex_a57_event_attr_bus_access_not_shared.attr.attr,
+	&armv8_cortex_a57_event_attr_bus_access_normal.attr.attr,
+	&armv8_cortex_a57_event_attr_bus_access_periph.attr.attr,
+	&armv8_cortex_a57_event_attr_mem_access_rd.attr.attr,
+	&armv8_cortex_a57_event_attr_mem_access_wr.attr.attr,
+	&armv8_cortex_a57_event_attr_unaligned_ld_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_unaligned_st_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_unaligned_ldst_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_ldrex_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_strex_pass_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_strex_fail_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_ld_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_st_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_ldst_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_dp_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_ase_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_vfp_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_pc_write_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_crypto_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_br_immed_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_br_return_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_br_indirect_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_isb_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_dsb_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_dmb_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_exc_undef.attr.attr,
+	&armv8_cortex_a57_event_attr_exc_svc.attr.attr,
+	&armv8_cortex_a57_event_attr_exc_pabort.attr.attr,
+	&armv8_cortex_a57_event_attr_exc_dabort.attr.attr,
+	&armv8_cortex_a57_event_attr_exc_irq.attr.attr,
+	&armv8_cortex_a57_event_attr_exc_fiq.attr.attr,
+	&armv8_cortex_a57_event_attr_exc_smc.attr.attr,
+	&armv8_cortex_a57_event_attr_exc_hvc.attr.attr,
+	&armv8_cortex_a57_event_attr_exc_trap_pabort.attr.attr,
+	&armv8_cortex_a57_event_attr_exc_trap_dabort.attr.attr,
+	&armv8_cortex_a57_event_attr_exc_trap_other.attr.attr,
+	&armv8_cortex_a57_event_attr_exc_trap_irq.attr.attr,
+	&armv8_cortex_a57_event_attr_exc_trap_fiq.attr.attr,
+	&armv8_cortex_a57_event_attr_rc_ld_spec.attr.attr,
+	&armv8_cortex_a57_event_attr_rc_st_spec.attr.attr,
+	NULL
+};
+
+static umode_t
+armv8_cortex_a57_pmu_event_attr_is_visible(struct kobject *kobj,
+					   struct attribute *attr, int unused)
+{
+	struct device *dev = kobj_to_dev(kobj);
+	struct pmu *pmu = dev_get_drvdata(dev);
+	struct arm_pmu *cpu_pmu = container_of(pmu, struct arm_pmu, pmu);
+	struct perf_pmu_events_attr *pmu_attr;
+
+	pmu_attr = container_of(attr, struct perf_pmu_events_attr, attr.attr);
+
+	if (test_bit(pmu_attr->id, cpu_pmu->pmceid_bitmap) ||
+	    (pmu_attr->id >= ARMV8_IMPDEF_PERFCTR_L1D_CACHE_RD &&
+	     pmu_attr->id < ARMV8_IMPDEF_PERFCTR_L3D_CACHE_RD))
+		return attr->mode;
+
+	return 0;
+}
+
+static struct attribute_group armv8_cortex_a57_attr_group = {
+	.name = "events",
+	.attrs = armv8_cortex_a57_event_attrs,
+	.is_visible = armv8_cortex_a57_pmu_event_attr_is_visible,
 };
 
 PMU_FORMAT_ATTR(event, "config:0-9");
@@ -946,9 +1185,24 @@ static int armv8_pmuv3_map_event(struct perf_event *event)
 
 static int armv8_a53_map_event(struct perf_event *event)
 {
-	return armpmu_map_event(event, &armv8_a53_perf_map,
-				&armv8_a53_perf_cache_map,
-				ARMV8_PMU_EVTYPE_EVENT);
+	int hw_event_id;
+	struct arm_pmu *armpmu = to_arm_pmu(event->pmu);
+
+	hw_event_id = armpmu_map_event(event, &armv8_a53_perf_map,
+				       &armv8_a53_perf_cache_map,
+				       ARMV8_PMU_EVTYPE_EVENT);
+	if (hw_event_id < 0)
+		return hw_event_id;
+
+	if ((hw_event_id < ARMV8_PMUV3_MAX_COMMON_EVENTS) &&
+	    test_bit(hw_event_id, armpmu->pmceid_bitmap))
+		return hw_event_id;
+
+	if (hw_event_id >= ARMV8_A53_PERFCTR_EXT_MEM_REQ &&
+	    hw_event_id < ARMV8_A53_PERFCTR_MAX_EVENTS)
+		return hw_event_id;
+
+	return  -EOPNOTSUPP;
 }
 
 static int armv8_a57_map_event(struct perf_event *event)
@@ -1032,7 +1286,7 @@ static int armv8_a53_pmu_init(struct arm_pmu *cpu_pmu)
 	cpu_pmu->name			= "armv8_cortex_a53";
 	cpu_pmu->map_event		= armv8_a53_map_event;
 	cpu_pmu->attr_groups[ARMPMU_ATTR_GROUP_EVENTS] =
-		&armv8_pmuv3_events_attr_group;
+		&armv8_cortex_a53_attr_group;
 	cpu_pmu->attr_groups[ARMPMU_ATTR_GROUP_FORMATS] =
 		&armv8_pmuv3_format_attr_group;
 	return armv8pmu_probe_pmu(cpu_pmu);
@@ -1044,7 +1298,7 @@ static int armv8_a57_pmu_init(struct arm_pmu *cpu_pmu)
 	cpu_pmu->name			= "armv8_cortex_a57";
 	cpu_pmu->map_event		= armv8_a57_map_event;
 	cpu_pmu->attr_groups[ARMPMU_ATTR_GROUP_EVENTS] =
-		&armv8_pmuv3_events_attr_group;
+		&armv8_cortex_a57_attr_group;
 	cpu_pmu->attr_groups[ARMPMU_ATTR_GROUP_FORMATS] =
 		&armv8_pmuv3_format_attr_group;
 	return armv8pmu_probe_pmu(cpu_pmu);
@@ -1056,7 +1310,7 @@ static int armv8_a72_pmu_init(struct arm_pmu *cpu_pmu)
 	cpu_pmu->name			= "armv8_cortex_a72";
 	cpu_pmu->map_event		= armv8_a57_map_event;
 	cpu_pmu->attr_groups[ARMPMU_ATTR_GROUP_EVENTS] =
-		&armv8_pmuv3_events_attr_group;
+		&armv8_cortex_a57_attr_group;
 	cpu_pmu->attr_groups[ARMPMU_ATTR_GROUP_FORMATS] =
 		&armv8_pmuv3_format_attr_group;
 	return armv8pmu_probe_pmu(cpu_pmu);

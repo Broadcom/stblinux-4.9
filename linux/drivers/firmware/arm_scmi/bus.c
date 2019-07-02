@@ -18,6 +18,7 @@
 static DEFINE_IDA(scmi_bus_id);
 static DEFINE_IDR(scmi_protocols);
 static DEFINE_SPINLOCK(protocol_lock);
+DEFINE_IDR(scmi_prot_ntfy_cback);
 
 static const struct scmi_device_id *
 scmi_dev_match_id(struct scmi_device *scmi_dev, struct scmi_driver *scmi_drv)
@@ -164,13 +165,17 @@ void scmi_set_handle(struct scmi_device *scmi_dev)
 	scmi_dev->handle = scmi_handle_get(&scmi_dev->dev);
 }
 
-int scmi_protocol_register(int protocol_id, scmi_prot_init_fn_t fn)
+int scmi_protocol_register(int protocol_id, scmi_prot_init_fn_t fn,
+			   scmi_cback_fn_t ntfy_cb_fn)
 {
 	int ret;
 
 	spin_lock(&protocol_lock);
 	ret = idr_alloc(&scmi_protocols, fn, protocol_id, protocol_id + 1,
 			GFP_ATOMIC);
+	if (ret == protocol_id)
+		ret = idr_alloc(&scmi_prot_ntfy_cback, ntfy_cb_fn, protocol_id,
+				protocol_id + 1, GFP_ATOMIC);
 	if (ret != protocol_id)
 		pr_err("unable to allocate SCMI idr slot, err %d\n", ret);
 	spin_unlock(&protocol_lock);

@@ -742,7 +742,8 @@ void __init set_smp_cross_call(void (*fn)(const struct cpumask *, unsigned int))
 
 struct ipi {
 	const char *desc;
-	void (*handler)(void);
+	void (*handler)(void *priv);
+	void (*priv);
 };
 
 #define IPI_DESC_STRING_IPI_RESCHEDULE "Rescheduling interrupts"
@@ -912,7 +913,7 @@ void handle_IPI(int ipinr, struct pt_regs *regs)
 	default:
 		if (ipi_types[ipinr].handler) {
 			irq_enter();
-			(*ipi_types[ipinr].handler)();
+			(*ipi_types[ipinr].handler)(ipi_types[ipinr].priv);
 			irq_exit();
 		} else
 			pr_crit("CPU%u: Unknown IPI message 0x%x\n",
@@ -929,7 +930,7 @@ void handle_IPI(int ipinr, struct pt_regs *regs)
  * set_ipi_handler:
  * Interface provided for a kernel module to specify an IPI handler function.
  */
-int set_ipi_handler(int ipinr, void *handler, char *desc)
+int set_ipi_handler_priv(int ipinr, void *handler, char *desc, void *priv)
 {
 	unsigned int cpu = smp_processor_id();
 
@@ -941,10 +942,17 @@ int set_ipi_handler(int ipinr, void *handler, char *desc)
 
 	ipi_types[ipinr].handler = handler;
 	ipi_types[ipinr].desc = desc;
+	ipi_types[ipinr].priv = priv;
 
 	return 0;
 }
- EXPORT_SYMBOL(set_ipi_handler);
+EXPORT_SYMBOL(set_ipi_handler_priv);
+
+int set_ipi_handler(int ipinr, void *handler, char *desc)
+{
+	return set_ipi_handler_priv(ipinr, handler, desc, NULL);
+}
+EXPORT_SYMBOL(set_ipi_handler);
 
 /*
  * clear_ipi_handler:
@@ -954,6 +962,7 @@ void clear_ipi_handler(int ipinr)
 {
 	ipi_types[ipinr].handler = NULL;
 	ipi_types[ipinr].desc = NULL;
+	ipi_types[ipinr].priv = NULL;
 }
 EXPORT_SYMBOL(clear_ipi_handler);
 

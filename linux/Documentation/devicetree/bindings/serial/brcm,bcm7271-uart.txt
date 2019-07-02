@@ -1,7 +1,10 @@
 * Broadcom ns16550a UART with optional Baud Rate Mux
 
 Required properties:
-- compatible	  : "brcm,bcm7271-uart", "ns16550a"
+- compatible	  : Should be one of the following
+  - "brcm,bcm7278-uart"
+  - "brcm,bcm7271-uart"
+  - "ns16550a"
 - reg		  : offset and length of the register set for the device
 - interrupts	  : should contain UART interrupt line
 - clock-frequency : the input clock frequency for the UART in Hz

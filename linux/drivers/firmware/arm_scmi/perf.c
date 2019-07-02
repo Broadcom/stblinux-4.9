@@ -383,6 +383,21 @@ static int scmi_dvfs_add_opps_to_device(const struct scmi_handle *handle,
 	return 0;
 }
 
+static int scmi_dvfs_get_num_domain_opps(const struct scmi_handle *handle,
+					 u32 domain, u32 *num_opps)
+{
+	struct scmi_perf_info *pi = handle->perf_priv;
+	struct perf_dom_info *dom;
+
+	if (domain >= pi->num_domains)
+		return -EINVAL;
+
+	dom = pi->dom_info + domain;
+	*num_opps = dom->opp_count;
+
+	return 0;
+}
+
 static int scmi_dvfs_get_transition_latency(const struct scmi_handle *handle,
 					    struct device *dev)
 {
@@ -434,6 +449,7 @@ static struct scmi_perf_ops perf_ops = {
 	.device_domain_id = scmi_dev_domain_id,
 	.get_transition_latency = scmi_dvfs_get_transition_latency,
 	.add_opps_to_device = scmi_dvfs_add_opps_to_device,
+	.get_num_domain_opps = scmi_dvfs_get_num_domain_opps,
 	.freq_set = scmi_dvfs_freq_set,
 	.freq_get = scmi_dvfs_freq_get,
 };
@@ -476,6 +492,6 @@ static int scmi_perf_protocol_init(struct scmi_handle *handle)
 static int __init scmi_perf_init(void)
 {
 	return scmi_protocol_register(SCMI_PROTOCOL_PERF,
-				      &scmi_perf_protocol_init);
+				      &scmi_perf_protocol_init, NULL);
 }
 subsys_initcall(scmi_perf_init);

@@ -137,6 +137,7 @@ static inline void cpu_panic_kernel(void)
 bool cpus_are_stuck_in_kernel(void);
 
 extern int set_ipi_handler(int ipinr, void *handler, char *desc);
+extern int set_ipi_handler_priv(int ipinr, void *handler, char *desc, void *priv);
 extern void clear_ipi_handler(int ipinr);
 
 #endif /* ifndef __ASSEMBLY__ */
