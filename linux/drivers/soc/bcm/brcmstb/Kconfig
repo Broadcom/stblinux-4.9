@@ -25,6 +25,21 @@ config BRCMSTB_CMA
 
 	  If you are planning to use Broadcom middleware, choose Y here.
 
+config BRCMSTB_HUGEPAGES
+	bool "Broadcom STB Huge Page Allocator"
+	depends on ARCH_BRCMSTB && (ARM || ARM64) && CMA && BRCMSTB_MEMORY_API && !NUMA
+	default y
+	select ZONE_MOVABLE
+	help
+	  This driver implements a contiguous memory allocator that steals 2MB
+	  huge pages from a ZONE_MOVABLE memory zone for use by the Broadcom
+	  middleware. This allows better sharing of memory with applications
+	  than is available with the fixed boot-time allocations of bmem. It
+	  also avoids issues encountered by standard CMA when using large
+	  allocations.
+
+	  If you are planning to use Broadcom middleware, choose Y here.
+
 config BRCMSTB_DPFE
 	bool "Broadcom STB DDR PHY Front End Driver"
 	depends on (ARCH_BRCMSTB && (ARM || ARM64)) || COMPILE_TEST
@@ -113,6 +128,14 @@ config BRCMSTB_NEXUS_CLK_API
 	help
 	   Provides an API for Nexus to enable and disable select
 	   Linux clocks using an integer clock id.
+
+config BRCMSTB_NEXUS_RESET_API
+	bool
+	depends on BRCMSTB_NEXUS_API
+	default BRCMSTB_NEXUS_API
+	help
+	   Provides an API for Nexus to reset select
+	   Linux cores using an integer reset id.
 
 config BRCMSTB_BBSI
 	tristate "Support for BBSI chips"

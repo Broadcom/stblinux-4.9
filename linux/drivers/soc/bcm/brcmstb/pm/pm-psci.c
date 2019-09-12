@@ -15,6 +15,7 @@
 #include <linux/brcmstb/brcmstb.h>
 #include <linux/brcmstb/memory_api.h>
 #include <linux/soc/brcmstb/brcmstb.h>
+#include <linux/brcmstb/brcmstb-smccc.h>
 
 #include <uapi/linux/psci.h>
 
@@ -22,76 +23,7 @@
 
 #include "pm-common.h"
 
-#ifdef CONFIG_64BIT
-#define PSCI_FN_NATIVE(version, name)   PSCI_##version##_FN64_##name
-#else
-#define PSCI_FN_NATIVE(version, name)   PSCI_##version##_FN_##name
-#endif
-
-/* Broadcom STB custom SIP function calls */
-#define SIP_FUNC_INTEG_REGION_SET	\
-	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, \
-			   IS_ENABLED(CONFIG_64BIT), \
-			   ARM_SMCCC_OWNER_SIP, \
-			   0)
-#define SIP_FUNC_INTEG_REGION_DEL	\
-	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, \
-			   IS_ENABLED(CONFIG_64BIT), \
-			   ARM_SMCCC_OWNER_SIP, \
-			   1)
-#define SIP_FUNC_INTEG_REGION_RESET_ALL	\
-	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, \
-			   IS_ENABLED(CONFIG_64BIT), \
-			   ARM_SMCCC_OWNER_SIP, \
-			   2)
-#define SIP_FUNC_PANIC_NOTIFY		\
-	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, \
-			   IS_ENABLED(CONFIG_64BIT), \
-			   ARM_SMCCC_OWNER_SIP, \
-			   3)
-#define SIP_FUNC_PSCI_FEATURES		\
-	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, \
-			   IS_ENABLED(CONFIG_64BIT), \
-			   ARM_SMCCC_OWNER_SIP, \
-			   4)
-
-#define SIP_SVC_REVISION		\
-	ARM_SMCCC_CALL_VAL(ARM_SMCCC_FAST_CALL, \
-			   IS_ENABLED(CONFIG_64BIT), \
-			   ARM_SMCCC_OWNER_SIP, \
-			   0xFF02)
-
-#define SIP_MIN_REGION_SIZE	4096
-#define SIP_REVISION_MAJOR	0
-#define SIP_REVISION_MINOR	2
-
-typedef unsigned long (psci_fn)(unsigned long, unsigned long,
-				unsigned long, unsigned long);
 static psci_fn *invoke_psci_fn;
-
-static unsigned long __invoke_psci_fn_hvc(unsigned long function_id,
-					  unsigned long arg0,
-					  unsigned long arg1,
-					  unsigned long arg2)
-{
-	struct arm_smccc_res res;
-
-	arm_smccc_hvc(function_id, arg0, arg1, arg2, 0, 0, 0, 0, &res);
-
-	return res.a0;
-}
-
-static unsigned long __invoke_psci_fn_smc(unsigned long function_id,
-					  unsigned long arg0,
-					  unsigned long arg1,
-					  unsigned long arg2)
-{
-	struct arm_smccc_res res;
-
-	arm_smccc_smc(function_id, arg0, arg1, arg2, 0, 0, 0, 0, &res);
-
-	return res.a0;
-}
 
 static int brcmstb_psci_integ_region(unsigned long function_id,
 				     unsigned long base,

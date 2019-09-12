@@ -13,6 +13,7 @@
 #ifdef CONFIG_BRCMSTB
 #include <linux/brcmstb/cma_driver.h>
 #include <linux/brcmstb/bmem.h>
+#include <linux/brcmstb/bhpa.h>
 #endif
 
 #include <linux/sched.h>
@@ -547,6 +548,18 @@ static int brcmstb_get_page(struct mm_struct *mm, unsigned long start,
 		ret = 0;
 		goto out;
 	}
+
+#ifdef CONFIG_BRCMSTB_HUGEPAGES
+	if (unlikely(bhpa_find_region((phys_addr_t)pfn << PAGE_SHIFT, PAGE_SIZE)
+		     >= 0)) {
+		if (page) {
+			*page = tmp_page;
+			get_page(*page);
+		}
+		ret = 0;
+		goto out;
+	}
+#endif
 #endif
 out:
 	pte_unmap(pte);

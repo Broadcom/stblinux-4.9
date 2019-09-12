@@ -578,6 +578,9 @@ static void *__alloc_from_pool(size_t size, struct page **ret_page)
 
 static bool __in_atomic_pool(void *start, size_t size)
 {
+	if (unlikely(!atomic_pool))
+		return false;
+
 	return addr_in_gen_pool(atomic_pool, (unsigned long)start, size);
 }
 

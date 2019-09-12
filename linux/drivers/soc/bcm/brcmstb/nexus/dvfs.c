@@ -24,11 +24,13 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/types.h>
+#include <linux/uaccess.h>
 
 #include "../../../../firmware/arm_scmi/common.h"
 
 #define SCMI_PROTOCOL_BRCM 0x80
 #define SCMI_MAX_STRINGLEN 116
+#define MAX_PSTATES 16
 
 #define SEQ_PRINTF(m, x...)			\
 do {						\
@@ -43,6 +45,29 @@ enum brcm_protocol_cmd {
 	BRCM_CLK_SHOW_CMD = 0x4,
 	BRCM_PMAP_SHOW_CMD = 0x5,
 	BRCM_CLK_SHOW_NEW_CMD = 0x6,
+	BRCM_RESET_ENABLE_CMD = 0x7,
+	BRCM_RESET_DISABLE_CMD = 0x8,
+};
+
+static const char *pmap_cores[BCLK_SW_NUM_CORES] = {
+	[BCLK_SW_CPU_CORE - BCLK_SW_OFFSET] = "cpu",
+	[BCLK_SW_V3D - BCLK_SW_OFFSET] = "v3d0",
+	[BCLK_SW_SYSIF - BCLK_SW_OFFSET] = "sysif0",
+	[BCLK_SW_SCB - BCLK_SW_OFFSET] = "scb0",
+	[BCLK_SW_HVD0 - BCLK_SW_OFFSET] = "hvd0",
+	[BCLK_SW_RAAGA0 - BCLK_SW_OFFSET] = "raaga0",
+	[BCLK_SW_VICE0 - BCLK_SW_OFFSET] = "vice0",
+	[BCLK_SW_VICE0_PSS - BCLK_SW_OFFSET] = "vice0_pss",
+	[BCLK_SW_VICE1 - BCLK_SW_OFFSET] = "vice1",
+	[BCLK_SW_VICE1_PSS - BCLK_SW_OFFSET] = "vice1_pss",
+	[BCLK_SW_XPT - BCLK_SW_OFFSET] = "xpt",
+	[BCLK_SW_M2MC0 - BCLK_SW_OFFSET] = "m2mc0",
+	[BCLK_SW_M2MC1 - BCLK_SW_OFFSET] = "m2mc1",
+	[BCLK_SW_MIPMAP0 - BCLK_SW_OFFSET] = "mipmap0",
+	[BCLK_SW_TSX0 - BCLK_SW_OFFSET] = "tsx0",
+	[BCLK_SW_SMARTCARD0 - BCLK_SW_OFFSET] = "sc0",
+	[BCLK_SW_SMARTCARD1 - BCLK_SW_OFFSET] = "sc1",
+	[BCLK_SW_VPU0 - BCLK_SW_OFFSET] = "vpu0",
 };
 
 static const struct scmi_handle *handle;
@@ -228,13 +253,16 @@ int brcm_pmap_show(void)
 }
 EXPORT_SYMBOL(brcm_pmap_show);
 
-int brcm_pmap_num_pstates(unsigned int clk_id, unsigned int *num_pstates)
+int brcm_pmap_num_pstates(unsigned int core_id, unsigned int *num_pstates)
 {
-	struct scmi_perf_ops *perf_ops = handle->perf_ops;
-	unsigned int domain = clk_id - BCLK_SW_OFFSET;
+	struct scmi_perf_ops *perf_ops;
+	unsigned int domain = core_id - BCLK_SW_OFFSET;
 	int ret;
 
-	if (clk_id <= BCLK_SW_OFFSET || clk_id >= BCLK_SW_NUM_CORES)
+	if (!handle)
+		return -EINVAL;
+	perf_ops = handle->perf_ops;
+	if (core_id <= BCLK_SW_OFFSET || core_id >= BCLK_SW_NUM_CORES)
 		return -EINVAL;
 
 	clk_api_lock();
@@ -245,13 +273,13 @@ int brcm_pmap_num_pstates(unsigned int clk_id, unsigned int *num_pstates)
 }
 EXPORT_SYMBOL(brcm_pmap_num_pstates);
 
-int brcm_pmap_get_pstate(unsigned int clk_id, unsigned int *pstate)
+int brcm_pmap_get_pstate(unsigned int core_id, unsigned int *pstate)
 {
 	struct scmi_perf_ops *perf_ops = handle->perf_ops;
-	unsigned int domain = clk_id - BCLK_SW_OFFSET;
+	unsigned int domain = core_id - BCLK_SW_OFFSET;
 	int ret;
 
-	if (clk_id <= BCLK_SW_OFFSET || clk_id >= BCLK_SW_NUM_CORES)
+	if (core_id <= BCLK_SW_OFFSET || core_id >= BCLK_SW_NUM_CORES)
 		return -EINVAL;
 
 	clk_api_lock();
@@ -262,14 +290,14 @@ int brcm_pmap_get_pstate(unsigned int clk_id, unsigned int *pstate)
 }
 EXPORT_SYMBOL(brcm_pmap_get_pstate);
 
-int brcm_pmap_set_pstate(unsigned int clk_id, unsigned int pstate)
+int brcm_pmap_set_pstate(unsigned int core_id, unsigned int pstate)
 {
 
 	struct scmi_perf_ops *perf_ops = handle->perf_ops;
-	unsigned int domain = clk_id - BCLK_SW_OFFSET;
+	unsigned int domain = core_id - BCLK_SW_OFFSET;
 	int ret;
 
-	if (clk_id <= BCLK_SW_OFFSET || clk_id >= BCLK_SW_NUM_CORES)
+	if (core_id <= BCLK_SW_OFFSET || core_id >= BCLK_SW_NUM_CORES)
 		return -EINVAL;
 
 	clk_api_lock();
@@ -279,6 +307,70 @@ int brcm_pmap_set_pstate(unsigned int clk_id, unsigned int pstate)
 	return ret;
 }
 EXPORT_SYMBOL(brcm_pmap_set_pstate);
+
+int brcm_pmap_get_pstate_freqs(unsigned int core_id, u32 *freqs)
+{
+	int ret;
+	u32 freq_cnt, i;
+	struct scmi_perf_ops *perf_ops = handle->perf_ops;
+	unsigned int domain = core_id - BCLK_SW_OFFSET;
+
+	if (core_id <= BCLK_SW_OFFSET || core_id >= BCLK_SW_NUM_CORES)
+		return -EINVAL;
+
+	ret = brcm_pmap_num_pstates(core_id, &freq_cnt);
+	if (ret)
+		return -EINVAL;
+
+	clk_api_lock();
+	ret = perf_ops->domain_freqs_get(handle, domain, freqs);
+	/* sort frequencies in descending order */
+	for (i = 0; i < freq_cnt/2; i++)
+		swap(freqs[i], freqs[freq_cnt - i - 1]);
+
+	clk_api_unlock();
+
+	return ret;
+}
+EXPORT_SYMBOL(brcm_pmap_get_pstate_freqs);
+
+int brcm_reset_assert(unsigned int reset_id)
+{
+	int ret;
+	u32 params = reset_id - BRST_SW_OFFSET;
+
+	if (reset_id <= BRST_SW_OFFSET || reset_id >= BRST_SW_NUM_CORES)
+		return -EINVAL;
+
+	clk_api_lock();
+	ret = brcm_send_cmd_via_scmi(handle, BRCM_RESET_ENABLE_CMD, 0,
+				       SCMI_PROTOCOL_BRCM,
+				       1, 0,
+				       &params);
+	clk_api_unlock();
+
+	return ret;
+}
+EXPORT_SYMBOL(brcm_reset_assert);
+
+int brcm_reset_deassert(unsigned int reset_id)
+{
+	int ret;
+	u32 params = reset_id - BRST_SW_OFFSET;
+
+	if (reset_id <= BRST_SW_OFFSET || reset_id >= BRST_SW_NUM_CORES)
+		return -EINVAL;
+
+	clk_api_lock();
+	ret = brcm_send_cmd_via_scmi(handle, BRCM_RESET_DISABLE_CMD, 0,
+				       SCMI_PROTOCOL_BRCM,
+				       1, 0,
+				       &params);
+	clk_api_unlock();
+
+	return ret;
+}
+EXPORT_SYMBOL(brcm_reset_deassert);
 
 #ifdef CONFIG_DEBUG_FS
 #include <linux/debugfs.h>
@@ -307,6 +399,43 @@ static int brcm_scmi_pmap_show(struct seq_file *s, void *data)
 	return ret;
 }
 
+/* Our debugfs helpers */
+static int filp_to_core_id(struct file *filp)
+{
+	const char **p = filp->f_path.dentry->d_inode->i_private;
+
+	return BCLK_SW_OFFSET + (p - &pmap_cores[0]);
+}
+
+static int uint_from_buf(const char *ubuf, size_t len, unsigned int *result)
+{
+	char buf[32];
+
+	if (len > sizeof(buf) - 1)
+		return -EINVAL;
+	if (copy_from_user(buf, ubuf, len))
+		return -EFAULT;
+	buf[len] = '\0';
+	return kstrtouint(buf, 10, result);
+}
+
+static int get_all_pmap_freq_info(int core_id, unsigned int *num_pstates,
+				  unsigned int *cur_pstate, unsigned int *freqs)
+{
+	int ret;
+
+	ret = brcm_pmap_num_pstates(core_id, num_pstates);
+	if (ret < 0)
+		return ret;
+	if (*num_pstates > MAX_PSTATES)
+		return -EINVAL;
+	ret = brcm_pmap_get_pstate(core_id, cur_pstate);
+	if (ret < 0)
+		return ret;
+	return brcm_pmap_get_pstate_freqs(core_id, freqs);
+}
+
+
 static int brcm_scmi_clk_summary_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, brcm_scmi_clk_summary_show, inode->i_private);
@@ -316,6 +445,137 @@ static int brcm_scmi_pmap_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, brcm_scmi_pmap_show, inode->i_private);
 }
+
+static ssize_t brcm_scmi_pmap_enable_wt(struct file *filp,
+					const char __user *ubuf,
+					size_t len, loff_t *offp)
+{
+	const int core_id = filp_to_core_id(filp);
+	unsigned int en;
+	int ret;
+
+	ret = uint_from_buf(ubuf, len, &en);
+	if (ret < 0)
+		return ret;
+	if (en)
+		ret = brcm_clk_prepare_enable(core_id);
+	else
+		brcm_clk_disable_unprepare(core_id);
+
+	return ret < 0 ? ret : len;
+}
+
+static ssize_t brcm_scmi_pmap_cur_freq_rd(struct file *filp, char __user *ubuf,
+					  size_t count, loff_t *offp)
+{
+	int ret;
+	char buf[32];
+	unsigned int freqs[MAX_PSTATES], size, num_pstates, cur_pstate;
+	const int core_id = filp_to_core_id(filp);
+
+	ret = get_all_pmap_freq_info(core_id, &num_pstates, &cur_pstate,
+				     freqs);
+	if (ret < 0)
+		return ret;
+	size = snprintf(buf, sizeof(buf), "%u\n", freqs[cur_pstate]);
+	return simple_read_from_buffer(ubuf, count, offp, buf, size);
+}
+
+static ssize_t brcm_scmi_pmap_cur_freq_wt(struct file *filp,
+					  const char __user *ubuf,
+					  size_t len, loff_t *offp)
+{
+	int ret, i;
+	unsigned int freqs[MAX_PSTATES], num_pstates, cur_pstate, freq;
+	const int core_id = filp_to_core_id(filp);
+
+	ret = get_all_pmap_freq_info(core_id, &num_pstates, &cur_pstate,
+				     freqs);
+	if (ret < 0)
+		return ret;
+	ret = uint_from_buf(ubuf, len, &freq);
+	for (i = 0; i < num_pstates; i++)
+		if (freqs[i] == freq)
+			break;
+	if (i >= num_pstates)
+		return -EINVAL;
+	ret = brcm_pmap_set_pstate(core_id, i);
+	if (ret < 0)
+		return ret;
+	return len;
+}
+
+static ssize_t brcm_scmi_pmap_all_freqs(struct file *filp, char __user *ubuf,
+					size_t count, loff_t *offp)
+{
+	int ret, i;
+	char buf[16 * MAX_PSTATES];
+	unsigned int freqs[MAX_PSTATES], size, num_pstates, cur_pstate;
+	const int core_id = filp_to_core_id(filp);
+
+	ret = get_all_pmap_freq_info(core_id, &num_pstates, &cur_pstate, freqs);
+	if (ret < 0)
+		return ret;
+
+	for (size = 0, i = 0; i < num_pstates; i++) {
+		ret = snprintf(buf + size, sizeof(buf) - size, "%u\n",
+			       freqs[i]);
+		if (ret < 0)
+			return ret;
+		size += ret;
+	}
+	return simple_read_from_buffer(ubuf, count, offp, buf, size);
+}
+
+static ssize_t brcm_scmi_pmap_cur_pstate_rd(struct file *filp,
+					    char __user *ubuf,
+					    size_t count, loff_t *offp)
+{
+	int ret;
+	char buf[32];
+	unsigned int pstate, size;
+	const int core_id = filp_to_core_id(filp);
+
+	ret = brcm_pmap_get_pstate(core_id, &pstate);
+	if (ret < 0)
+		return ret;
+	size = snprintf(buf, sizeof(buf), "%u\n", pstate);
+	return simple_read_from_buffer(ubuf, count, offp, buf, size);
+}
+
+static ssize_t brcm_scmi_pmap_cur_pstate_wt(struct file *filp,
+					    const char __user *ubuf,
+					    size_t len, loff_t *offp)
+{
+	int ret;
+	unsigned int pstate;
+	const int core_id = filp_to_core_id(filp);
+
+	ret = uint_from_buf(ubuf, len, &pstate);
+	if (ret < 0)
+		return ret;
+	ret = brcm_pmap_set_pstate(core_id, pstate);
+	if (ret < 0)
+		return ret;
+	return len;
+}
+
+static ssize_t brcm_scmi_pmap_num_pstates(struct file *filp, char __user *ubuf,
+					  size_t count, loff_t *offp)
+{
+	int ret;
+	char buf[32];
+	unsigned int num_pstates, size;
+	const int core_id = filp_to_core_id(filp);
+
+	ret = brcm_pmap_num_pstates(core_id, &num_pstates);
+	if (ret < 0)
+		return ret;
+	size = snprintf(buf, sizeof(buf), "%u\n", num_pstates);
+	return simple_read_from_buffer(ubuf, count, offp, buf, size);
+}
+
+
 
 static const struct file_operations brcm_scmi_clk_summary_fops = {
 	.open		= brcm_scmi_clk_summary_open,
@@ -331,6 +591,28 @@ static const struct file_operations brcm_scmi_pmap_fops = {
 	.release	= single_release,
 };
 
+static const struct file_operations brcm_scmi_pmap_enable_fops = {
+	.write		= brcm_scmi_pmap_enable_wt,
+};
+
+static const struct file_operations brcm_scmi_pmap_cur_freq_fops = {
+	.read		= brcm_scmi_pmap_cur_freq_rd,
+	.write		= brcm_scmi_pmap_cur_freq_wt,
+};
+
+static const struct file_operations brcm_scmi_pmap_all_freqs_fops = {
+	.read		= brcm_scmi_pmap_all_freqs,
+};
+
+static const struct file_operations brcm_scmi_pmap_cur_pstate_fops = {
+	.read		= brcm_scmi_pmap_cur_pstate_rd,
+	.write		= brcm_scmi_pmap_cur_pstate_wt,
+};
+
+static const struct file_operations brcm_scmi_pmap_num_pstates_fops = {
+	.read		= brcm_scmi_pmap_num_pstates,
+};
+
 /**
  * brcm_scmi_debug_init - lazily populate the debugfs brcm_scmi directory
  *
@@ -339,9 +621,10 @@ static const struct file_operations brcm_scmi_pmap_fops = {
  * populates the debugfs brcm_scmi directory once at boot-time when we
  * know that debugfs is setup. It should only be called once at boot-time.
  */
-static int __init brcm_scmi_debug_init(void)
+static int brcm_scmi_debug_init(void)
 {
-	struct dentry *d;
+	struct dentry *d, *d_cores;
+	unsigned int i, n;
 
 	rootdir = debugfs_create_dir("brcm-scmi", NULL);
 
@@ -360,9 +643,55 @@ static int __init brcm_scmi_debug_init(void)
 	if (!d)
 		return -ENOMEM;
 
+	d_cores = debugfs_create_dir("pmap_cores", rootdir);
+	if (!d_cores)
+		return -ENOMEM;
+
+	for (i = 0; i < BCLK_SW_NUM_CORES - BCLK_SW_OFFSET; i++) {
+		struct dentry *d_core;
+
+		if (brcm_pmap_num_pstates(i + BCLK_SW_OFFSET, &n))
+			continue;
+		if (n == 0)
+			continue;
+		d_core = debugfs_create_dir(pmap_cores[i], d_cores);
+		if (!d_core)
+			return -ENOMEM;
+
+		d = debugfs_create_file("enable", 0644, d_core, &pmap_cores[i],
+					&brcm_scmi_pmap_enable_fops);
+		if (!d)
+			return -ENOMEM;
+
+		d = debugfs_create_file("cur_freq", 0644, d_core,
+					&pmap_cores[i],
+					&brcm_scmi_pmap_cur_freq_fops);
+		if (!d)
+			return -ENOMEM;
+
+		d = debugfs_create_file("all_freqs", 0444, d_core,
+					&pmap_cores[i],
+					&brcm_scmi_pmap_all_freqs_fops);
+		if (!d)
+			return -ENOMEM;
+
+		d = debugfs_create_file("cur_pstate", 0644, d_core,
+					&pmap_cores[i],
+					&brcm_scmi_pmap_cur_pstate_fops);
+		if (!d)
+			return -ENOMEM;
+
+		d = debugfs_create_file("num_pstates", 0444, d_core,
+					&pmap_cores[i],
+					&brcm_scmi_pmap_num_pstates_fops);
+		if (!d)
+			return -ENOMEM;
+	}
+
+
+
 	return 0;
 }
-late_initcall(brcm_scmi_debug_init);
 #endif
 
 /**
@@ -684,6 +1013,10 @@ static int brcm_scmi_dvfs_probe(struct scmi_device *sdev)
 
 	if (!handle)
 		return -ENODEV;
+
+#ifdef CONFIG_DEBUG_FS
+	brcm_scmi_debug_init();
+#endif
 
 	/* This tells AVS we are using the new API */
 	ret = brcmstb_stb_avs_read_debug(0, &value);

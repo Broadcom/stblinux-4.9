@@ -23,6 +23,7 @@
 #include <linux/tty_flip.h>
 #include <linux/delay.h>
 #include <linux/clk.h>
+#include <linux/hrtimer.h>
 
 #include "8250.h"
 
@@ -49,8 +50,14 @@ struct brcmuart_priv {
 	unsigned long	default_mux_rate;
 	u32		real_rates[ARRAY_SIZE(brcmstb_rate_table)];
 	const u32	*rate_table;
+	ktime_t		char_wait;
+	struct uart_port *up;
+	struct hrtimer	hrt;
+	u32		bad_rx_timeout_keeps;
+	u32		bad_rx_timeout_discards;
+	u32		flags;
+#define BRCMUART_PRIV_FLAGS_SHUTDOWN 1
 };
-
 
 /*
  * Not all clocks run at the exact specified rate, so set each requested
@@ -96,6 +103,7 @@ static void set_clock_mux(struct uart_port *up, struct brcmuart_priv *priv,
 	u64 hires_err;
 	int rc;
 	int i;
+	int real_baud;
 
 	/* If the Baud Mux Clock was not specified, just return */
 	if (priv->baud_mux_clk == NULL)
@@ -147,9 +155,15 @@ static void set_clock_mux(struct uart_port *up, struct brcmuart_priv *priv,
 		dev_err(up->dev, "Error, baud: %d has %u.%u%% error\n",
 			baud, percent / 100, percent % 100);
 
+	real_baud = rate / 16 / best_quot;
 	dev_dbg(up->dev, "Selecting BAUD MUX rate: %u\n", rate);
 	dev_dbg(up->dev, "Requested baud: %u, Actual baud: %u\n",
-		baud, rate / 16 / best_quot);
+		baud, real_baud);
+
+	/* calc nanoseconds for 1.5 characters time at the given baud rate */
+	i = 1000000000 / real_baud / 10;
+	i += (i / 2);
+	priv->char_wait = ns_to_ktime(i);
 
 	up->uartclk = rate;
 }
@@ -167,24 +181,62 @@ static void brcmstb_set_termios(struct uart_port *up,
 		p8250->port.status |= UPSTAT_AUTOCTS;
 }
 
+static int brcmuart_startup(struct uart_port *port)
+{
+	struct brcmuart_priv *priv = port->private_data;
+
+	priv->flags &= ~BRCMUART_PRIV_FLAGS_SHUTDOWN;
+	return serial8250_do_startup(port);
+}
+
+static void brcmuart_shutdown(struct uart_port *port)
+{
+	struct brcmuart_priv *priv = port->private_data;
+
+	priv->flags |= BRCMUART_PRIV_FLAGS_SHUTDOWN;
+	return serial8250_do_shutdown(port);
+}
+
 static int brcmuart_handle_irq(struct uart_port *p)
 {
 	unsigned int iir = serial_port_in(p, UART_IIR);
+	struct brcmuart_priv *priv = p->private_data;
+	struct uart_8250_port *up = up_to_u8250p(p);
 	unsigned int status;
 	unsigned long flags;
+	unsigned int ier;
+	unsigned int mcr;
 	int handled = 0;
 
 	/*
 	 * There's a bug in some 8250 cores where we get a timeout
-	 * interrupt but there is no data ready.  Do a bogus
-	 * read to clear it, otherwise we get continuous interrupts
-	 * until another character arrives.
+	 * interrupt but there is no data ready.
 	 */
-	if ((iir & UART_IIR_ID) == UART_IIR_RX_TIMEOUT) {
+	if (((iir & UART_IIR_ID) == UART_IIR_RX_TIMEOUT) &&
+	    ((priv->flags & BRCMUART_PRIV_FLAGS_SHUTDOWN) == 0)) {
 		spin_lock_irqsave(&p->lock, flags);
 		status = serial_port_in(p, UART_LSR);
 		if ((status & UART_LSR_DR) == 0) {
-			serial_port_in(p, UART_RX);
+
+			ier = serial_port_in(p, UART_IER);
+			/*
+			 * if Receive Data Interrupt is enabled and
+			 * we're uing hardware flow control, deassert
+			 * RTS and wait for any chars in the pipline to
+			 * arrive and then check for DR again.
+			 */
+			if ((ier & UART_IER_RDI) && (up->mcr & UART_MCR_AFE)) {
+				ier &= ~(UART_IER_RLSI | UART_IER_RDI);
+				serial_port_out(p, UART_IER, ier);
+				mcr = serial_port_in(p, UART_MCR);
+				mcr &= ~UART_MCR_RTS;
+				serial_port_out(p, UART_MCR, mcr);
+				hrtimer_start(&priv->hrt, priv->char_wait,
+					      HRTIMER_MODE_REL);
+			} else {
+				serial_port_in(p, UART_RX);
+			}
+
 			handled = 1;
 		}
 		spin_unlock_irqrestore(&p->lock, flags);
@@ -193,6 +245,57 @@ static int brcmuart_handle_irq(struct uart_port *p)
 	}
 	return serial8250_handle_irq(p, iir);
 }
+
+static enum hrtimer_restart brcmuart_hrtimer_func(struct hrtimer *t)
+{
+	struct brcmuart_priv *priv = container_of(t, struct brcmuart_priv, hrt);
+	struct uart_port *p = priv->up;
+	struct uart_8250_port *up = up_to_u8250p(p);
+	unsigned int status;
+	unsigned long flags;
+
+	if (priv->flags & BRCMUART_PRIV_FLAGS_SHUTDOWN)
+		return HRTIMER_NORESTART;
+
+	spin_lock_irqsave(&p->lock, flags);
+	status = serial_port_in(p, UART_LSR);
+
+	/*
+	 * If a character did not arrive after the timeout, clear the false
+	 * receive timeout.
+	 */
+	if ((status & UART_LSR_DR) == 0) {
+		serial_port_in(p, UART_RX);
+		priv->bad_rx_timeout_discards++;
+	} else {
+		priv->bad_rx_timeout_keeps++;
+	}
+
+	/* re-enable receive unless upper layer has disabled it */
+	if ((up->ier & (UART_IER_RLSI | UART_IER_RDI)) ==
+	    (UART_IER_RLSI | UART_IER_RDI)) {
+		status = serial_port_in(p, UART_IER);
+		status |= (UART_IER_RLSI | UART_IER_RDI);
+		serial_port_out(p, UART_IER, status);
+		status = serial_port_in(p, UART_MCR);
+		status |= UART_MCR_RTS;
+		serial_port_out(p, UART_MCR, status);
+	}
+	spin_unlock_irqrestore(&p->lock, flags);
+	return HRTIMER_NORESTART;
+}
+
+static ssize_t bad_rx_timeouts_show(struct device *dev,
+				     struct device_attribute *attr,
+				     char *buf)
+{
+	struct brcmuart_priv *priv = dev_get_drvdata(dev);
+
+	return sprintf(buf, "No chars: %d, Late chars: %d\n",
+		       priv->bad_rx_timeout_discards,
+		       priv->bad_rx_timeout_keeps);
+}
+static DEVICE_ATTR_RO(bad_rx_timeouts);
 
 static const struct of_device_id brcmuart_dt_ids[] = {
 	{
@@ -205,12 +308,15 @@ static const struct of_device_id brcmuart_dt_ids[] = {
 	},
 	{},
 };
+
 MODULE_DEVICE_TABLE(of, brcmuart_dt_ids);
 
 static int brcmuart_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
 	const struct of_device_id *of_id = NULL;
+	struct uart_8250_port *new_port;
+	struct device *dev = &pdev->dev;
 	struct brcmuart_priv *priv;
 	struct clk *baud_mux_clk;
 	struct resource *res_mem;
@@ -221,10 +327,10 @@ static int brcmuart_probe(struct platform_device *pdev)
 
 	irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
 	if (!irq) {
-		dev_err(&pdev->dev, "missing irq\n");
+		dev_err(dev, "missing irq\n");
 		return -EINVAL;
 	}
-	priv = devm_kzalloc(&pdev->dev, sizeof(struct brcmuart_priv),
+	priv = devm_kzalloc(dev, sizeof(struct brcmuart_priv),
 			GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
@@ -237,7 +343,7 @@ static int brcmuart_probe(struct platform_device *pdev)
 
 	res_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res_mem) {
-		dev_err(&pdev->dev, "Registers not specified.\n");
+		dev_err(dev, "Registers not specified.\n");
 		return -ENODEV;
 	}
 
@@ -248,26 +354,26 @@ static int brcmuart_probe(struct platform_device *pdev)
 	if (IS_ERR(baud_mux_clk)) {
 		if (PTR_ERR(baud_mux_clk) == -EPROBE_DEFER)
 			return -EPROBE_DEFER;
-		dev_info(&pdev->dev, "BAUD MUX clock not specified\n");
+		dev_info(dev, "BAUD MUX clock not specified\n");
 	} else {
-		dev_info(&pdev->dev, "BAUD MUX clock found\n");
+		dev_info(dev, "BAUD MUX clock found\n");
 		ret = clk_prepare_enable(baud_mux_clk);
 		if (ret)
 			return ret;
 		priv->baud_mux_clk = baud_mux_clk;
-		init_real_clk_rates(&pdev->dev, priv);
+		init_real_clk_rates(dev, priv);
 		clk_rate = priv->default_mux_rate;
 	}
 
 	if (clk_rate == 0) {
-		dev_err(&pdev->dev, "clock-frequency or clk not defined\n");
+		dev_err(dev, "clock-frequency or clk not defined\n");
 		return -EINVAL;
 	}
 
 	memset(&up, 0, sizeof(up));
 	up.port.type = PORT_16550A;
 	up.port.uartclk = clk_rate;
-	up.port.dev = &pdev->dev;
+	up.port.dev = dev;
 	up.port.mapbase = res_mem->start;
 	up.port.irq = irq->start;
 	up.port.handle_irq = brcmuart_handle_irq;
@@ -276,7 +382,7 @@ static int brcmuart_probe(struct platform_device *pdev)
 		UPIO_MEM32BE : UPIO_MEM32;
 	up.port.flags = UPF_SHARE_IRQ | UPF_BOOT_AUTOCONF
 		| UPF_FIXED_PORT | UPF_FIXED_TYPE | UPF_IOREMAP;
-	up.port.dev = &pdev->dev;
+	up.port.dev = dev;
 	up.port.private_data = priv;
 	up.capabilities = UART_CAP_FIFO | UART_CAP_AFE;
 	up.port.fifosize = 32;
@@ -286,12 +392,24 @@ static int brcmuart_probe(struct platform_device *pdev)
 	if (ret >= 0)
 		up.port.line = ret;
 
+	/* setup HR timer */
+	hrtimer_init(&priv->hrt, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
+	priv->hrt.function = brcmuart_hrtimer_func;
+	up.port.shutdown = brcmuart_shutdown;
+	up.port.startup = brcmuart_startup;
+
 	up.port.set_termios = brcmstb_set_termios;
 	ret = serial8250_register_8250_port(&up);
 	if (ret < 0)
 		return ret;
 	priv->line = ret;
 	platform_set_drvdata(pdev, priv);
+	new_port = serial8250_get_port(priv->line);
+	priv->up = &new_port->port;
+
+	ret = sysfs_create_file(&dev->kobj, &dev_attr_bad_rx_timeouts.attr);
+	if (ret)
+		dev_warn(dev, "Error creating sysfs attributes\n");
 
 	return 0;
 }
@@ -300,6 +418,8 @@ static int brcmuart_remove(struct platform_device *pdev)
 {
 	struct brcmuart_priv *priv = platform_get_drvdata(pdev);
 
+	sysfs_remove_file(&pdev->dev.kobj, &dev_attr_bad_rx_timeouts.attr);
+	hrtimer_cancel(&priv->hrt);
 	serial8250_unregister_port(priv->line);
 	return 0;
 }

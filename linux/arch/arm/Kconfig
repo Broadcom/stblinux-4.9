@@ -210,6 +210,14 @@ config ARCH_MAY_HAVE_PC_FDC
 config ZONE_DMA
 	bool
 
+config ZONE_MOVABLE
+	def_bool y
+	help
+	  The base address of a ZONE_MOVABLE zone can be defined with the
+	  kernel parameter 'movablebase' when this option is enabled. All
+	  memory pages above the movablebase physical address will be
+	  included in the zone.
+
 config NEED_DMA_MAP_STATE
        def_bool y
 

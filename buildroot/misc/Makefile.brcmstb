@@ -9,6 +9,9 @@ DOTVERSION	:= $(patsubst 3%,3.%,$(patsubst 4%,4.%,$(patsubst 5%,5.%,$(VERSION)))
 MAJOR_VERSION	:= $(shell echo $(VERSION) | cut -d- -f1)
 STB_VERSION	:= stb-$(shell echo $(DOTVERSION) | cut -d- -f1)
 
+STBTOOLS_VERSION := $(shell grep 'default [0-9a-f]\+$$' \
+	package/brcm-pm/Config.in | awk '{ print $$2 }')
+
 BINARY_DST	= $(BRCMSTB_RELEASE_DIR)/buildroot-$(VERSION)
 SRC_DST		= $(BRCMSTB_RELEASE_DIR)/src
 
@@ -94,6 +97,7 @@ brcmstb-release: brcmstb-diffs linux-diffs linux-release
 	bzip2 $(SRC_DST)/buildroot-$(DOTVERSION).tar
 	ln -s buildroot-$(DOTVERSION).tar.bz2 \
 		$(SRC_DST)/rootfs-$(DOTVERSION).tar.bz2
+	cp -p dl/brcm-pm/stbtools-$(STBTOOLS_VERSION).tar.gz $(SRC_DST)
 
 brcmstb-%:
 	bin/br_config.pl -b $*

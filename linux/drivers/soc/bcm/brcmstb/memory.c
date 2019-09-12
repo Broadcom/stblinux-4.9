@@ -1,5 +1,5 @@
 /*
- * Copyright © 2015-2018 Broadcom
+ * Copyright © 2015-2019 Broadcom
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -31,6 +31,7 @@
 #include <linux/vme.h>
 #include <linux/sched.h>
 #include <linux/sizes.h>
+#include <linux/brcmstb/bhpa.h>
 #include <linux/brcmstb/bmem.h>
 #include <linux/brcmstb/cma_driver.h>
 #include <linux/brcmstb/memory_api.h>
@@ -216,15 +217,22 @@ int brcmstb_memory_phys_addr_to_memc(phys_addr_t pa)
 #endif
 EXPORT_SYMBOL(brcmstb_memory_phys_addr_to_memc);
 
-u64 brcmstb_memory_memc_size(int memc)
+static int __ref __for_each_memc_range(int (*fn)(int m, u64 a, u64 s, void *c),
+				       void *c, bool early)
 {
 	const void *fdt = initial_boot_params;
-	const int mem_offset = fdt_path_offset(fdt, "/memory");
 	int addr_cells = 1, size_cells = 1;
+	int proplen, cellslen, mem_offset;
 	const struct fdt_property *prop;
-	int proplen, cellslen;
-	u64 memc_size = 0;
-	int i;
+	int i, ret;
+
+	if (!fn)
+		return -EINVAL;
+
+	if (!fdt) {
+		pr_err("No device tree?\n");
+		return -EINVAL;
+	}
 
 	/* Get root size and address cells if specified */
 	prop = fdt_get_property(fdt, 0, "#size-cells", &proplen);
@@ -235,59 +243,7 @@ u64 brcmstb_memory_memc_size(int memc)
 	if (prop)
 		addr_cells = DT_PROP_DATA_TO_U32(prop->data, 0);
 
-	if (mem_offset < 0)
-		return -1;
-
-	prop = fdt_get_property(fdt, mem_offset, "reg", &proplen);
-	cellslen = (int)sizeof(u32) * (addr_cells + size_cells);
-	if ((proplen % cellslen) != 0)
-		return -1;
-
-	for (i = 0; i < proplen / cellslen; ++i) {
-		u64 addr = 0;
-		u64 size = 0;
-		int memc_idx;
-		int j;
-
-		for (j = 0; j < addr_cells; ++j) {
-			int offset = (cellslen * i) + (sizeof(u32) * j);
-
-			addr |= (u64)DT_PROP_DATA_TO_U32(prop->data, offset) <<
-				((addr_cells - j - 1) * 32);
-		}
-		for (j = 0; j < size_cells; ++j) {
-			int offset = (cellslen * i) +
-				(sizeof(u32) * (j + addr_cells));
-
-			size |= (u64)DT_PROP_DATA_TO_U32(prop->data, offset) <<
-				((size_cells - j - 1) * 32);
-		}
-
-		if ((phys_addr_t)addr != addr) {
-			pr_err("phys_addr_t is smaller than provided address 0x%llx!\n",
-					addr);
-			return -1;
-		}
-
-		memc_idx = brcmstb_memory_phys_addr_to_memc((phys_addr_t)addr);
-		if (memc_idx == memc)
-			memc_size += size;
-	}
-
-	return memc_size;
-
-}
-EXPORT_SYMBOL(brcmstb_memory_memc_size);
-
-static int populate_memc(struct brcmstb_memory *mem, int addr_cells,
-		int size_cells)
-{
-	const void *fdt = initial_boot_params;
-	const int mem_offset = fdt_path_offset(fdt, "/memory");
-	const struct fdt_property *prop;
-	int proplen, cellslen;
-	int i;
-
+	mem_offset = fdt_path_offset(fdt, "/memory");
 	if (mem_offset < 0) {
 		pr_err("No memory node?\n");
 		return -EINVAL;
@@ -303,8 +259,7 @@ static int populate_memc(struct brcmstb_memory *mem, int addr_cells,
 	for (i = 0; i < proplen / cellslen; ++i) {
 		u64 addr = 0;
 		u64 size = 0;
-		int memc_idx;
-		int range_idx;
+		int memc;
 		int j;
 
 		for (j = 0; j < addr_cells; ++j) {
@@ -319,31 +274,97 @@ static int populate_memc(struct brcmstb_memory *mem, int addr_cells,
 				((size_cells - j - 1) * 32);
 		}
 
-		if ((phys_addr_t)addr != addr) {
-			pr_err("phys_addr_t is smaller than provided address 0x%llx!\n",
-					addr);
-			return -EINVAL;
-		}
+		if (early)
+			memc = early_phys_addr_to_memc((phys_addr_t)addr);
+		else
+			memc = brcmstb_memory_phys_addr_to_memc((phys_addr_t)addr);
 
-		memc_idx = brcmstb_memory_phys_addr_to_memc((phys_addr_t)addr);
-		if (memc_idx == -1) {
-			pr_err("address 0x%llx does not appear to be in any memc\n",
-					addr);
-			return -EINVAL;
-		}
-
-		range_idx = mem->memc[memc_idx].count;
-		if (mem->memc[memc_idx].count >= MAX_BRCMSTB_RANGE)
-			pr_warn("%s: Exceeded max ranges for memc%d\n",
-					__func__, memc_idx);
-		else {
-			mem->memc[memc_idx].range[range_idx].addr = addr;
-			mem->memc[memc_idx].range[range_idx].size = size;
-		}
-		++mem->memc[memc_idx].count;
+		ret = fn(memc, addr, size, c);
+		if (ret)
+			return ret;
 	}
 
 	return 0;
+}
+
+int for_each_memc_range(int (*fn)(int m, u64 a, u64 s, void *c), void *c)
+{
+	return __for_each_memc_range(fn, c, false);
+}
+
+int __init early_for_each_memc_range(int (*fn)(int m, u64 a, u64 s, void *c),
+				     void *c)
+{
+	return __for_each_memc_range(fn, c, true);
+}
+
+struct memc_size_ctx
+{
+	int	memc;
+	u64	size;
+};
+
+static int memc_size(int memc, u64 addr, u64 size, void *context)
+{
+	struct memc_size_ctx *ctx = context;
+
+	if ((phys_addr_t)addr != addr) {
+		pr_err("phys_addr_t is smaller than provided address 0x%llx!\n",
+			addr);
+		return -EINVAL;
+	}
+
+	if (memc == ctx->memc)
+		ctx->size += size;
+
+	return 0;
+}
+
+u64 brcmstb_memory_memc_size(int memc)
+{
+	struct memc_size_ctx ctx;
+
+	ctx.memc = memc;
+	ctx.size = 0;
+	for_each_memc_range(memc_size, &ctx);
+
+	return ctx.size;
+}
+EXPORT_SYMBOL(brcmstb_memory_memc_size);
+
+static int set_memc_range(int memc_idx, u64 addr, u64 size, void *context)
+{
+	struct brcmstb_memory *mem = context;
+	int range_idx;
+
+	if ((phys_addr_t)addr != addr) {
+		pr_err("phys_addr_t is smaller than provided address 0x%llx!\n",
+			addr);
+		return -EINVAL;
+	}
+
+	if (memc_idx == -1) {
+		pr_err("address 0x%llx does not appear to be in any memc\n",
+			addr);
+		return -EINVAL;
+	}
+
+	range_idx = mem->memc[memc_idx].count;
+	if (mem->memc[memc_idx].count >= MAX_BRCMSTB_RANGE)
+		pr_warn("%s: Exceeded max ranges for memc%d\n",
+				__func__, memc_idx);
+	else {
+		mem->memc[memc_idx].range[range_idx].addr = addr;
+		mem->memc[memc_idx].range[range_idx].size = size;
+	}
+	++mem->memc[memc_idx].count;
+
+	return 0;
+}
+
+static int populate_memc(struct brcmstb_memory *mem)
+{
+	return for_each_memc_range(set_memc_range, mem);
 }
 
 static int populate_lowmem(struct brcmstb_memory *mem)
@@ -622,6 +643,32 @@ static int populate_reserved(struct brcmstb_memory *mem)
 }
 #endif
 
+static int populate_bhpa(struct brcmstb_memory *mem)
+{
+#ifdef CONFIG_BRCMSTB_HUGEPAGES
+	phys_addr_t addr, size;
+	int i;
+
+	for (i = 0; i < MAX_BRCMSTB_RANGE; ++i) {
+		if (bhpa_region_info(i, &addr, &size))
+			break;  /* no more regions */
+		mem->bhpa.range[i].addr = addr;
+		mem->bhpa.range[i].size = size;
+		++mem->bhpa.count;
+	}
+	if (i >= MAX_BRCMSTB_RANGE) {
+		while (bhpa_region_info(i, &addr, &size) == 0) {
+			pr_warn("%s: Exceeded max ranges\n", __func__);
+			++mem->bhpa.count;
+		}
+	}
+
+	return 0;
+#else
+	return -ENOSYS;
+#endif
+}
+
 static int __init brcmstb_memory_set_range(phys_addr_t start, phys_addr_t end,
 					   int (*setup)(phys_addr_t start,
 							phys_addr_t size));
@@ -795,157 +842,115 @@ static int __init brcmstb_memory_set_range(phys_addr_t start, phys_addr_t end,
  * This determines the size and address of the default regions
  * reserved for refsw based on the flattened device tree.
  */
+struct default_res
+{
+	int count;
+	int prev_memc;
+	int (*setup)(phys_addr_t start,	phys_addr_t size);
+};
+
+static __init int memc_reserve(int memc, u64 addr, u64 size, void *context)
+{
+	struct default_res *ctx = context;
+	u64 adj = 0, end = addr + size, limit, tmp;
+
+	if ((phys_addr_t)addr != addr) {
+		pr_err("phys_addr_t too small for address 0x%llx!\n",
+			addr);
+		return 0;
+	}
+
+	if ((phys_addr_t)size != size) {
+		pr_err("phys_addr_t too small for size 0x%llx!\n", size);
+		return 0;
+	}
+
+#ifdef KASAN_SHADOW_SCALE_SHIFT
+	/* KASAN requires a fraction of the memory */
+	addr += size >> KASAN_SHADOW_SCALE_SHIFT;
+	size = end - addr;
+#endif
+
+	if (!ctx->count++) {	/* First Bank */
+		limit = (u64)memblock_get_current_limit();
+		/*
+		 *  On ARM64 systems, force the first memory controller
+		 * to be partitioned the same way it would on ARM
+		 * (32-bit) by giving 256MB to the kernel, the rest to
+		 * BMEM. If we have 4GB or more available on this MEMC,
+		 * give 512MB to the kernel.
+		 */
+#ifdef CONFIG_ARM64
+		if (limit > addr + SZ_512M && size >= VME_A32_MAX)
+			limit = addr + SZ_512M;
+		else if (limit > addr + SZ_256M)
+			limit = addr + SZ_256M;
+#endif
+		if (end <= limit && end == (u64)memblock_end_of_DRAM()) {
+			if (size < SZ_32M) {
+				pr_err("low memory too small for default bmem\n");
+				return 0;
+			}
+
+			if (brcmstb_default_reserve == BRCMSTB_RESERVE_BMEM) {
+				if (size <= SZ_128M)
+					return 0;
+
+				adj = SZ_128M;
+			}
+
+			/* kernel reserves X percent,
+			 * bmem gets the rest */
+			tmp = (size - adj) * (100 - DEFAULT_LOWMEM_PCT);
+			do_div(tmp, 100);
+			size = tmp;
+			addr = end - size;
+		} else if (end > limit) {
+			addr = limit;
+			size = end - addr;
+		} else {
+			if (size >= SZ_1G)
+				addr += SZ_512M;
+			else if (size >= SZ_512M)
+				addr += SZ_256M;
+			else
+				return 0;
+			size = end - addr;
+		}
+	} else if (memc > ctx->prev_memc) {
+#ifdef CONFIG_ARM64
+		if (addr >= VME_A32_MAX && size >= BMEM_LARGE_ENOUGH) {
+			/* Give 256M back to Linux */
+			addr += SZ_256M;
+			size = end - addr;
+		}
+#endif
+		/* Use the rest of the first region of this MEMC */
+		ctx->prev_memc = memc;
+	} else if (addr >= VME_A32_MAX && size > SZ_64M) {
+		/*
+		 * Nexus doesn't use the address extension range yet,
+		 * just reserve 64 MiB in these areas until we have a
+		 * firmer specification
+		 */
+		size = SZ_64M;
+	}
+
+	brcmstb_memory_set_range((phys_addr_t)addr, (phys_addr_t)(addr + size),
+				 ctx->setup);
+
+	return 0;
+}
+
 void __init brcmstb_memory_default_reserve(int (*setup)(phys_addr_t start,
 							phys_addr_t size))
 {
-	phys_addr_t start, end, size, limit;
-	phys_addr_t adj = 0;
-	const void *fdt = initial_boot_params;
-	int offset;
-	const struct fdt_property *prop;
-	int addr_cells = 1, size_cells = 1;
-	int proplen, cellslen;
-	int i;
-	u64 tmp;
-	int prev_memc = 0;
+	struct default_res ctx;
 
-	if (!fdt) {
-		pr_err("No device tree?\n");
-		return;
-	}
-
-	/* Get root size and address cells if specified */
-	prop = fdt_get_property(fdt, 0, "#size-cells", &proplen);
-	if (prop)
-		size_cells = DT_PROP_DATA_TO_U32(prop->data, 0);
-	pr_debug("size_cells = %x\n", size_cells);
-
-	prop = fdt_get_property(fdt, 0, "#address-cells", &proplen);
-	if (prop)
-		addr_cells = DT_PROP_DATA_TO_U32(prop->data, 0);
-	pr_debug("address_cells = %x\n", addr_cells);
-
-	offset = fdt_path_offset(fdt, "/memory");
-
-	if (offset < 0) {
-		pr_err("No memory node?\n");
-		return;
-	}
-
-	prop = fdt_get_property(fdt, offset, "reg", &proplen);
-	cellslen = (int)sizeof(u32) * (addr_cells + size_cells);
-	if ((proplen % cellslen) != 0) {
-		pr_err("Invalid length of reg prop: %d\n", proplen);
-		return;
-	}
-
-	offset = 0;
-	while (offset < proplen) {
-		tmp = 0;
-		for (i = 0; i < addr_cells; ++i) {
-			tmp |= (u64)DT_PROP_DATA_TO_U32(prop->data, offset) <<
-			       ((addr_cells - i - 1) * 32);
-			offset += sizeof(u32);
-		}
-		start = (phys_addr_t)tmp;
-		if (start != tmp) {
-			pr_err("phys_addr_t too small for address 0x%llx!\n",
-			       tmp);
-			offset += sizeof(u32) * size_cells;
-			continue;
-		}
-
-		tmp = 0;
-		for (i = 0; i < size_cells; ++i) {
-			tmp |= (u64)DT_PROP_DATA_TO_U32(prop->data, offset) <<
-			       ((size_cells - i - 1) * 32);
-			offset += sizeof(u32);
-		}
-		size = (phys_addr_t)tmp;
-		if (size != tmp) {
-			pr_err("phys_addr_t too small for size 0x%llx!\n",
-			       tmp);
-			continue;
-		}
-
-		end = start + size;
-		i = early_phys_addr_to_memc(start);
-
-#ifdef KASAN_SHADOW_SCALE_SHIFT
-		/* KASAN requires a fraction of the memory */
-		start += size >> KASAN_SHADOW_SCALE_SHIFT;
-		size = end - start;
-#endif
-		if (offset == cellslen) {	/* First Bank */
-			limit = memblock_get_current_limit();
-			/*
-			 *  On ARM64 systems, force the first memory controller
-			 * to be partitioned the same way it would on ARM
-			 * (32-bit) by giving 256MB to the kernel, the rest to
-			 * BMEM. If we have 4GB or more available on this MEMC,
-			 * give 512MB to the kernel.
-			 */
-#ifdef CONFIG_ARM64
-			if (limit > start + SZ_512M && size >= VME_A32_MAX)
-				limit = start + SZ_512M;
-			else if (limit > start + SZ_256M)
-				limit = start + SZ_256M;
-#endif
-			if (end <= limit &&
-				end == memblock_end_of_DRAM()) {
-				if (size < SZ_32M) {
-					pr_err("low memory too small for default bmem\n");
-					continue;
-				}
-
-				if (brcmstb_default_reserve ==
-				    BRCMSTB_RESERVE_BMEM) {
-					if (size <= SZ_128M)
-						continue;
-
-					adj = SZ_128M;
-				}
-
-				/* kernel reserves X percent,
-				 * bmem gets the rest */
-				tmp = ((u64)(size - adj)) *
-				      (100 - DEFAULT_LOWMEM_PCT);
-				do_div(tmp, 100);
-				size = tmp;
-				start = end - size;
-			} else if (end > limit) {
-				start = limit;
-				size = end - start;
-			} else {
-				if (size >= SZ_1G)
-					start += SZ_512M;
-				else if (size >= SZ_512M)
-					start += SZ_256M;
-				else
-					continue;
-				size = end - start;
-			}
-		} else if (i > prev_memc) {
-#ifdef CONFIG_ARM64
-			if (start >= VME_A32_MAX && size >= BMEM_LARGE_ENOUGH) {
-				/* Give 256M back to Linux */
-				start += SZ_256M;
-				size = end - start;
-			}
-#endif
-			/* Use the rest of the first region of this MEMC */
-			prev_memc = i;
-		} else if (start >= VME_A32_MAX && size > SZ_64M) {
-			/*
-			 * Nexus doesn't use the address extension range yet,
-			 * just reserve 64 MiB in these areas until we have a
-			 * firmer specification
-			 */
-			size = SZ_64M;
-		}
-
-		brcmstb_memory_set_range(start, start + size, setup);
-	}
+	ctx.count = 0;
+	ctx.prev_memc = 0;
+	ctx.setup = setup;
+	early_for_each_memc_range(memc_reserve, &ctx);
 }
 
 /**
@@ -986,11 +991,14 @@ void __init brcmstb_memory_reserve(void)
 void __init brcmstb_memory_init(void)
 {
 	brcmstb_memory_reserve();
+#ifdef CONFIG_BRCMSTB_BMEM
+	bmem_reserve();
+#endif
 #ifdef CONFIG_BRCMSTB_CMA
 	cma_reserve();
 #endif
-#ifdef CONFIG_BRCMSTB_BMEM
-	bmem_reserve();
+#ifdef CONFIG_BRCMSTB_HUGEPAGES
+	brcmstb_bhpa_reserve();
 #endif
 }
 
@@ -1005,34 +1013,14 @@ void __init brcmstb_memory_init(void)
  */
 int brcmstb_memory_get(struct brcmstb_memory *mem)
 {
-	const void *fdt = initial_boot_params;
-	const struct fdt_property *prop;
-	int addr_cells = 1, size_cells = 1;
-	int proplen;
 	int ret;
 
 	if (!mem)
 		return -EFAULT;
 
-	if (!fdt) {
-		pr_err("No device tree?\n");
-		return -EINVAL;
-	}
-
-	/* Get root size and address cells if specified */
-	prop = fdt_get_property(fdt, 0, "#size-cells", &proplen);
-	if (prop)
-		size_cells = DT_PROP_DATA_TO_U32(prop->data, 0);
-	pr_debug("size_cells = %x\n", size_cells);
-
-	prop = fdt_get_property(fdt, 0, "#address-cells", &proplen);
-	if (prop)
-		addr_cells = DT_PROP_DATA_TO_U32(prop->data, 0);
-	pr_debug("address_cells = %x\n", addr_cells);
-
 	memset(mem, 0, sizeof(*mem));
 
-	ret = populate_memc(mem, addr_cells, size_cells);
+	ret = populate_memc(mem);
 	if (ret)
 		return ret;
 
@@ -1051,6 +1039,10 @@ int brcmstb_memory_get(struct brcmstb_memory *mem)
 	ret = populate_reserved(mem);
 	if (ret)
 		return ret;
+
+	ret = populate_bhpa(mem);
+	if (ret)
+		pr_debug("bhpa is disabled\n");
 
 	return 0;
 }
@@ -1461,3 +1453,24 @@ int brcmstb_memory_kva_unmap(const void *kva)
 	return 0;
 }
 EXPORT_SYMBOL(brcmstb_memory_kva_unmap);
+
+void brcmstb_hugepage_print(struct seq_file *seq)
+{
+	brcmstb_hpa_print(seq);
+}
+EXPORT_SYMBOL(brcmstb_hugepage_print);
+
+int brcmstb_hugepage_alloc(unsigned int memcIndex, uint64_t *pages,
+			   unsigned int count, unsigned int *allocated,
+			   const struct brcmstb_range *range)
+{
+	return brcmstb_hpa_alloc(memcIndex, pages, count, allocated, range);
+}
+EXPORT_SYMBOL(brcmstb_hugepage_alloc);
+
+void brcmstb_hugepage_free(unsigned int memcIndex, const uint64_t *pages,
+			   unsigned int count)
+{
+	return brcmstb_hpa_free(memcIndex, pages, count);
+}
+EXPORT_SYMBOL(brcmstb_hugepage_free);

@@ -121,6 +121,21 @@ fi
 # Add ldd from the host's sysroot
 echo "Copying ldd..."
 cp -p ${HOST_DIR}/*gnu*/sysroot/usr/bin/ldd ${TARGET_DIR}/usr/bin
+if grep '^RTLDLIST=/lib/ld-linux-aarch64' "${TARGET_DIR}/usr/bin/ldd" >/dev/null; then
+	set +e
+	ld32=`ls "${TARGET_DIR}/lib/"ld-linux-arm* 2>/dev/null`
+	ld64=`ls "${TARGET_DIR}/lib/"ld-linux-aarch* 2>/dev/null`
+	set -e
+	if [ "${ld32}" = "" -o "${ld64}" = "" ]; then
+		echo "Couldn't find shared library loader(s), not updating ldd!"
+	else
+		echo "Adding Aarch32 capabilities to ldd..."
+		ld32="/lib/`basename ${ld32}`"
+		ld64="/lib/`basename ${ld64}`"
+		sed -i "s|^RTLDLIST=.*|RTLDLIST=\"${ld64} ${ld32}\"|" \
+			"${TARGET_DIR}/usr/bin/ldd"
+	fi
+fi
 
 # Generate brcmstb.conf
 echo "Generating /etc/brcmstb.conf..."

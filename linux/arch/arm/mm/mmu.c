@@ -1179,6 +1179,8 @@ void __init adjust_lowmem_bounds(void)
 	struct memblock_region *reg;
 	phys_addr_t lowmem_limit = 0;
 
+	brcmstb_maybe_increase_vmalloc();
+
 	/*
 	 * Let's use our own (unoptimized) equivalent of __pa() that is
 	 * not affected by wrap-arounds when sizeof(phys_addr_t) == 4.
@@ -1188,8 +1190,10 @@ void __init adjust_lowmem_bounds(void)
 	 */
 	vmalloc_limit = (u64)(uintptr_t)vmalloc_min - PAGE_OFFSET + PHYS_OFFSET;
 
-	brcmstb_maybe_increase_vmalloc();
-	vmalloc_limit = __pa(vmalloc_min - 1) + 1;
+#ifdef CONFIG_ZONE_MOVABLE
+	if (movable_start && vmalloc_limit > (u64)__pfn_to_phys(movable_start))
+		vmalloc_limit = (u64)__pfn_to_phys(movable_start);
+#endif
 
 	for_each_memblock(memory, reg) {
 		phys_addr_t block_start = reg->base;

@@ -168,6 +168,34 @@ static void sdhci_iproc_writeb(struct sdhci_host *host, u8 val, int reg)
 	sdhci_iproc_writel(host, newval, reg & ~3);
 }
 
+static int sdhci_iproc_suspend(struct device *dev)
+{
+	struct sdhci_host *host = dev_get_drvdata(dev);
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	int res;
+
+	res = sdhci_suspend_host(host);
+	if (res)
+		return res;
+	clk_disable_unprepare(pltfm_host->clk);
+	return res;
+}
+
+static int sdhci_iproc_resume(struct device *dev)
+{
+	struct sdhci_host *host = dev_get_drvdata(dev);
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	int err;
+
+	err = clk_prepare_enable(pltfm_host->clk);
+	if (err)
+		return err;
+	return sdhci_resume_host(host);
+}
+
+static SIMPLE_DEV_PM_OPS(sdhci_iproc_pmops, sdhci_iproc_suspend,
+			sdhci_iproc_resume);
+
 static const struct sdhci_ops sdhci_iproc_ops = {
 	.read_l = sdhci_iproc_readl,
 	.read_w = sdhci_iproc_readw,
@@ -317,7 +345,7 @@ static struct platform_driver sdhci_iproc_driver = {
 	.driver = {
 		.name = "sdhci-iproc",
 		.of_match_table = sdhci_iproc_of_match,
-		.pm = &sdhci_pltfm_pmops,
+		.pm = &sdhci_iproc_pmops,
 	},
 	.probe = sdhci_iproc_probe,
 	.remove = sdhci_pltfm_unregister,

@@ -27,7 +27,7 @@
 #ifndef _ASM_BRCMSTB_BRCMSTB_H
 #define _ASM_BRCMSTB_BRCMSTB_H
 
-#define BRCMSTB_H_VERSION  13
+#define BRCMSTB_H_VERSION  15
 
 #if !defined(__ASSEMBLY__)
 
@@ -39,6 +39,7 @@
 #include <linux/brcmstb/gpio_api.h>
 #include <linux/brcmstb/reg_api.h>
 #include <linux/brcmstb/clk_api.h>
+#include <linux/brcmstb/reset_api.h>
 
 #if defined(CONFIG_MIPS)
 #include <asm/addrspace.h>

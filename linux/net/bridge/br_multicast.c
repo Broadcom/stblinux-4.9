@@ -936,6 +936,7 @@ static void br_ip6_multicast_port_query_expired(unsigned long data)
 
 static int br_mc_disabled_update(struct net_device *dev, bool value)
 {
+#if IS_ENABLED(CONFIG_NET_SWITCHDEV)
 	struct switchdev_attr attr = {
 		.orig_dev = dev,
 		.id = SWITCHDEV_ATTR_ID_BRIDGE_MC_DISABLED,
@@ -944,6 +945,9 @@ static int br_mc_disabled_update(struct net_device *dev, bool value)
 	};
 
 	return switchdev_port_attr_set(dev, &attr);
+#else
+	return 0;
+#endif
 }
 
 int br_multicast_add_port(struct net_bridge_port *port)

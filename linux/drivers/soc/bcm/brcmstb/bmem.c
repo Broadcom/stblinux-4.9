@@ -1,5 +1,5 @@
 /*
- * Copyright © 2015-2017 Broadcom
+ * Copyright © 2015-2019 Broadcom
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2, as
@@ -20,7 +20,9 @@
 #include <linux/ctype.h>
 #include <linux/device.h>
 #include <linux/ioport.h>
+#include <linux/libfdt.h>
 #include <linux/memblock.h>
+#include <linux/of_fdt.h>
 #include <linux/platform_device.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
@@ -52,6 +54,19 @@ static bool bmem_disabled;
 
 static int __init __bmem_setup(phys_addr_t addr, phys_addr_t size)
 {
+	int i;
+
+	for (i = 0; i < n_bmem_regions; i++) {
+		if (addr >= bmem_regions[i].addr + bmem_regions[i].size)
+			continue;
+		if (addr + size <= bmem_regions[i].addr)
+			continue;
+		pr_warn("ignoring region 0x%llx-0x%llx, overlaps existing region\n",
+			(unsigned long long)addr,
+			(unsigned long long)(addr + size));
+		return -EINVAL;
+	}
+
 	if (n_bmem_regions == MAX_BMEM_REGIONS) {
 		pr_warn_once("too many regions, ignoring extras\n");
 		return -E2BIG;
@@ -142,8 +157,9 @@ EXPORT_SYMBOL(bmem_region_info);
 
 void __init bmem_reserve(void)
 {
-	int i;
-	int ret;
+	const void *fdt = initial_boot_params;
+	phys_addr_t guard = 0;
+	int i, ret, offset;
 
 	if (bmem_disabled) {
 		n_bmem_regions = 0;
@@ -155,9 +171,24 @@ void __init bmem_reserve(void)
 			!brcmstb_memory_override_defaults)
 		brcmstb_memory_default_reserve(__bmem_setup);
 
+	if (fdt) {
+		/*
+		 * Reserve the PAGE_SIZE memory preceeding each
+		 * BMEM region so it's unusable by the kernel.
+		 * This is to workaround a bug in the USB hardware
+		 * that may pre-fetch beyond the end of a DMA buffer
+		 * and read into BMEM and cause MRC errors.
+		 * See: SWLINUX-3996.
+		 */
+		offset = fdt_node_offset_by_compatible(fdt, -1,
+			"brcm,ehci-brcm-v2");
+		if (offset >= 0)
+			guard = PAGE_SIZE;
+	}
+
 	for (i = 0; i < n_bmem_regions; ++i) {
-		ret = memblock_reserve(bmem_regions[i].addr,
-				bmem_regions[i].size);
+		ret = memblock_reserve(bmem_regions[i].addr - guard,
+				bmem_regions[i].size + guard);
 		if (ret) {
 			pr_err("memblock_reserve(%pa, %pa) failed: %d\n",
 					&bmem_regions[i].addr,
@@ -174,17 +205,6 @@ void __init bmem_reserve(void)
 			pr_info("Reserved %lu MiB at %pa\n",
 				(unsigned long) bmem_regions[i].size / SZ_1M,
 				&bmem_regions[i].addr);
-
-			/*
-			 * Reserve the PAGE_SIZE memory preceeding each
-			 * BMEM region so it's unusable by the kernel.
-			 * This is to workaround a bug in the USB hardware
-			 * that may pre-fetch beyond the end of a DMA buffer
-			 * and read into BMEM and cause MRC errors.
-			 * See: SWLINUX-3996.
-			 */
-			memblock_reserve(bmem_regions[i].addr - PAGE_SIZE,
-					PAGE_SIZE);
 		}
 	}
 }

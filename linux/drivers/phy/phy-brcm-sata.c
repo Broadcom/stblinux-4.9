@@ -108,6 +108,10 @@ enum sata_phy_regs {
 	PLL1_ACTRL6				= 0x86,
 	PLL1_ACTRL8				= 0x88,
 
+	TX_REG_BANK				= 0x70,
+	TX_ACTRL5				= 0x85,
+	TX_ACTRL5_SSC_EN			= BIT(11),
+
 	AEQRX_REG_BANK_0			= 0xd0,
 	AEQ_CONTROL1				= 0x81,
 	AEQ_CONTROL1_ENABLE			= BIT(2),
@@ -381,6 +385,10 @@ static int brcm_stb_sata_16nm_ssc_init(struct brcm_sata_port *port)
 		value = 0;
 	brcm_sata_phy_wr(base, RXPMD_REG_BANK, RXPMD_RX_FREQ_MON_CONTROL1,
 			 ~tmp, RXPMD_MON_CORRECT_EN | value);
+
+	/* Turn on/off SSC */
+	brcm_sata_phy_wr(base, TX_REG_BANK, TX_ACTRL5, ~TX_ACTRL5_SSC_EN,
+			 port->ssc_en ? TX_ACTRL5_SSC_EN : 0);
 
 	return 0;
 }

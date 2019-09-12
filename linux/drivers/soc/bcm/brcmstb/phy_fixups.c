@@ -29,7 +29,8 @@ static int bcm54810_no_broad_reach(struct phy_device *phydev)
 
 static int __init brcmstb_phy_fixups(void)
 {
-	if (!of_machine_is_compatible("brcm,bcm7211a0"))
+	if (!of_machine_is_compatible("brcm,bcm7211a0") &&
+	    !of_machine_is_compatible("brcm,bcm7211b0"))
 		return 0;
 
 	/* Register a PHY fixup to disable the auto-power down of CLK125

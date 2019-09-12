@@ -511,6 +511,7 @@ sub print_usage($)
 		"          -c...........clean (remove output/\$platform)\n".
 		"          -D...........use platform's default kernel config\n".
 		"          -d <fname>...use <fname> as kernel defconfig\n".
+		"          -F <fname>...use <fname> as kernel fragment(s)\n".
 		"          -f <fname>...use <fname> as BR fragment file\n".
 		"          -i...........like -b, but also build FS images\n".
 		"          -j <jobs>....run <jobs> parallel build jobs\n".
@@ -543,7 +544,7 @@ my $kernel_header_version;
 my $arch;
 my %opts;
 
-getopts('3:bcDd:f:ij:L:l:M:no:t:v:', \%opts);
+getopts('3:bcDd:F:f:ij:L:l:M:no:t:v:', \%opts);
 $arch = $ARGV[0];
 
 if ($#ARGV < 0) {
@@ -682,6 +683,15 @@ if (defined($opts{'D'})) {
 	print("Using default Linux kernel configuration...\n");
 	$arch_config{$arch}{'BR2_LINUX_KERNEL_USE_ARCH_DEFAULT_CONFIG'} = 'y';
 	delete($arch_config{$arch}{'BR2_LINUX_KERNEL_DEFCONFIG'});
+}
+
+if (defined($opts{'F'})) {
+	my $fragments = $opts{'F'};
+
+	# BR wants fragment files to be separated by spaces
+	$fragments =~ s/,/ /g;
+	print("Linux config fragment(s): $fragments\n");
+	$generic_config{'BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES'} = $fragments;
 }
 
 if (defined($opts{'j'})) {

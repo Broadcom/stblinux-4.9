@@ -92,6 +92,8 @@ struct scmi_clk_ops {
  *	to sustained performance level mapping
  * @freq_get: gets the frequency for a given device using sustained frequency
  *	to sustained performance level mapping
+ * @domain_freqs_get: gets all possible frequencies for a given domain
+ *
  */
 struct scmi_perf_ops {
 	int (*limits_set)(const struct scmi_handle *handle, u32 domain,
@@ -113,6 +115,8 @@ struct scmi_perf_ops {
 			unsigned long rate, bool poll);
 	int (*freq_get)(const struct scmi_handle *handle, u32 domain,
 			unsigned long *rate, bool poll);
+	int (*domain_freqs_get)(const struct scmi_handle *handle, u32 domain,
+				u32 *rates_khz);
 };
 
 /**

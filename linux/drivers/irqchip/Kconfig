@@ -90,6 +90,11 @@ config I8259
 	bool
 	select IRQ_DOMAIN
 
+config BCM283X_IRQ
+	bool
+	select IRQ_DOMAIN
+	default ARCH_BCM2835 || ARCH_BRCMSTB
+
 config BCM6345_L1_IRQ
 	bool
 	select GENERIC_IRQ_CHIP

@@ -38,6 +38,7 @@
 #include <linux/bitops.h>
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
+#include <linux/swiotlb.h>
 #include <linux/kconfig.h>
 #include <linux/memblock.h>
 #include <linux/notifier.h>
@@ -942,10 +943,19 @@ static int brcmstb_pm_probe(struct platform_device *pdev)
 	const struct of_device_id *of_id = NULL;
 	struct device_node *dn;
 	void __iomem *base;
-	int ret, i;
+	int ret = -EIO, i;
 
 	if (brcmstb_pm_method == BRCMSTB_PM_PSCI_FULL)
 		return 0;
+
+	if (of_machine_is_compatible("brcm,bcm7278b0"))
+		ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(40));
+	if (ret)
+		ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+	if (ret) {
+		dev_err(&pdev->dev, "failed to set DMA mask/no SWIOTLB\n");
+		return ret;
+	}
 
 	/* AON ctrl registers */
 	base = brcmstb_ioremap_match(aon_ctrl_dt_ids, 0, NULL);

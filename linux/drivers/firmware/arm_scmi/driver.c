@@ -365,22 +365,20 @@ static void scmi_p2a_rx_callback(struct mbox_client *cl, void *m)
 	u8 msg_type, prot_id, msg_id;
 	scmi_cback_fn_t prot_callback;
 
-	xfer_id = MSG_XTRACT_TOKEN(hdr);
 	msg_type = MSG_XTRACT_TYPE(hdr);
+	msg_id = MSG_XTRACT_ID(hdr);
+	prot_id = MSG_XTRACT_PROT_ID(hdr);
 
 	if (msg_type == MSG_TYPE_NOTIFY) {
 		xfer = scmi_one_xfer_get(cinfo->handle);
 		if (IS_ERR(xfer)) {
-			dev_err(dev, "P2A ntfy msg xfer alloc fail! proto=%x\n",
-				prot_id);
+			dev_err(dev, "P2A notification xfer alloc fail! prot=%x, msg=%x\n",
+				prot_id, msg_id);
 			return;
 		}
 
-		msg_id = MSG_XTRACT_ID(hdr);
-		prot_id = MSG_XTRACT_PROT_ID(hdr);
 		xfer->hdr.id = msg_id;
 		xfer->hdr.protocol_id = prot_id;
-		xfer->hdr.seq = 0;
 		scmi_dump_header_dbg(dev, &xfer->hdr);
 
 		xfer->rx.len = info->desc->max_msg_size;
@@ -388,19 +386,22 @@ static void scmi_p2a_rx_callback(struct mbox_client *cl, void *m)
 
 		prot_callback = idr_find(&scmi_prot_ntfy_cback, prot_id);
 		if (unlikely(!prot_callback)) {
-			dev_err(dev, "P2A ntfy msg no prot cback fn! proto=%x\n",
-				prot_id);
-			return;
+			dev_err(dev, "P2A notification no prot callback fn! prot=%x, msg=%x\n",
+				prot_id, msg_id);
+                        scmi_one_xfer_put(cinfo->handle, xfer);
+		} else {
+			/* Callback is expected to call xfer put */
+			prot_callback(xfer);
 		}
-		prot_callback(xfer);
 
 	} else if (msg_type == MSG_TYPE_DELAYED) {
 		/*
 		 * Are we even expecting this?
 		 */
+		xfer_id = MSG_XTRACT_TOKEN(hdr);
 		if (!test_bit(xfer_id, minfo->xfer_alloc_table)) {
-			dev_err(dev, "message for %d is not expected!\n",
-				xfer_id);
+			dev_err(dev, "P2A delayed response is not expected! prot=%x, msg=%x\n",
+				prot_id, msg_id);
 			return;
 		}
 

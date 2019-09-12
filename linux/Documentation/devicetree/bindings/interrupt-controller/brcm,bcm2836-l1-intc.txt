@@ -7,7 +7,9 @@ controller.
 
 Required properties:
 
-- compatible:	 	Should be "brcm,bcm2836-l1-intc"
+- compatible:	 	Should be one of
+			"brcm,bcm2836-l1-intc"
+			"brcm,bcm7211-l1-intc"
 - reg:			Specifies base physical address and size of the
 			  registers
 - interrupt-controller:	Identifies the node as an interrupt controller

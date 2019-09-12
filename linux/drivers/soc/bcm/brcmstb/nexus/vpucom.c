@@ -143,7 +143,7 @@ static void scmi_vpucom_callback(struct scmi_xfer *xfer)
 	size_t i;
 
         if (!info || !info->handle)
-		goto exit;
+		return;
 
 	handle = info->handle;
 

@@ -63,6 +63,28 @@
 s64 memstart_addr __ro_after_init = -1;
 phys_addr_t arm64_dma_phys_limit __ro_after_init;
 
+#ifdef CONFIG_ZONE_MOVABLE
+unsigned long movable_start __initdata;
+/*
+ * Parses command line for movablebase= options
+ */
+static int __init movablebase_setup(char *str)
+{
+	phys_addr_t addr = 0;
+	unsigned long movablebase;
+
+	addr = memparse(str, &str);
+	addr = PAGE_ALIGN(addr);
+
+	movablebase = __phys_to_pfn(addr);
+	if (movablebase && (!movable_start || movable_start > movablebase))
+		movable_start = movablebase;
+
+	return 0;
+}
+early_param("movablebase", movablebase_setup);
+#endif /* CONFIG_ZONE_MOVABLE */
+
 #ifdef CONFIG_BLK_DEV_INITRD
 static int __init early_initrd(char *p)
 {
@@ -111,16 +133,22 @@ static void __init zone_sizes_init(unsigned long min, unsigned long max)
 {
 	struct memblock_region *reg;
 	unsigned long zone_size[MAX_NR_ZONES], zhole_size[MAX_NR_ZONES];
-	unsigned long max_dma = min;
+	unsigned long max_dma = min, max_norm = max;
 
 	memset(zone_size, 0, sizeof(zone_size));
 
+#ifdef CONFIG_ZONE_MOVABLE
+	if (movable_start) {
+		zone_size[ZONE_MOVABLE] = max - movable_start;
+		max_norm = movable_start;
+	}
+#endif
 	/* 4GB maximum for 32-bit only capable devices */
 #ifdef CONFIG_ZONE_DMA
 	max_dma = PFN_DOWN(arm64_dma_phys_limit);
 	zone_size[ZONE_DMA] = max_dma - min;
 #endif
-	zone_size[ZONE_NORMAL] = max - max_dma;
+	zone_size[ZONE_NORMAL] = max_norm - max_dma;
 
 	memcpy(zhole_size, zone_size, sizeof(zhole_size));
 
@@ -137,8 +165,18 @@ static void __init zone_sizes_init(unsigned long min, unsigned long max)
 			zhole_size[ZONE_DMA] -= dma_end - start;
 		}
 #endif
+#ifdef CONFIG_ZONE_MOVABLE
+		if (end > max_norm) {
+			unsigned long move_start = max(start, max_norm);
+			zhole_size[ZONE_MOVABLE] -= end - move_start;
+			if (start < max_norm)
+				end = max_norm;
+			else
+				continue;
+		}
+#endif
 		if (end > max_dma) {
-			unsigned long normal_end = min(end, max);
+			unsigned long normal_end = min(end, max_norm);
 			unsigned long normal_start = max(start, max_dma);
 			zhole_size[ZONE_NORMAL] -= normal_end - normal_start;
 		}
@@ -305,6 +343,11 @@ void __init arm64_memblock_init(void)
 		arm64_dma_phys_limit = max_zone_dma_phys();
 	else
 		arm64_dma_phys_limit = PHYS_MASK + 1;
+#ifdef CONFIG_ZONE_MOVABLE
+	if (movable_start &&
+	    __pfn_to_phys(movable_start) < arm64_dma_phys_limit)
+		arm64_dma_phys_limit = __pfn_to_phys(movable_start);
+#endif
 	high_memory = __va(memblock_end_of_DRAM() - 1) + 1;
 	dma_contiguous_reserve(arm64_dma_phys_limit);
 

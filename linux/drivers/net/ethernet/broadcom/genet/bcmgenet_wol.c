@@ -163,15 +163,16 @@ int bcmgenet_wol_power_down_cfg(struct bcmgenet_priv *priv,
 	if (priv->internal_phy)
 		clk_set_parent(priv->clk_mux, priv->clk_slow);
 
-	reg = 0;
+	hfb_ctrl_reg = 0;
 	list_for_each_entry(rule, &priv->rxnfc_list, list) {
 		if (rule->fs.ring_cookie == 0)
-			reg |= (1 << rule->fs.location);
+			hfb_ctrl_reg |= (1 << rule->fs.location);
 	}
-	if (reg) {
-		bcmgenet_hfb_reg_writel(priv, reg, HFB_FLT_ENABLE_V3PLUS + 4);
-		reg = RBUF_HFB_EN | RBUF_ACPI_EN;
-		bcmgenet_hfb_reg_writel(priv, reg, HFB_CTRL);
+	if (hfb_ctrl_reg) {
+		bcmgenet_hfb_reg_writel(priv, hfb_ctrl_reg,
+					HFB_FLT_ENABLE_V3PLUS + 4);
+		hfb_ctrl_reg = RBUF_HFB_EN | RBUF_ACPI_EN;
+		bcmgenet_hfb_reg_writel(priv, hfb_ctrl_reg, HFB_CTRL);
 	}
 
 	/* Enable CRC forward */
@@ -182,6 +183,12 @@ int bcmgenet_wol_power_down_cfg(struct bcmgenet_priv *priv,
 	/* Receiver must be enabled for WOL MP detection */
 	reg |= CMD_RX_EN;
 	bcmgenet_umac_writel(priv, reg, UMAC_CMD);
+
+	reg = UMAC_IRQ_MPD_R;
+	if (hfb_ctrl_reg)
+		reg |=  UMAC_IRQ_HFB_SM | UMAC_IRQ_HFB_MM;
+
+	bcmgenet_intrl2_0_writel(priv, reg, INTRL2_CPU_MASK_CLEAR);
 
 	priv->wol_active = 1;
 

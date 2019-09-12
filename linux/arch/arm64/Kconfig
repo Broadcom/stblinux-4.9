@@ -203,6 +203,15 @@ config GENERIC_CALIBRATE_DELAY
 config ZONE_DMA
 	def_bool y
 
+config ZONE_MOVABLE
+	def_bool y
+	depends on !NUMA
+	help
+	  The base address of a ZONE_MOVABLE zone can be defined with the
+	  kernel parameter 'movablebase' when this option is enabled. All
+	  memory pages above the movablebase physical address will be
+	  included in the zone.
+
 config HAVE_GENERIC_RCU_GUP
 	def_bool y
 

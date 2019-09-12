@@ -1272,6 +1272,10 @@ static inline bool memmap_valid_within(unsigned long pfn,
 }
 #endif /* CONFIG_ARCH_HAS_HOLES_MEMORYMODEL */
 
+#ifdef CONFIG_ZONE_MOVABLE
+extern unsigned long movable_start;
+#endif
+
 #endif /* !__GENERATING_BOUNDS.H */
 #endif /* !__ASSEMBLY__ */
 #endif /* _LINUX_MMZONE_H */

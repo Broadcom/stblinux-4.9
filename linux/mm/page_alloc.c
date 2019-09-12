@@ -1609,9 +1609,10 @@ void __init page_alloc_init_late(void)
 		set_zone_contiguous(zone);
 }
 
-#ifdef CONFIG_CMA
-/* Free whole pageblock and set its migration type to MIGRATE_CMA. */
-void __init init_cma_reserved_pageblock(struct page *page)
+#if defined(CONFIG_CMA) || defined(CONFIG_BRCMSTB_HUGEPAGES)
+/* Free whole pageblock and set its migration type */
+static void __init __init_reserved_pageblock(struct page *page,
+					     int migratetype)
 {
 	unsigned i = pageblock_nr_pages;
 	struct page *p = page;
@@ -1621,7 +1622,7 @@ void __init init_cma_reserved_pageblock(struct page *page)
 		set_page_count(p, 0);
 	} while (++p, --i);
 
-	set_pageblock_migratetype(page, MIGRATE_CMA);
+	set_pageblock_migratetype(page, migratetype);
 
 	if (pageblock_order >= MAX_ORDER) {
 		i = pageblock_nr_pages;
@@ -1637,6 +1638,22 @@ void __init init_cma_reserved_pageblock(struct page *page)
 	}
 
 	adjust_managed_page_count(page, pageblock_nr_pages);
+}
+#endif /* defined(CONFIG_CMA) || defined(CONFIG_BRCMSTB_HUGEPAGES) */
+
+#ifdef CONFIG_BRCMSTB_HUGEPAGES
+/* Free whole pageblock and set its migration type to MIGRATE_MOVABLE. */
+void __init init_bhpa_reserved_pageblock(struct page *page)
+{
+	__init_reserved_pageblock(page, MIGRATE_MOVABLE);
+}
+#endif
+
+#ifdef CONFIG_CMA
+/* Free whole pageblock and set its migration type to MIGRATE_CMA. */
+void __init init_cma_reserved_pageblock(struct page *page)
+{
+	__init_reserved_pageblock(page, MIGRATE_CMA);
 }
 #endif
 

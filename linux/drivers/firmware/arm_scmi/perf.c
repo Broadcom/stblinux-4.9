@@ -441,6 +441,30 @@ static int scmi_dvfs_freq_get(const struct scmi_handle *handle, u32 domain,
 	return ret;
 }
 
+static int scmi_dvfs_domain_freqs_get(const struct scmi_handle *handle,
+				      u32 domain, u32 *freqs)
+{
+	int cnt, opp_cnt;
+	struct scmi_perf_info *pi = handle->perf_priv;
+	struct perf_dom_info *dom;
+	struct scmi_opp *opp;
+
+	if (domain < 0)
+		return domain;
+
+	dom = pi->dom_info + domain;
+	if (!dom)
+		return -EIO;
+
+	opp_cnt = dom->opp_count;
+	opp = dom->opp;
+
+	for (cnt = 0; cnt < opp_cnt; cnt++, opp++)
+		*freqs++ = opp->perf;
+
+	return 0;
+}
+
 static struct scmi_perf_ops perf_ops = {
 	.limits_set = scmi_perf_limits_set,
 	.limits_get = scmi_perf_limits_get,
@@ -452,6 +476,7 @@ static struct scmi_perf_ops perf_ops = {
 	.get_num_domain_opps = scmi_dvfs_get_num_domain_opps,
 	.freq_set = scmi_dvfs_freq_set,
 	.freq_get = scmi_dvfs_freq_get,
+	.domain_freqs_get = scmi_dvfs_domain_freqs_get,
 };
 
 static int scmi_perf_protocol_init(struct scmi_handle *handle)

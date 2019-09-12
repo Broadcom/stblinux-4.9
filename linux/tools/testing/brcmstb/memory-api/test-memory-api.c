@@ -1,8 +1,19 @@
 #include <linux/kernel.h>
+#include <linux/list.h>
 #include <linux/module.h>
 #include <linux/sizes.h>
+#include <linux/slab.h>
 #include <linux/brcmstb/memory_api.h>
 #include <linux/soc/brcmstb/brcmstb.h>
+#include "linux/delay.h"
+
+void brcmstb_hugepage_print(struct seq_file *seq);
+
+#define B_LOG_(level, fmt, args...) printk( level "BRCMSTB_HUGEPAGES: " fmt "\n", ## args)
+#define B_LOG_WRN(args...) B_LOG_(KERN_WARNING, args)
+#define B_LOG_MSG(args...) B_LOG_(KERN_INFO, args)
+#define B_LOG_TRACE(args...) /* B_LOG_(KERN_INFO, args) */
+
 
 static struct brcmstb_memory bm;
 
@@ -15,12 +26,12 @@ static void test_kva_mem_map(struct brcmstb_range *range)
 	addr = brcmstb_memory_kva_map_phys(range->addr, size, true);
 	if (!addr) {
 		pr_err("failed to map %llu MiB at %#016llx\n",
-		       size / SZ_1M, range->addr);
+		       (unsigned long long)size / SZ_1M, range->addr);
 		return;
 	}
 
-	pr_info("%s: virt: %p, phys: 0x%lx\n",
-		__func__, addr, virt_to_phys(addr));
+	pr_info("%s: virt: %p, phys: 0x%llx\n",
+		__func__, addr, (unsigned long long)virt_to_phys(addr));
 
 	/* Now try to read from there as well */
 	data = addr;
@@ -28,9 +39,61 @@ static void test_kva_mem_map(struct brcmstb_range *range)
 	check = *data;
 	if (check != 0xdeadbeefUL)
 		pr_err("memory mismatch: %llu != %llu\n",
-			check, 0xdeadbeefUL);
+			(unsigned long long)check, 0xdeadbeefULL);
 
 	brcmstb_memory_kva_unmap(addr);
+}
+
+static void bhpa_test(void)
+{
+	int rc;
+	static struct allocation {
+		unsigned int memc;
+		unsigned int count;
+		uint64_t pages[64];
+	} allocations[16];
+	struct allocation *ptr;
+	unsigned memcIndex;
+	unsigned loop;
+
+	brcmstb_hugepage_print(NULL);
+
+	for (loop = 0; loop < 2; loop++) {
+		unsigned int i, j;
+
+		memcIndex = 0;
+		B_LOG_MSG("[%u] alloc memory", loop);
+		for (i = 0; i < ARRAY_SIZE(allocations); i++) {
+			ptr = &allocations[i];
+			rc = brcmstb_hugepage_alloc(memcIndex,
+						    ptr->pages,
+						    ARRAY_SIZE(ptr->pages),
+						    &ptr->count,
+						    NULL);
+			ptr->memc = memcIndex;
+			B_LOG_MSG("Alloc memory  -> %d %u %d", memcIndex,
+				  ptr->count, rc);
+			if(!ptr->count) {
+				if (++memcIndex >= MAX_BRCMSTB_MEMC)
+					break;
+				i--;
+			} else {
+				brcmstb_hugepage_print(NULL);
+			}
+		}
+		msleep(msecs_to_jiffies(5*1000));
+
+		B_LOG_MSG("[%u] free memory", loop);
+		for (j = 0; j < i; j++) {
+			ptr = &allocations[j];
+			B_LOG_MSG("free memory %u pages", ptr->count);
+			brcmstb_hugepage_free(ptr->memc, ptr->pages,
+					      ptr->count);
+			brcmstb_hugepage_print(NULL);
+		}
+	}
+
+	return;
 }
 
 static int __init test_init(void)
@@ -107,6 +170,19 @@ static int __init test_init(void)
 				range->addr, range->addr + range->size,
 				nrange->name);
 	}
+
+	pr_info("bhpa info:\n");
+	for (i = 0; i < bm.bhpa.count; ++i) {
+		if (i >= MAX_BRCMSTB_RANGE) {
+			pr_warn(" Need to increase MAX_BRCMSTB_RANGE!\n");
+			break;
+		}
+		range = &bm.bhpa.range[i];
+		pr_info(" %llu MiB at %#016llx\n",
+				range->size / SZ_1M, range->addr);
+	}
+	if (i)
+		bhpa_test();
 
 	/* Test the obtention of the MEMC size */
 	for (i = 0; i < MAX_BRCMSTB_MEMC; i++) {

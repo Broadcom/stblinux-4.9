@@ -32,9 +32,10 @@
 #define BCLK_SW_TSX0		(BCLK_SW_OFFSET + 0xe)
 #define BCLK_SW_SMARTCARD0	(BCLK_SW_OFFSET + 0xf)
 #define BCLK_SW_SMARTCARD1	(BCLK_SW_OFFSET + 0x10)
+#define BCLK_SW_VPU0		(BCLK_SW_OFFSET + 0x11)
 
 /* If you add a clk/core, please update below */
-#define BCLK_SW_NUM_CORES    (BCLK_SW_OFFSET + 0x11)
+#define BCLK_SW_NUM_CORES    (BCLK_SW_OFFSET + BCLK_SW_VPU0 + 1)
 
 /* Keep some space reserved for future cores.  */
 
@@ -83,9 +84,11 @@ int brcm_clk_prepare_enable(unsigned int clk_id);
 void  brcm_clk_disable_unprepare(unsigned int clk_id);
 
 int brcm_pmap_show(void);
-int brcm_pmap_num_pstates(unsigned int clk_id, unsigned int *num_pstates);
-int brcm_pmap_get_pstate(unsigned int clk_id, unsigned int *pstate);
-int brcm_pmap_set_pstate(unsigned int clk_id, unsigned int pstate);
+int brcm_pmap_num_pstates(unsigned int core_id, unsigned int *num_pstates);
+int brcm_pmap_get_pstate(unsigned int core_id, unsigned int *pstate);
+int brcm_pmap_set_pstate(unsigned int core_id, unsigned int pstate);
+/* Returns the frequencies in kHz of pstates [0..N-1] */
+int brcm_pmap_get_pstate_freqs(unsigned int core_id, unsigned int *freqs);
 
 #else
 static inline int brcm_clk_prepare_enable(unsigned int clk_id)
@@ -101,23 +104,28 @@ static inline int brcm_pmap_show(void)
 	return -ENOTSUPP;
 }
 
-static inline int brcm_pmap_num_pstates(unsigned int clk_id,
+static inline int brcm_pmap_num_pstates(unsigned int core_id,
 					unsigned int *num_pstates)
 {
 	return -ENOTSUPP;
 }
 
-static inline int brcm_pmap_get_pstate(unsigned int clk_id,
+static inline int brcm_pmap_get_pstate(unsigned int core_id,
 				       unsigned int *pstate)
 {
 	return -ENOTSUPP;
 }
 
-static inline int brcm_pmap_set_pstate(unsigned int clk_id,
+static inline int brcm_pmap_set_pstate(unsigned int core_id,
 				       unsigned int pstate)
 {
 	return -ENOTSUPP;
 }
 
+static inline int brcm_pmap_get_pstate_freqs(unsigned int core_id,
+					     uint32_t *freqs)
+{
+	return -ENOTSUPP;
+}
 #endif
 #endif

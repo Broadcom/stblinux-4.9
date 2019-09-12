@@ -71,6 +71,11 @@ struct brcmstb_memory {
 	} cma;
 	/* regions that nexus cannot recommend for bmem or CMA */
 	struct brcmstb_reserved_memory reserved;
+	/* bhpa regions */
+	struct {
+		struct brcmstb_range range[MAX_BRCMSTB_RANGE];
+		int count;
+	} bhpa;
 };
 
 #define BRCMSTB_MEM_SUPPORTS_UNALIGNED_KVA_MAP
@@ -115,5 +120,11 @@ enum brcmstb_reserve_type {
 extern const enum brcmstb_reserve_type brcmstb_default_reserve;
 /* Should be set to true by any CLI option that overrides default reserve */
 extern bool brcmstb_memory_override_defaults;
+
+int brcmstb_hugepage_alloc(unsigned int memcIndex, uint64_t *pages,
+			   unsigned int count, unsigned int *allocated,
+			   const struct brcmstb_range *range);
+void brcmstb_hugepage_free(unsigned int memcIndex, const uint64_t *pages,
+			   unsigned int count);
 
 #endif  /* _BRCMSTB_MEMORY_API_H */

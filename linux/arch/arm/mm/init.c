@@ -43,6 +43,28 @@
 
 #include "mm.h"
 
+#ifdef CONFIG_ZONE_MOVABLE
+unsigned long movable_start __initdata;
+/*
+ * Parses command line for movablebase= options
+ */
+static int __init movablebase_setup(char *str)
+{
+	phys_addr_t addr = 0;
+	unsigned long movablebase;
+
+	addr = memparse(str, &str);
+	addr = PAGE_ALIGN(addr);
+
+	movablebase = __phys_to_pfn(addr);
+	if (movablebase && (!movable_start || movable_start > movablebase))
+		movable_start = movablebase;
+
+	return 0;
+}
+early_param("movablebase", movablebase_setup);
+#endif /* CONFIG_ZONE_MOVABLE */
+
 #ifdef CONFIG_CPU_CP15_MMU
 unsigned long __init __clear_cr(unsigned long mask)
 {
@@ -148,6 +170,14 @@ static void __init zone_sizes_init(unsigned long min, unsigned long max_low,
 	 */
 	memset(zone_size, 0, sizeof(zone_size));
 
+#ifdef CONFIG_ZONE_MOVABLE
+	if (movable_start) {
+		WARN_ON(max_low > movable_start);
+		zone_size[ZONE_MOVABLE] = max_high - movable_start;
+		max_high = movable_start;
+	}
+#endif
+
 	/*
 	 * The memory size has already been determined.  If we need
 	 * to do anything fancy with the allocation of this memory
@@ -171,6 +201,16 @@ static void __init zone_sizes_init(unsigned long min, unsigned long max_low,
 			unsigned long low_end = min(end, max_low);
 			zhole_size[0] -= low_end - start;
 		}
+#ifdef CONFIG_ZONE_MOVABLE
+		if (end > max_high) {
+			unsigned long high_start = max(start, max_high);
+			zhole_size[ZONE_MOVABLE] -= end - high_start;
+			if (start < max_high)
+				end = max_high;
+			else
+				continue;
+		}
+#endif
 #ifdef CONFIG_HIGHMEM
 		if (end > max_low) {
 			unsigned long high_start = max(start, max_low);
@@ -685,7 +725,8 @@ static void update_sections_early(struct section_perm perms[], int n)
 		if (t->flags & PF_KTHREAD)
 			continue;
 		for_each_thread(t, s)
-			set_section_perms(perms, n, true, s->mm);
+			if (s->mm)
+				set_section_perms(perms, n, true, s->mm);
 	}
 	read_unlock(&tasklist_lock);
 	set_section_perms(perms, n, true, current->active_mm);
