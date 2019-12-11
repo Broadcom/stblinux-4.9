@@ -181,9 +181,7 @@ static int brcm_mbox_probe(struct platform_device *pdev)
 	/* Get SGI interrupt number for p2a */
 	ret = of_property_read_u32_index(np, "interrupts", 4,
 					 &mbox->irqs[P2A_CHAN]);
-	if (ret < 0) {
-		dev_warn(&pdev->dev, "failed to get SGI p2a intr from DT\n");
-	} else {
+	if (ret >= 0) {
 		ret = set_ipi_handler_priv(mbox->irqs[P2A_CHAN], brcm_p2a_isr,
 					   "brcm: SCMI p2a intr",
 					   &mbox->controller.chans[P2A_CHAN]);

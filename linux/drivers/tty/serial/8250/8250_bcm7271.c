@@ -424,7 +424,7 @@ static int brcmuart_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static int brcmuart_suspend(struct device *dev)
+static int __maybe_unused brcmuart_suspend(struct device *dev)
 {
 	struct brcmuart_priv *priv = dev_get_drvdata(dev);
 
@@ -434,7 +434,7 @@ static int brcmuart_suspend(struct device *dev)
 	return 0;
 }
 
-static int brcmuart_resume(struct device *dev)
+static int __maybe_unused brcmuart_resume(struct device *dev)
 {
 	struct brcmuart_priv *priv = dev_get_drvdata(dev);
 	int ret;

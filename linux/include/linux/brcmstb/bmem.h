@@ -26,9 +26,7 @@ int bmem_region_info(int idx, phys_addr_t *addr, phys_addr_t *size);
 /* Below functions are for calling during initialization and may need stubs */
 
 #ifdef CONFIG_BRCMSTB_BMEM
-void __init bmem_reserve(void);
-#else
-static inline void bmem_reserve(void) {}
+void __init bmem_reserve(void (*setup)(phys_addr_t addr, phys_addr_t size));
 #endif
 
 #endif /* _LINUX_BRCMSTB_BMEM_H */

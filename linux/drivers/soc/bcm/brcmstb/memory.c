@@ -92,6 +92,7 @@ static DEFINE_MUTEX(kva_map_lock);
 
 const enum brcmstb_reserve_type brcmstb_default_reserve = BRCMSTB_RESERVE_BMEM;
 bool brcmstb_memory_override_defaults = false;
+bool brcmstb_bmem_is_bhpa = false;
 
 static struct brcmstb_reserved_memory reserved_init;
 
@@ -992,7 +993,12 @@ void __init brcmstb_memory_init(void)
 {
 	brcmstb_memory_reserve();
 #ifdef CONFIG_BRCMSTB_BMEM
-	bmem_reserve();
+#ifdef CONFIG_BRCMSTB_HUGEPAGES
+	if (brcmstb_bmem_is_bhpa)
+		bmem_reserve(brcmstb_bhpa_setup);
+	else
+#endif
+		bmem_reserve(NULL);
 #endif
 #ifdef CONFIG_BRCMSTB_CMA
 	cma_reserve();

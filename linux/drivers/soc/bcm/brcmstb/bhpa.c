@@ -348,6 +348,11 @@ void __init brcmstb_bhpa_reserve(void)
 	bhpa_alloc_ranges();
 }
 
+void __init brcmstb_bhpa_setup(phys_addr_t addr, phys_addr_t size)
+{
+	__bhpa_setup(addr, size);
+}
+
 /*
  * Returns index if the supplied range falls entirely within a bhpa region
  */
@@ -464,16 +469,17 @@ static void bhpa_block_print(
 	int buf_off = 0;
 
 	if (seq)
-		seq_printf(seq, "MEMC%u BLOCK:%p %u pages %#lx..%#lx\n",
-			   memc, block, block->count,
-			   (unsigned long)block->base,
-			   (unsigned long)(block->base + block->count *
-					   (uint64_t)BHPA_SIZE));
+		seq_printf(seq, "MEMC%u BLOCK:%p %u/%u pages %#llx..%#llx\n",
+			   memc, block, block->free, block->count,
+			   (unsigned long long)block->base,
+			   (unsigned long long)(block->base + block->count *
+						(uint64_t)BHPA_SIZE));
 	else
-		pr_info("MEMC%u BLOCK:%p %u pages %#lx..%#lx\n", memc, block,
-			block->count, (unsigned long)block->base,
-			(unsigned long)(block->base + block->count *
-					(uint64_t)BHPA_SIZE));
+		pr_info("MEMC%u BLOCK:%p %u/%u pages %#llx..%#llx\n", memc,
+			block, block->free, block->count,
+			(unsigned long long)block->base,
+			(unsigned long long)(block->base + block->count *
+					     (uint64_t)BHPA_SIZE));
 
 	for (i = 0; i < block->count; i++) {
 		int rc;
@@ -481,11 +487,12 @@ static void bhpa_block_print(
 		int busy;
 		int allocated;
 		char ch;
+		phys_addr_t addr;
 
 		if (buf_off == 0) {
-			rc = snprintf(buf, sizeof(buf), " %#lx: ",
-				     (unsigned long)(block->base + i *
-						     (uint64_t)BHPA_SIZE));
+			addr = block->base + i * (phys_addr_t)BHPA_SIZE;
+			rc = snprintf(buf, sizeof(buf), " %#llx: ",
+				      (unsigned long long)addr);
 			if (!WARN_ON(rc < 0 || rc > sizeof(buf)))
 				buf_off = rc;
 		}
@@ -537,16 +544,20 @@ static void bhpa_block_update_range(
 	} else if (range) {
 		phys_addr_t start = block->base;
 		phys_addr_t end = block->base + block->count *
-				  BHPA_BLOCK_PAGES;
+				  (phys_addr_t)BHPA_SIZE;
 		phys_addr_t range_end = range->addr + range->size;
 
 		if (range->addr > start)
 			start = ALIGN(range->addr, BHPA_SIZE);
 		if (range_end < end)
-			end = ALIGN(range_end - (BHPA_SIZE - 1),
-				    BHPA_SIZE);
-		first_page = (start - block->base) / BHPA_SIZE;
-		last_page = (end - block->base) / BHPA_SIZE;
+			end = ALIGN_DOWN(range_end, BHPA_SIZE);
+		if (start >= end) {
+			/* No overlap */
+			last_page = first_page;
+		} else {
+			first_page = (start - block->base) / BHPA_SIZE;
+			last_page = (end - block->base) / BHPA_SIZE;
+		}
 	}
 	*p_first_page = first_page;
 	*p_last_page = last_page;
@@ -575,6 +586,7 @@ static int bhpa_block_alloc_fast(
 	bhpa_block_update_range(block, range, &first_page, &last_page);
 	if (first_page == last_page)
 		return rc;
+	count = min(count, last_page - first_page);
 	start = block->base + first_page * (phys_addr_t)BHPA_SIZE;
 	pfn_start_range = (unsigned long)(start >> PAGE_SHIFT);
 	pfn_end_range = (((last_page - first_page) * (phys_addr_t)BHPA_SIZE)
@@ -658,6 +670,7 @@ static int bhpa_block_alloc(
 		    last_page);
 	if (first_page == last_page)
 		return rc;
+	count = min(count, last_page - first_page);
 
 	while (count > 0) {
 		unsigned long pfn_start;
@@ -717,6 +730,7 @@ static int bhpa_block_alloc(
 			B_LOG_DBG("block_alloc:%p: can't be allocated: %u:%#lx(%u)",
 				  block, count, (unsigned long)start,
 				  (unsigned int)free_bit);
+			rc = 0;
 		}
 	}
 	return rc;
@@ -774,6 +788,31 @@ static __init void bhpa_memc_init(struct bhpa_memc *a)
 	INIT_LIST_HEAD(&a->blocks);
 }
 
+static void bhpa_memc_free(struct bhpa_memc *a, const uint64_t *pages,
+			   unsigned int count)
+{
+	struct bhpa_block *block;
+
+	while (count > 0) {
+		phys_addr_t page = *pages;
+		bool found = false;
+
+		list_for_each_entry(block, &a->blocks, node) {
+			if (page >= block->base &&
+			    page < block->base + (block->count * BHPA_SIZE)) {
+				bhpa_block_free(block, page);
+				found = true;
+				break;
+			}
+		}
+		B_LOG_TRACE("bhpa_memc_free:%p pages:%lx", a,
+			    (unsigned long)page);
+		WARN_ON(!found);
+		pages++;
+		count--;
+	}
+}
+
 static int bhpa_memc_alloc(struct bhpa_memc *a, uint64_t *pages,
 			   unsigned int count, unsigned int *allocated,
 			   const struct brcmstb_range *range)
@@ -827,32 +866,13 @@ static int bhpa_memc_alloc(struct bhpa_memc *a, uint64_t *pages,
 		}
 	}
 done:
-	return rc;
-}
-
-static void bhpa_memc_free(struct bhpa_memc *a, const uint64_t *pages,
-			   unsigned int count)
-{
-	struct bhpa_block *block;
-
-	while (count > 0) {
-		phys_addr_t page = *pages;
-		bool found = false;
-
-		list_for_each_entry(block, &a->blocks, node) {
-			if (page >= block->base &&
-			    page < block->base + (block->count * BHPA_SIZE)) {
-				bhpa_block_free(block, page);
-				found = true;
-				break;
-			}
-		}
-		B_LOG_TRACE("bhpa_memc_free:%p pages:%lx", a,
-			    (unsigned long)page);
-		WARN_ON(!found);
-		pages++;
-		count--;
+	if (rc != 0) {
+		/* in case of error free all partially allocated memory */
+		bhpa_memc_free(a, pages - *allocated, *allocated);
+		*allocated = 0;
 	}
+
+	return rc;
 }
 
 static void bhpa_memc_print(struct seq_file *seq, const struct bhpa_memc *a,

@@ -9,8 +9,9 @@ Required properties:
 	"brcm,avs-tmon-bcm7445"
 	"brcm,avs-tmon"
 - reg: address range for the AVS TMON registers
-- interrupts: 'TMON' interrupt, for high/low threshold triggers
-- interrupt-names: "tmon"
+- interrupts: 'TMON' interrupt, for high/low threshold triggers, optional
+	for brcm,avs-tmon-bcm7216
+- interrupt-names: "tmon", optional for brcm,avs-tmon-bcm7216
 
 Example:
 

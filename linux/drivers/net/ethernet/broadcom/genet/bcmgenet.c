@@ -2669,8 +2669,6 @@ static void reset_umac(struct bcmgenet_priv *priv)
 
 	/* issue soft reset with (rg)mii loopback to ensure a stable rxclk */
 	bcmgenet_umac_writel(priv, CMD_SW_RESET | CMD_LCL_LOOP_EN, UMAC_CMD);
-	udelay(2);
-	bcmgenet_umac_writel(priv, 0, UMAC_CMD);
 }
 
 static void bcmgenet_intr_disable(struct bcmgenet_priv *priv)
@@ -2691,6 +2689,8 @@ static void bcmgenet_link_intr_enable(struct bcmgenet_priv *priv)
 	 */
 	if (priv->internal_phy) {
 		int0_enable |= UMAC_IRQ_LINK_EVENT;
+		if (GENET_IS_V1(priv) || GENET_IS_V2(priv) || GENET_IS_V3(priv))
+			int0_enable |= UMAC_IRQ_PHY_DET_R;
 	} else if (priv->ext_phy) {
 		int0_enable |= UMAC_IRQ_LINK_EVENT;
 	} else if (priv->phy_interface == PHY_INTERFACE_MODE_MOCA) {
@@ -3293,6 +3293,12 @@ static void bcmgenet_irq_task(struct work_struct *work)
 	priv->irq0_stat = 0;
 	spin_unlock_irq(&priv->lock);
 
+	if (status & UMAC_IRQ_PHY_DET_R &&
+	    priv->dev->phydev->autoneg != AUTONEG_ENABLE) {
+		phy_init_hw(priv->dev->phydev);
+		genphy_config_aneg(priv->dev->phydev);
+	}
+
 	/* Link UP/DOWN event */
 	if (status & UMAC_IRQ_LINK_EVENT)
 		phy_mac_interrupt(priv->dev->phydev,
@@ -3391,7 +3397,7 @@ static irqreturn_t bcmgenet_isr0(int irq, void *dev_id)
 	}
 
 	/* all other interested interrupts handled in bottom half */
-	status &= UMAC_IRQ_LINK_EVENT;
+	status &= (UMAC_IRQ_LINK_EVENT | UMAC_IRQ_PHY_DET_R);
 	if (status) {
 		/* Save irq status for bottom-half processing. */
 		spin_lock_irqsave(&priv->lock, flags);
@@ -4119,16 +4125,10 @@ static int bcmgenet_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	if (dn) {
+	if (dn)
 		macaddr = of_get_mac_address(dn);
-		if (!macaddr) {
-			dev_err(&pdev->dev, "can't find MAC address\n");
-			err = -EINVAL;
-			goto err;
-		}
-	} else {
+	else
 		macaddr = pd->mac_address;
-	}
 
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	priv->base = devm_ioremap_resource(&pdev->dev, r);
@@ -4141,7 +4141,10 @@ static int bcmgenet_probe(struct platform_device *pdev)
 
 	SET_NETDEV_DEV(dev, &pdev->dev);
 	dev_set_drvdata(&pdev->dev, dev);
-	ether_addr_copy(dev->dev_addr, macaddr);
+	if (!macaddr || !is_valid_ether_addr(macaddr))
+		eth_hw_addr_random(dev);
+	else
+		ether_addr_copy(dev->dev_addr, macaddr);
 	dev->watchdog_timeo = 2 * HZ;
 	dev->ethtool_ops = &bcmgenet_ethtool_ops;
 	dev->netdev_ops = &bcmgenet_netdev_ops;
@@ -4301,6 +4304,11 @@ static int bcmgenet_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static void bcmgenet_shutdown(struct platform_device *pdev)
+{
+	bcmgenet_remove(pdev);
+}
+
 #ifdef CONFIG_PM_SLEEP
 static int bcmgenet_resume_noirq(struct device *d)
 {
@@ -4331,8 +4339,6 @@ static int bcmgenet_resume_noirq(struct device *d)
 
 	bcmgenet_intrl2_0_writel(priv, UMAC_IRQ_WAKE_EVENT, INTRL2_CPU_CLEAR);
 
-	clk_disable_unprepare(priv->clk);
-
 	return ret;
 }
 
@@ -4346,11 +4352,6 @@ static int bcmgenet_resume(struct device *d)
 
 	if (!netif_running(dev))
 		return 0;
-
-	/* Turn on the clock */
-	ret = clk_prepare_enable(priv->clk);
-	if (ret)
-		return ret;
 
 	/* From WOL-enabled suspend, switch to regular clock */
 	if (device_may_wakeup(d) && priv->wolopts)
@@ -4369,6 +4370,7 @@ static int bcmgenet_resume(struct device *d)
 
 	phy_init_hw(dev->phydev);
 	/* Speed settings must be restored */
+	genphy_config_aneg(dev->phydev);
 	bcmgenet_mii_config(priv->dev, false);
 
 	bcmgenet_set_hw_addr(priv, dev->dev_addr);
@@ -4415,7 +4417,6 @@ static int bcmgenet_suspend(struct device *d)
 	struct net_device *dev = dev_get_drvdata(d);
 	struct bcmgenet_priv *priv = netdev_priv(dev);
 	u32 offset;
-	int ret = 0;
 
 	if (!netif_running(dev))
 		return 0;
@@ -4434,34 +4435,51 @@ static int bcmgenet_suspend(struct device *d)
 	priv->hfb_en[2] = bcmgenet_hfb_reg_readl(priv, offset + sizeof(u32));
 	bcmgenet_hfb_reg_writel(priv, 0, HFB_CTRL);
 
+	return 0;
+}
+
+static int bcmgenet_suspend_noirq(struct device *d)
+{
+	struct net_device *dev = dev_get_drvdata(d);
+	struct bcmgenet_priv *priv = netdev_priv(dev);
+	int ret = 0;
+
+	if (!netif_running(dev))
+		return 0;
+
 	/* Prepare the device for Wake-on-LAN and switch to the slow clock */
 	if (device_may_wakeup(d) && priv->wolopts)
 		ret = bcmgenet_power_down(priv, GENET_POWER_WOL_MAGIC);
 	else if (priv->internal_phy)
 		ret = bcmgenet_power_down(priv, GENET_POWER_PASSIVE);
 
+	/* Let the framework handle resumption and leave the clocks on */
+	if (ret)
+		return ret;
+
 	/* Turn off the clocks */
 	clk_disable_unprepare(priv->clk);
 
-	if (ret)
-		bcmgenet_resume(d);
-
-	return ret;
+	return 0;
 }
+#else
+#define bcmgenet_suspend	NULL
+#define bcmgenet_suspend_noirq	NULL
+#define bcmgenet_resume		NULL
+#define bcmgenet_resume_noirq	NULL
+#endif /* CONFIG_PM_SLEEP */
 
 static const struct dev_pm_ops bcmgenet_pm_ops = {
 	.suspend	= bcmgenet_suspend,
+	.suspend_noirq	= bcmgenet_suspend_noirq,
 	.resume		= bcmgenet_resume,
 	.resume_noirq	= bcmgenet_resume_noirq,
 };
 
-#else
-#define bcmgenet_pm_ops	NULL
-#endif /* CONFIG_PM_SLEEP */
-
 static struct platform_driver bcmgenet_driver = {
 	.probe	= bcmgenet_probe,
 	.remove	= bcmgenet_remove,
+	.shutdown = bcmgenet_shutdown,
 	.driver	= {
 		.name	= "bcmgenet",
 		.of_match_table = bcmgenet_match,

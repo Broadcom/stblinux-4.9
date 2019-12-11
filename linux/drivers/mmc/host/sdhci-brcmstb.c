@@ -19,10 +19,9 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/bitops.h>
+#include <linux/delay.h>
 
 #include "sdhci-pltfm.h"
-
-#ifdef CONFIG_PM_SLEEP
 
 #define SDHCI_VENDOR 0x78
 #define  SDHCI_VENDOR_ENHANCED_STRB 0x1
@@ -37,6 +36,7 @@ struct sdhci_brcmstb_priv {
 struct brcmstb_match_priv {
 	void (*hs400es)(struct mmc_host *mmc, struct mmc_ios *ios);
 	int (*execute_tuning)(struct mmc_host *mmc, u32 opcode);
+	const struct sdhci_ops *ops;
 	unsigned int flags;
 };
 
@@ -71,6 +71,42 @@ static int sdhci_brcmstb_execute_tuning(struct mmc_host *mmc, u32 opcode)
 	return stat;
 }
 
+static void sdhci_brcmstb_set_clock(struct sdhci_host *host, unsigned int clock)
+{
+	u16 clk;
+	unsigned long timeout;
+
+	host->mmc->actual_clock = 0;
+
+	clk = sdhci_calc_clk(host, clock, &host->mmc->actual_clock);
+	sdhci_writew(host, clk, SDHCI_CLOCK_CONTROL);
+
+	if (clock == 0)
+		return;
+
+	clk |= SDHCI_CLOCK_INT_EN;
+	sdhci_writew(host, clk, SDHCI_CLOCK_CONTROL);
+
+	/* Wait max 20 ms */
+	timeout = 20;
+	while (!((clk = sdhci_readw(host, SDHCI_CLOCK_CONTROL))
+		& SDHCI_CLOCK_INT_STABLE)) {
+		if (timeout == 0) {
+			pr_err("%s: Internal clock never stabilised.\n",
+			       mmc_hostname(host->mmc));
+			return;
+		}
+		timeout--;
+		spin_unlock_irq(&host->lock);
+		usleep_range(900, 1100);
+		spin_lock_irq(&host->lock);
+	}
+
+	clk |= SDHCI_CLOCK_CARD_EN;
+	sdhci_writew(host, clk, SDHCI_CLOCK_CONTROL);
+}
+
+#ifdef CONFIG_PM_SLEEP
 static int sdhci_brcmstb_suspend(struct device *dev)
 {
 	struct sdhci_host *host = dev_get_drvdata(dev);
@@ -108,22 +144,28 @@ static const struct sdhci_ops sdhci_brcmstb_ops = {
 	.set_uhs_signaling = sdhci_set_uhs_signaling,
 };
 
-static struct sdhci_pltfm_data sdhci_brcmstb_pdata = {
-	.ops = &sdhci_brcmstb_ops,
+static const struct sdhci_ops sdhci_brcmstb_ops_7216 = {
+	.set_clock = sdhci_brcmstb_set_clock,
+	.set_bus_width = sdhci_set_bus_width,
+	.reset = sdhci_reset,
+	.set_uhs_signaling = sdhci_set_uhs_signaling,
 };
 
 static const struct brcmstb_match_priv match_priv_7425 = {
 	.flags = BRCMSTB_PRIV_FLAGS_NO_64BIT |
 	BRCMSTB_PRIV_FLAGS_BROKEN_TIMEOUT,
+	.ops = &sdhci_brcmstb_ops,
 };
 
 static const struct brcmstb_match_priv match_priv_7445 = {
 	.flags = BRCMSTB_PRIV_FLAGS_BROKEN_TIMEOUT,
+	.ops = &sdhci_brcmstb_ops,
 };
 
 static const struct brcmstb_match_priv match_priv_7216 = {
 	.hs400es = sdhci_brcmstb_hs400es,
 	.execute_tuning = sdhci_brcmstb_execute_tuning,
+	.ops = &sdhci_brcmstb_ops_7216,
 };
 
 static const struct of_device_id sdhci_brcm_of_match[] = {
@@ -135,6 +177,7 @@ static const struct of_device_id sdhci_brcm_of_match[] = {
 
 static int sdhci_brcmstb_probe(struct platform_device *pdev)
 {
+	struct sdhci_pltfm_data brcmstb_pdata;
 	const struct brcmstb_match_priv *match_priv;
 	struct sdhci_pltfm_host *pltfm_host;
 	const struct of_device_id *match;
@@ -158,7 +201,9 @@ static int sdhci_brcmstb_probe(struct platform_device *pdev)
 	if (res)
 		return res;
 
-	host = sdhci_pltfm_init(pdev, &sdhci_brcmstb_pdata,
+	memset(&brcmstb_pdata, 0, sizeof(brcmstb_pdata));
+	brcmstb_pdata.ops = match_priv->ops;
+	host = sdhci_pltfm_init(pdev, &brcmstb_pdata,
 				sizeof(struct sdhci_brcmstb_priv));
 	if (IS_ERR(host)) {
 		res = PTR_ERR(host);
@@ -222,6 +267,15 @@ err_clk:
 	return res;
 }
 
+static void sdhci_brcmstb_shutdown(struct platform_device *pdev)
+{
+	int ret;
+
+	ret = sdhci_pltfm_unregister(pdev);
+	if (ret)
+		dev_err(&pdev->dev, "failed to shutdown\n");
+}
+
 MODULE_DEVICE_TABLE(of, sdhci_brcm_of_match);
 
 static struct platform_driver sdhci_brcmstb_driver = {
@@ -232,6 +286,7 @@ static struct platform_driver sdhci_brcmstb_driver = {
 	},
 	.probe		= sdhci_brcmstb_probe,
 	.remove		= sdhci_pltfm_unregister,
+	.shutdown	= sdhci_brcmstb_shutdown,
 };
 
 module_platform_driver(sdhci_brcmstb_driver);

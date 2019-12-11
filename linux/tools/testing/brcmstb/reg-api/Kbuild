@@ -1,1 +1,2 @@
 obj-m := test-reg-api.o
+ccflags-y += -Werror

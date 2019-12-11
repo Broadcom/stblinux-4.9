@@ -25,45 +25,36 @@ DOSFSTOOLS_CONF_OPTS += LIBS="-liconv"
 DOSFSTOOLS_DEPENDENCIES += libiconv
 endif
 
-# Install into temporary location
-DOSFSTOOLS_INSTALL_TARGET_OPTS = \
-	DESTDIR=$(DOSFSTOOLS_TEMP) \
-	install
-
-# Clean out our temporary install location before installation
-define DOSFSTOOLS_CLEAR_TEMP
-	rm -rf $(DOSFSTOOLS_TEMP)
+ifeq ($(BR2_PACKAGE_DOSFSTOOLS_FATLABEL),y)
+define DOSFSTOOLS_INSTALL_FATLABEL
+	$(INSTALL) -D -m 0755 $(@D)/src/fatlabel $(TARGET_DIR)/sbin/fatlabel
+	ln -sf fatlabel $(TARGET_DIR)/sbin/dosfslabel
 endef
-DOSFSTOOLS_PRE_INSTALL_TARGET_HOOKS += DOSFSTOOLS_CLEAR_TEMP
-
-# Sanitize temporary install location after installation
-ifeq ($(BR2_PACKAGE_DOSFSTOOLS_FATLABEL),)
-define DOSFSTOOLS_REMOVE_FATLABEL
-	rm -f $(addprefix $(DOSFSTOOLS_TEMP)/sbin/,dosfslabel fatlabel)
-endef
-DOSFSTOOLS_POST_INSTALL_TARGET_HOOKS += DOSFSTOOLS_REMOVE_FATLABEL
 endif
 
-ifeq ($(BR2_PACKAGE_DOSFSTOOLS_FSCK_FAT),)
-define DOSFSTOOLS_REMOVE_FSCK_FAT
-	rm -f $(addprefix $(DOSFSTOOLS_TEMP)/sbin/,fsck.fat dosfsck fsck.msdos fsck.vfat)
+ifeq ($(BR2_PACKAGE_DOSFSTOOLS_FSCK_FAT),y)
+define DOSFSTOOLS_INSTALL_FSCK_FAT
+	$(INSTALL) -D -m 0755 $(@D)/src/fsck.fat $(TARGET_DIR)/sbin/fsck.fat
+	ln -sf fsck.fat $(TARGET_DIR)/sbin/fsck.vfat
+	ln -sf fsck.fat $(TARGET_DIR)/sbin/fsck.msdos
+	ln -sf fsck.fat $(TARGET_DIR)/sbin/dosfsck
 endef
-DOSFSTOOLS_POST_INSTALL_TARGET_HOOKS += DOSFSTOOLS_REMOVE_FSCK_FAT
 endif
 
-ifeq ($(BR2_PACKAGE_DOSFSTOOLS_MKFS_FAT),)
-define DOSFSTOOLS_REMOVE_MKFS_FAT
-	rm -f $(addprefix $(DOSFSTOOLS_TEMP)/sbin/,mkfs.fat mkdosfs mkfs.msdos mkfs.vfat)
+ifeq ($(BR2_PACKAGE_DOSFSTOOLS_MKFS_FAT),y)
+define DOSFSTOOLS_INSTALL_MKFS_FAT
+	$(INSTALL) -D -m 0755 $(@D)/src/mkfs.fat $(TARGET_DIR)/sbin/mkfs.fat
+	ln -sf mkfs.fat $(TARGET_DIR)/sbin/mkdosfs
+	ln -sf mkfs.fat $(TARGET_DIR)/sbin/mkfs.msdos
+	ln -sf mkfs.fat $(TARGET_DIR)/sbin/mkfs.vfat
 endef
-DOSFSTOOLS_POST_INSTALL_TARGET_HOOKS += DOSFSTOOLS_REMOVE_MKFS_FAT
 endif
 
-# Install what's left into the actual target directory
-define DOSFSTOOLS_TARGET_INSTALL
-	cp -a $(DOSFSTOOLS_TEMP)/sbin/* $(TARGET_DIR)/sbin
-	rm -rf $(DOSFSTOOLS_TEMP)
+define DOSFSTOOLS_INSTALL_TARGET_CMDS
+	$(call DOSFSTOOLS_INSTALL_FATLABEL)
+	$(call DOSFSTOOLS_INSTALL_FSCK_FAT)
+	$(call DOSFSTOOLS_INSTALL_MKFS_FAT)
 endef
-DOSFSTOOLS_POST_INSTALL_TARGET_HOOKS += DOSFSTOOLS_TARGET_INSTALL
 
 $(eval $(autotools-package))
 $(eval $(host-autotools-package))

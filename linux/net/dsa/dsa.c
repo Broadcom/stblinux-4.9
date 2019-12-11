@@ -271,10 +271,64 @@ const struct dsa_device_ops *dsa_resolve_tag_protocol(int tag_protocol)
 	return ops;
 }
 
+static const char *dsa_tag_protocol_to_str(const struct dsa_device_ops *ops)
+{
+	const char *protocol_name[DSA_TAG_LAST] = {
+#ifdef CONFIG_NET_DSA_TAG_DSA
+		[DSA_TAG_PROTO_DSA] = "dsa",
+#endif
+#ifdef CONFIG_NET_DSA_TAG_EDSA
+		[DSA_TAG_PROTO_EDSA] = "edsa",
+#endif
+#ifdef CONFIG_NET_DSA_TAG_TRAILER
+		[DSA_TAG_PROTO_TRAILER] = "trailer",
+#endif
+#ifdef CONFIG_NET_DSA_TAG_BRCM
+		[DSA_TAG_PROTO_BRCM] = "brcm",
+#endif
+#ifdef CONFIG_NET_DSA_TAG_QCA
+		[DSA_TAG_PROTO_QCA] = "qca",
+#endif
+		[DSA_TAG_PROTO_NONE] = "none",
+	};
+	unsigned int i;
+
+	BUILD_BUG_ON(ARRAY_SIZE(protocol_name) != DSA_TAG_LAST);
+
+	for (i = 0; i < ARRAY_SIZE(dsa_device_ops); i++)
+		if (ops == dsa_device_ops[i])
+			return protocol_name[i];
+
+	return protocol_name[DSA_TAG_PROTO_NONE];
+}
+
+static ssize_t tagging_show(struct device *d, struct device_attribute *attr,
+			    char *buf)
+{
+	struct net_device *dev = to_net_dev(d);
+	struct dsa_switch_tree *dst = dev->dsa_ptr;
+
+	return sprintf(buf, "%s\n",
+		       dsa_tag_protocol_to_str(dst->tag_ops));
+}
+static DEVICE_ATTR_RO(tagging);
+
+static struct attribute *dsa_slave_attrs[] = {
+	&dev_attr_tagging.attr,
+	NULL
+};
+
+static const struct attribute_group dsa_group = {
+	.name	= "dsa",
+	.attrs	= dsa_slave_attrs,
+};
+
+
 int dsa_cpu_port_ethtool_setup(struct dsa_switch *ds)
 {
 	struct net_device *master;
 	struct ethtool_ops *cpu_ops;
+	int ret;
 
 	master = ds->dst->master_netdev;
 	if (ds->master_netdev)
@@ -292,7 +346,11 @@ int dsa_cpu_port_ethtool_setup(struct dsa_switch *ds)
 	dsa_cpu_port_ethtool_init(cpu_ops);
 	master->ethtool_ops = cpu_ops;
 
-	return 0;
+	ret = sysfs_create_group(&master->dev.kobj, &dsa_group);
+	if (ret)
+		dsa_cpu_port_ethtool_restore(ds);
+
+	return ret;
 }
 
 void dsa_cpu_port_ethtool_restore(struct dsa_switch *ds)
@@ -304,6 +362,7 @@ void dsa_cpu_port_ethtool_restore(struct dsa_switch *ds)
 		master = ds->master_netdev;
 
 	master->ethtool_ops = ds->dst->master_orig_ethtool_ops;
+	sysfs_remove_group(&master->dev.kobj, &dsa_group);
 }
 
 static int dsa_switch_setup_one(struct dsa_switch *ds, struct device *parent)

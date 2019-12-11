@@ -34,6 +34,14 @@ config RESET_BRCMSTB_RESCAL
 	  This sets the RESCAL function for SATA, PCIe0, or PCIe1. This
 	  needs to be set prior to the probes for SATA/PCIeX being invoked.
 
+config RESET_BRCMSTB
+	tristate "Broadcom STB reset controller"
+	depends on ARCH_BRCMSTB || COMPILE_TEST
+	default ARCH_BRCMSTB
+	help
+	  This enables the reset controller driver for Broadcom STB SoCs using
+	  a SUN_TOP_CTRL_SW_INIT style controller.
+
 config RESET_LPC18XX
 	bool "LPC18xx/43xx Reset Driver" if COMPILE_TEST
 	default ARCH_LPC18XX

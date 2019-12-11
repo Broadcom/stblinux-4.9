@@ -337,6 +337,12 @@ struct mtd_info {
 	 */
 	struct backing_dev_info *backing_dev_info;
 
+	/*
+	 * flag indicates a panic write, low level drivers can take appropriate
+	 * action if required to ensure writes go through
+	 */
+	bool oops_panic_write;
+
 	struct notifier_block reboot_notifier;  /* default mode before reboot */
 
 	/* ECC status information */

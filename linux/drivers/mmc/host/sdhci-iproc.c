@@ -168,6 +168,7 @@ static void sdhci_iproc_writeb(struct sdhci_host *host, u8 val, int reg)
 	sdhci_iproc_writel(host, newval, reg & ~3);
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int sdhci_iproc_suspend(struct device *dev)
 {
 	struct sdhci_host *host = dev_get_drvdata(dev);
@@ -192,6 +193,7 @@ static int sdhci_iproc_resume(struct device *dev)
 		return err;
 	return sdhci_resume_host(host);
 }
+#endif
 
 static SIMPLE_DEV_PM_OPS(sdhci_iproc_pmops, sdhci_iproc_suspend,
 			sdhci_iproc_resume);
@@ -302,7 +304,10 @@ static int sdhci_iproc_probe(struct platform_device *pdev)
 
 	iproc_host->data = iproc_data;
 
-	mmc_of_parse(host->mmc);
+	ret = mmc_of_parse(host->mmc);
+	if (ret)
+		goto err;
+
 	sdhci_get_of_property(pdev);
 
 	host->mmc->caps |= iproc_host->data->mmc_caps;
@@ -341,6 +346,15 @@ err:
 	return ret;
 }
 
+static void sdhci_iproc_shutdown(struct platform_device *pdev)
+{
+	int ret;
+
+	ret = sdhci_pltfm_unregister(pdev);
+	if (ret)
+		dev_err(&pdev->dev, "failed to shutdown\n");
+}
+
 static struct platform_driver sdhci_iproc_driver = {
 	.driver = {
 		.name = "sdhci-iproc",
@@ -349,6 +363,7 @@ static struct platform_driver sdhci_iproc_driver = {
 	},
 	.probe = sdhci_iproc_probe,
 	.remove = sdhci_pltfm_unregister,
+	.shutdown = sdhci_iproc_shutdown,
 };
 module_platform_driver(sdhci_iproc_driver);
 

@@ -120,6 +120,9 @@ enum brcmstb_reserve_type {
 extern const enum brcmstb_reserve_type brcmstb_default_reserve;
 /* Should be set to true by any CLI option that overrides default reserve */
 extern bool brcmstb_memory_override_defaults;
+/* May be set to true by any CLI option to convert bmem ranges to bhpa */
+extern bool brcmstb_bmem_is_bhpa;
+
 
 int brcmstb_hugepage_alloc(unsigned int memcIndex, uint64_t *pages,
 			   unsigned int count, unsigned int *allocated,

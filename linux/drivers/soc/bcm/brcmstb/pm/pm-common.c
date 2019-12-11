@@ -206,7 +206,7 @@ int configure_main_hash(struct dma_region *regions, int max,
 {
 	struct brcmstb_range *range;
 	int idx = 0, memc;
-	size_t total = 0;
+	u64 total = 0;
 
 	/*
 	 * First sort the excluded regions in ascending order. This makes things
@@ -223,11 +223,11 @@ int configure_main_hash(struct dma_region *regions, int max,
 	 */
 	for_each_range_of_memc(bm, memc, range) {
 		phys_addr_t block_start = range->addr;
-		phys_addr_t size_limit = range->size;
+		u64 size_limit = range->size;
 
 		struct dma_region *reg = &regions[idx];
 		int i, count;
-		size_t bank_total = 0;
+		u64 bank_total = 0;
 
 		reg->addr = block_start;
 		reg->len = size_limit;

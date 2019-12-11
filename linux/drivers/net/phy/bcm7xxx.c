@@ -542,7 +542,8 @@ static int bcm7xxx_28nm_probe(struct phy_device *phydev)
 
 	priv->clk = clk_get(&phydev->mdio.dev, "sw_gphy");
 	if (IS_ERR(priv->clk)) {
-		phydev_err(phydev, "failed to request GPHY clock\n");
+		if (phydev->drv->features & PHY_1000BT_FEATURES)
+			phydev_err(phydev, "failed to request GPHY clock\n");
 		priv->clk = NULL;
 	}
 

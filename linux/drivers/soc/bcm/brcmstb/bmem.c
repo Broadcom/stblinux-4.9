@@ -87,6 +87,15 @@ static int __init bmem_setup(char *str)
 	char *orig_str = str;
 	int ret;
 
+	/* allow bmem=bmem but ignore */
+	if (!memcmp(str, "bmem", 5))
+		return 0;
+
+	if (!memcmp(str, "bhpa", 5)) {
+		brcmstb_bmem_is_bhpa = true;
+		return 0;
+	}
+
 	size = memparse(str, &str);
 	if (*str == '@')
 		addr = memparse(str + 1, &str);
@@ -155,7 +164,7 @@ int bmem_region_info(int idx, phys_addr_t *addr, phys_addr_t *size)
 }
 EXPORT_SYMBOL(bmem_region_info);
 
-void __init bmem_reserve(void)
+void __init bmem_reserve(void (*setup)(phys_addr_t addr, phys_addr_t size))
 {
 	const void *fdt = initial_boot_params;
 	phys_addr_t guard = 0;
@@ -170,6 +179,15 @@ void __init bmem_reserve(void)
 			!n_bmem_regions &&
 			!brcmstb_memory_override_defaults)
 		brcmstb_memory_default_reserve(__bmem_setup);
+
+	/* Reassign BMEM to another memory type */
+	if (setup) {
+		for (i = 0; i < n_bmem_regions; ++i) {
+			setup(bmem_regions[i].addr, bmem_regions[i].size);
+		}
+		n_bmem_regions = 0;
+		return;
+	}
 
 	if (fdt) {
 		/*

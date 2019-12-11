@@ -1,16 +1,12 @@
 BRCMSTB_OUTPUT_DIR ?= output
 BRCMSTB_RELEASE_DIR = $(BRCMSTB_OUTPUT_DIR)/release
 
-BRCMSTB_VER := $(shell ./bin/linuxver.sh -dpqs misc/linux.master)
-BRCMSTB_LONG_VER := $(shell ./bin/linuxver.sh -q misc/linux.master)
-
 VERSION		:= $(shell bin/linuxver.sh -q misc/linux.master)
-DOTVERSION	:= $(patsubst 3%,3.%,$(patsubst 4%,4.%,$(patsubst 5%,5.%,$(VERSION))))
-MAJOR_VERSION	:= $(shell echo $(VERSION) | cut -d- -f1)
-STB_VERSION	:= stb-$(shell echo $(DOTVERSION) | cut -d- -f1)
+DOTVERSION	:= $(shell bin/linuxver.sh -dq misc/linux.master)
 
-STBTOOLS_VERSION := $(shell grep 'default [0-9a-f]\+$$' \
-	package/brcm-pm/Config.in | awk '{ print $$2 }')
+TOOLCHAIN	:= $(shell cat misc/toolchain.master 2>/dev/null || cat misc/toolchain)
+
+STB_VERSION	:= stb-$(shell echo $(DOTVERSION) | cut -d- -f1)
 
 BINARY_DST	= $(BRCMSTB_RELEASE_DIR)/buildroot-$(VERSION)
 SRC_DST		= $(BRCMSTB_RELEASE_DIR)/src
@@ -79,7 +75,9 @@ linux-diffs:
 brcmstb-release: brcmstb-diffs linux-diffs linux-release
 	@if [ "$(VERSION)" = "" ]; then exit 1; fi
 	for arch in `bin/get_archs.pl $(STB_VERSION)`; do \
-		bin/br_config.pl -o $(BRCMSTB_OUTPUT_DIR) -i -n \
+		bin/br_config.pl \
+			-T $(TOOLCHAIN) \
+			-o $(BRCMSTB_OUTPUT_DIR) -i -n \
 			-L misc/linux.master $${arch}; \
 		err=$$?; \
 		test $${err} = 0 || exit $${err}; \
@@ -97,7 +95,6 @@ brcmstb-release: brcmstb-diffs linux-diffs linux-release
 	bzip2 $(SRC_DST)/buildroot-$(DOTVERSION).tar
 	ln -s buildroot-$(DOTVERSION).tar.bz2 \
 		$(SRC_DST)/rootfs-$(DOTVERSION).tar.bz2
-	cp -p dl/brcm-pm/stbtools-$(STBTOOLS_VERSION).tar.gz $(SRC_DST)
 
 brcmstb-%:
-	bin/br_config.pl -b $*
+	bin/br_config.pl -T $(TOOLCHAIN) -b $*

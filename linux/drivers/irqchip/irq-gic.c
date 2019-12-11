@@ -983,6 +983,10 @@ static int gic_irq_domain_translate(struct irq_domain *d,
 		if (fwspec->param_count < 3)
 			return -EINVAL;
 
+		/* Do not try to map unknown interrupt types */
+		if (fwspec->param[0] > 1)
+			return -EINVAL;
+
 		/* Get the interrupt number and add 16 to skip over SGIs */
 		*hwirq = fwspec->param[1] + 16;
 

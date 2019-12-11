@@ -285,14 +285,16 @@ sub get_cores()
 	return $num_cores;
 }
 
-sub find_toolchain()
+sub find_toolchain($)
 {
+	my ($toolchain_ver) = @_;
 	my @path = split(/:/, $ENV{'PATH'});
+	my @toolchains;
 	my $dh;
 
 	foreach my $dir (@path) {
 		# We don't support anything before stbgcc-6.x at this point.
-		if ($dir =~ /stbgcc-[6-9]/) {
+		if ($dir =~ /stbgcc-[6-9]/ && $dir =~ $toolchain_ver) {
 			$dir =~ s|/bin/?$||;
 			# Only use the directory if it actually exists.
 			if (-d $dir) {
@@ -303,18 +305,17 @@ sub find_toolchain()
 
 	# If we didn't find a toolchain in the $PATH, we look in the standard
 	# location.
-	if (opendir($dh, TOOLCHAIN_DIR)) {
-		# Sort in reverse order, so newer toolchains appear first.
-		my @toolchains = sort { $b cmp $a }
-			grep { /stbgcc-[6-9]/ } readdir($dh);
+	return undef unless (opendir($dh, TOOLCHAIN_DIR));
 
-		closedir($dh);
+	# Sort in reverse order, so newer toolchains appear first.
+	@toolchains = sort { $b cmp $a }
+		grep { /stbgcc-[6-9]/ } readdir($dh);
+	closedir($dh);
 
-		foreach my $dir (@toolchains) {
-			if (-d TOOLCHAIN_DIR."/$dir/bin") {
-				return TOOLCHAIN_DIR."/$dir";
-			}
-		}
+	foreach my $dir (@toolchains) {
+		my $d = TOOLCHAIN_DIR."/$dir";
+
+		return $d if ($dir =~ $toolchain_ver && -d "$d/bin");
 	}
 
 	return undef;
@@ -520,6 +521,7 @@ sub print_usage($)
 		"          -M <url>.....use <url> as BR mirror ('-' for none)\n".
 		"          -n...........do not use shared download cache\n".
 		"          -o <path>....use <path> as the BR output directory\n".
+		"          -T <verstr>..use this toolchain version\n".
 		"          -t <path>....use <path> as toolchain directory\n".
 		"          -v <tag>.....use <tag> as Linux version tag\n");
 }
@@ -539,12 +541,13 @@ my $br_outputdir;
 my $br_mirror;
 my $local_linux;
 my $toolchain;
+my $toolchain_ver;
 my $recommended_toolchain;
 my $kernel_header_version;
 my $arch;
 my %opts;
 
-getopts('3:bcDd:F:f:ij:L:l:M:no:t:v:', \%opts);
+getopts('3:bcDd:F:f:ij:L:l:M:no:T:t:v:', \%opts);
 $arch = $ARGV[0];
 
 if ($#ARGV < 0) {
@@ -570,6 +573,11 @@ if (!defined($arch_config{$arch})) {
 
 if (defined($opts{'L'}) && defined($opts{'l'})) {
 	print(STDERR "$prg: options -L and -l cannot be specified together\n");
+	exit(1);
+}
+
+if (defined($opts{'T'}) && defined($opts{'t'})) {
+	print(STDERR "$prg: leave out option -T if you are using -t\n");
 	exit(1);
 }
 
@@ -633,7 +641,8 @@ if (defined($opts{'c'})) {
 	exit($status);
 }
 
-$toolchain = find_toolchain();
+$toolchain_ver = $opts{'T'} || '';
+$toolchain = find_toolchain($toolchain_ver);
 if (!defined($toolchain) && !defined($opts{'t'})) {
 	print(STDERR
 		"$prg: couldn't find toolchain in your path, use option -t\n");
@@ -745,9 +754,8 @@ if ($recommended_toolchain ne '') {
 		"$recommended_toolchain.\n");
 	print(STDERR "Hit Ctrl-C now or wait ".SLEEP_TIME." seconds...\n");
 	sleep(SLEEP_TIME);
-} else {
-	print("Using $toolchain as toolchain...\n");
 }
+print("Using $toolchain as toolchain...\n");
 $toolchain_config{$arch}{'BR2_TOOLCHAIN_EXTERNAL_PATH'} = $toolchain;
 
 # The toolchain may have changed since we last configured Buildroot. We need to

@@ -18,7 +18,7 @@
 
 struct dma_region {
 	dma_addr_t addr;
-	size_t len;
+	u64 len;
 	bool persistent;
 };
 

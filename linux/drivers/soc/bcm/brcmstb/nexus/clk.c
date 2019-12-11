@@ -58,7 +58,7 @@ static const char * const sw_names_stb[] = {
 
 	/* [40..4f] */
 	"sw_sid", "sw_v3d_cpu", "sw_vec", "sw_xpt_wakeup",
-	"reserved", "reserved", "reserved", "reserved",
+	"sw_tsio", "reserved", "reserved", "reserved",
 	"reserved", "reserved", "reserved", "reserved",
 	"reserved", "reserved", "reserved", "reserved",
 

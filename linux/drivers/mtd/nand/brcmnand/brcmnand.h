@@ -66,34 +66,6 @@ static inline void brcmnand_writel(u32 val, void __iomem *addr)
 		writel_relaxed(val, addr);
 }
 
-#if defined(CONFIG_64BIT) || defined(CONFIG_HAVE_NATIVE_64BIT_ACCESS)
-static inline u64 brcmnand_readq(void __iomem *addr)
-{
-	if (IS_ENABLED(CONFIG_MIPS) && IS_ENABLED(__BIG_ENDIAN))
-		return __raw_readq(addr);
-	else
-		return readq_relaxed(addr);
-}
-
-static inline void brcmnand_writeq(u64 val, void __iomem *addr)
-{
-	if (IS_ENABLED(CONFIG_MIPS) && IS_ENABLED(__BIG_ENDIAN))
-		__raw_writeq(val, addr);
-	else
-		writeq_relaxed(val, addr);
-}
-#else
-static inline u64 brcmnand_readq(void __iomem *addr)
-{
-	return 0;
-}
-
-static inline void brcmnand_writeq(u64 val, void __iomem *addr)
-{
-	;
-}
-#endif
-
 int brcmnand_probe(struct platform_device *pdev, struct brcmnand_soc *soc);
 int brcmnand_remove(struct platform_device *pdev);
 

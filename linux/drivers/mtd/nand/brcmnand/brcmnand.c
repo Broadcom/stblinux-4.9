@@ -127,6 +127,18 @@ enum flash_dma_reg {
 	FLASH_DMA_CURRENT_DESC_EXT,
 };
 
+/* flash_dma registers v0*/
+static const u16 flash_dma_regs_v0[] = {
+	[FLASH_DMA_REVISION]		= 0x00,
+	[FLASH_DMA_FIRST_DESC]		= 0x04,
+	[FLASH_DMA_CTRL]		= 0x08,
+	[FLASH_DMA_MODE]		= 0x0c,
+	[FLASH_DMA_STATUS]		= 0x10,
+	[FLASH_DMA_INTERRUPT_DESC]	= 0x14,
+	[FLASH_DMA_ERROR_STATUS]	= 0x18,
+	[FLASH_DMA_CURRENT_DESC]	= 0x1c,
+};
+
 /* flash_dma registers v1*/
 static const u16 flash_dma_regs_v1[] = {
 	[FLASH_DMA_REVISION]		= 0x00,
@@ -146,12 +158,12 @@ static const u16 flash_dma_regs_v1[] = {
 static const u16 flash_dma_regs_v4[] = {
 	[FLASH_DMA_REVISION]		= 0x00,
 	[FLASH_DMA_FIRST_DESC]		= 0x08,
-	[FLASH_DMA_FIRST_DESC_EXT]	= 0,
+	[FLASH_DMA_FIRST_DESC_EXT]	= 0x0c,
 	[FLASH_DMA_CTRL]		= 0x10,
 	[FLASH_DMA_MODE]		= 0x14,
 	[FLASH_DMA_STATUS]		= 0x18,
 	[FLASH_DMA_INTERRUPT_DESC]	= 0x20,
-	[FLASH_DMA_INTERRUPT_DESC_EXT]	= 0,
+	[FLASH_DMA_INTERRUPT_DESC_EXT]	= 0x24,
 	[FLASH_DMA_ERROR_STATUS]	= 0x28,
 	[FLASH_DMA_CURRENT_DESC]	= 0x30,
 	[FLASH_DMA_CURRENT_DESC_EXT]	= 0,
@@ -214,6 +226,7 @@ struct brcmnand_controller {
 	u32			nand_cs_nand_xor;
 	u32			corr_stat_threshold;
 	u32			flash_dma_mode;
+	bool			pio_poll_mode;
 };
 
 struct brcmnand_cfg {
@@ -514,17 +527,6 @@ static inline void nand_writereg(struct brcmnand_controller *ctrl, u32 offs,
 	brcmnand_writel(val, ctrl->nand_base + offs);
 }
 
-static inline u64 nand_readreg_lr(struct brcmnand_controller *ctrl, u32 offs)
-{
-	return brcmnand_readq(ctrl->nand_base + offs);
-}
-
-static inline void nand_writereg_lr(struct brcmnand_controller *ctrl, u32 offs,
-				    u64 val)
-{
-	brcmnand_writeq(val, ctrl->nand_base + offs);
-}
-
 static int brcmnand_revision_init(struct brcmnand_controller *ctrl)
 {
 	static const unsigned int block_sizes_v6[] = { 8, 16, 128, 256, 512, 1024, 2048, 0 };
@@ -623,6 +625,8 @@ static void brcmnand_flash_dma_revision_init(struct brcmnand_controller *ctrl)
 	/* flash_dma register offsets */
 	if (ctrl->nand_version >= 0x0703)
 		ctrl->flash_dma_offsets = flash_dma_regs_v4;
+	else if (ctrl->nand_version == 0x0602)
+		ctrl->flash_dma_offsets = flash_dma_regs_v0;
 	else
 		ctrl->flash_dma_offsets = flash_dma_regs_v1;
 }
@@ -645,26 +649,6 @@ static inline void brcmnand_write_reg(struct brcmnand_controller *ctrl,
 
 	if (offs)
 		nand_writereg(ctrl, offs, val);
-}
-
-static inline u64 brcmnand_read_reg_lr(struct brcmnand_controller *ctrl,
-		enum brcmnand_reg_lr reg)
-{
-	u16 offs = ctrl->reg_offsets[reg];
-
-	if (offs)
-		return nand_readreg_lr(ctrl, offs);
-	else
-		return 0;
-}
-
-static inline void brcmnand_write_reg_lr(struct brcmnand_controller *ctrl,
-				      enum brcmnand_reg_lr reg, u64 val)
-{
-	u16 offs = ctrl->reg_offsets[reg];
-
-	if (offs)
-		nand_writereg_lr(ctrl, offs, val);
 }
 
 static inline void brcmnand_rmw_reg(struct brcmnand_controller *ctrl,
@@ -958,6 +942,20 @@ static inline bool has_flash_dma(struct brcmnand_controller *ctrl)
 	return ctrl->flash_dma_base;
 }
 
+static inline void disable_ctrl_irqs(struct brcmnand_controller *ctrl)
+{
+	if (ctrl->pio_poll_mode)
+		return;
+
+	if (has_flash_dma(ctrl)) {
+		ctrl->flash_dma_base = NULL;
+		disable_irq(ctrl->dma_irq);
+	}
+
+	disable_irq(ctrl->irq);
+	ctrl->pio_poll_mode = true;
+}
+
 static inline bool flash_dma_buf_ok(const void *buf)
 {
 	return buf && !is_vmalloc_addr(buf) &&
@@ -978,22 +976,6 @@ static inline u32 flash_dma_readl(struct brcmnand_controller *ctrl,
 	u16 offs = ctrl->flash_dma_offsets[dma_reg];
 
 	return brcmnand_readl(ctrl->flash_dma_base + offs);
-}
-
-static inline void flash_dma_writeq(struct brcmnand_controller *ctrl,
-				    enum flash_dma_reg dma_reg, u64 val)
-{
-	u16 offs = ctrl->flash_dma_offsets[dma_reg];
-
-	brcmnand_writeq(val, ctrl->flash_dma_base + offs);
-}
-
-static inline u64 flash_dma_readq(struct brcmnand_controller *ctrl,
-				  enum flash_dma_reg dma_reg)
-{
-	u16 offs = ctrl->flash_dma_offsets[dma_reg];
-
-	return brcmnand_readq(ctrl->flash_dma_base + offs);
 }
 
 /* Low-level operation types: command, address, write, or read */
@@ -1396,16 +1378,43 @@ static void brcmnand_cmd_ctrl(struct mtd_info *mtd, int dat,
 	/* intentionally left blank */
 }
 
+static bool brcmstb_nand_wait_for_completion(struct nand_chip *chip)
+{
+	struct brcmnand_host *host = nand_get_controller_data(chip);
+	struct brcmnand_controller *ctrl = host->ctrl;
+	struct mtd_info *mtd = nand_to_mtd(chip);
+	bool err = false;
+	int sts;
+
+	if (mtd->oops_panic_write) {
+		/* switch to interrupt polling and PIO mode */
+		disable_ctrl_irqs(ctrl);
+		sts = bcmnand_ctrl_poll_status(ctrl, NAND_CTRL_RDY,
+					       NAND_CTRL_RDY, 0);
+		err = (sts < 0) ? true : false;
+	} else {
+		unsigned long timeo = msecs_to_jiffies(
+						NAND_POLL_STATUS_TIMEOUT_MS);
+		/* wait for completion interrupt */
+		sts = wait_for_completion_timeout(&ctrl->done, timeo);
+		err = (sts <= 0) ? true : false;
+	}
+
+	return err;
+}
+
 static int brcmnand_waitfunc(struct mtd_info *mtd, struct nand_chip *this)
 {
 	struct nand_chip *chip = mtd_to_nand(mtd);
 	struct brcmnand_host *host = nand_get_controller_data(chip);
 	struct brcmnand_controller *ctrl = host->ctrl;
-	unsigned long timeo = msecs_to_jiffies(100);
+	bool err = false;
 
 	dev_dbg(ctrl->dev, "wait on native cmd %d\n", ctrl->cmd_pending);
-	if (ctrl->cmd_pending &&
-			wait_for_completion_timeout(&ctrl->done, timeo) <= 0) {
+	if (ctrl->cmd_pending)
+		err = brcmstb_nand_wait_for_completion(chip);
+
+	if (err) {
 		u32 cmd = brcmnand_read_reg(ctrl, BRCMNAND_CMD_START)
 					>> brcmnand_cmd_shift(ctrl);
 
@@ -1696,13 +1705,11 @@ static void brcmnand_dma_run(struct brcmnand_host *host, dma_addr_t desc)
 	struct brcmnand_controller *ctrl = host->ctrl;
 	unsigned long timeo = msecs_to_jiffies(100);
 
-	if (ctrl->nand_version >= 0x0703) {
-		flash_dma_writeq(ctrl, FLASH_DMA_FIRST_DESC, desc);
-		(void)flash_dma_readq(ctrl, FLASH_DMA_FIRST_DESC);
-	} else {
-		flash_dma_writel(ctrl, FLASH_DMA_FIRST_DESC,
-				 lower_32_bits(desc));
-		(void)flash_dma_readl(ctrl, FLASH_DMA_FIRST_DESC);
+	flash_dma_writel(ctrl, FLASH_DMA_FIRST_DESC,
+			 lower_32_bits(desc));
+	(void)flash_dma_readl(ctrl, FLASH_DMA_FIRST_DESC);
+
+	if (ctrl->nand_version > 0x0602) {
 		flash_dma_writel(ctrl, FLASH_DMA_FIRST_DESC_EXT,
 				 upper_32_bits(desc));
 		(void)flash_dma_readl(ctrl, FLASH_DMA_FIRST_DESC_EXT);
@@ -1824,6 +1831,7 @@ static int brcmstb_nand_verify_erased_page(struct mtd_info *mtd,
 	int bitflips = 0;
 	int page = addr >> chip->page_shift;
 	int ret;
+	void *ecc_chunk;
 
 	if (!buf) {
 		buf = chip->buffers->databuf;
@@ -1840,7 +1848,9 @@ static int brcmstb_nand_verify_erased_page(struct mtd_info *mtd,
 		return ret;
 
 	for (i = 0; i < chip->ecc.steps; i++, oob += sas) {
-		ret = nand_check_erased_ecc_chunk(buf, chip->ecc.size,
+		ecc_chunk = buf + chip->ecc.size * i;
+		ret = nand_check_erased_ecc_chunk(ecc_chunk,
+						  chip->ecc.size,
 						  oob, sas, NULL, 0,
 						  chip->ecc.strength);
 		if (ret < 0)

@@ -84,6 +84,12 @@ static const int b53_cpubiuctrl_regs[] = {
 	[CPU_WRITEBACK_CTRL_REG] = 0x22c,
 };
 
+static const int a72_cpubiuctrl_regs[] = {
+	[CPU_CREDIT_REG] = 0x18,
+	[CPU_MCP_FLOW_REG] = 0x1c,
+	[CPU_WRITEBACK_CTRL_REG] = 0x20,
+};
+
 #define NUM_CPU_BIUCTRL_REGS	3
 
 static int __init mcp_write_pairing_set(void)
@@ -109,7 +115,8 @@ static int __init mcp_write_pairing_set(void)
 	return 0;
 }
 
-static const char *b53_mach_compat[] = {
+static const char *a72_b53_mach_compat[] = {
+	"brcm,bcm7211c0",
 	"brcm,bcm7216a0",
 	"brcm,bcm7216b0",
 	"brcm,bcm7255a0",
@@ -119,17 +126,17 @@ static const char *b53_mach_compat[] = {
 	"brcm,bcm7278b0",
 };
 
-static void __init mcp_b53_set(void)
+static void __init mcp_a72_b53_set(void)
 {
 	unsigned int i;
 	u32 reg;
 
-	for (i = 0; i < ARRAY_SIZE(b53_mach_compat); i++) {
-		if (of_machine_is_compatible(b53_mach_compat[i]))
+	for (i = 0; i < ARRAY_SIZE(a72_b53_mach_compat); i++) {
+		if (of_machine_is_compatible(a72_b53_mach_compat[i]))
 			break;
 	}
 
-	if (i == ARRAY_SIZE(b53_mach_compat))
+	if (i == ARRAY_SIZE(a72_b53_mach_compat))
 		return;
 
 	/* Set all 3 MCP interfaces to 8 credits */
@@ -189,6 +196,8 @@ static int __init setup_hifcpubiuctrl_regs(struct device_node *np)
 		cpubiuctrl_regs = b15_cpubiuctrl_regs;
 	else if (of_device_is_compatible(cpu_dn, "brcm,brahma-b53"))
 		cpubiuctrl_regs = b53_cpubiuctrl_regs;
+	else if (of_device_is_compatible(cpu_dn, "arm,cortex-a72"))
+		cpubiuctrl_regs = a72_cpubiuctrl_regs;
 	else {
 		pr_err("unsupported CPU\n");
 		ret = -EINVAL;
@@ -258,7 +267,7 @@ static int __init brcmstb_biuctrl_init(void)
 		return ret;
 	}
 
-	mcp_b53_set();
+	mcp_a72_b53_set();
 #ifdef CONFIG_PM_SLEEP
 	register_syscore_ops(&brcmstb_cpu_credit_syscore_ops);
 #endif

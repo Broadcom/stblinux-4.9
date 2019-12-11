@@ -1,1 +1,2 @@
 obj-m := test-dvfs-api.o num_pstates.o set_pstate.o xable_clock.o
+ccflags-y += -Werror

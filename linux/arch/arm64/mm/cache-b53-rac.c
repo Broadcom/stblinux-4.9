@@ -16,7 +16,8 @@
 #include <asm/cacheflush.h>
 
 /* RAC register offsets, relative to the HIF_CPU_BIUCTRL register base */
-#define RAC_CONFIG0_REG			(0x78)
+#define A72_RAC_CONFIG0_REG		(0x08)
+#define B53_RAC_CONFIG0_REG		(0x78)
 #define  RACENPREF_MASK			(0x3)
 #define  RACPREFINST_SHIFT		(0)
 #define  RACENINST_SHIFT		(2)
@@ -24,6 +25,7 @@
 #define  RACENDATA_SHIFT		(6)
 #define  RAC_CPU_SHIFT			(8)
 #define  RACCFG_MASK			(0xff)
+#define A72_RAC_FLUSH_REG		(0x14)
 #define B53_RAC_FLUSH_REG		(0x84)
 #define  FLUSH_RAC			(1 << 0)
 
@@ -34,6 +36,23 @@
 					 RACENPREF_MASK << RACENDATA_SHIFT)
 
 static void __iomem *b53_rac_base;
+
+enum b53_rac_reg_offset {
+	RAC_CONFIG0_REG,
+	RAC_FLUSH_REG
+};
+
+static u8 b53_rac_offsets[] = {
+	[RAC_CONFIG0_REG] = B53_RAC_CONFIG0_REG,
+	[RAC_FLUSH_REG]	= B53_RAC_FLUSH_REG,
+};
+
+static u8 a72_rac_offsets[] = {
+	[RAC_CONFIG0_REG] = A72_RAC_CONFIG0_REG,
+	[RAC_FLUSH_REG]	= A72_RAC_FLUSH_REG,
+};
+
+static u8 *rac_offsets;
 
 /* The read-ahead cache present in the Brahma-B53 CPU is a special piece of
  * hardware after the integrated L2 cache of the B53 CPU complex whose purpose
@@ -63,7 +82,8 @@ static void __iomem *b53_rac_base;
 void b53_rac_flush_all(void)
 {
 	if (b53_rac_base) {
-		__raw_writel(FLUSH_RAC, b53_rac_base + B53_RAC_FLUSH_REG);
+		__raw_writel(FLUSH_RAC, b53_rac_base +
+			     rac_offsets[RAC_FLUSH_REG]);
 		dsb(osh);
 	}
 }
@@ -77,7 +97,7 @@ static void b53_rac_enable_all(void)
 
 		enable |= RAC_DATA_INST_EN_MASK << (cpu * RAC_CPU_SHIFT);
 	}
-	__raw_writel(enable, b53_rac_base + RAC_CONFIG0_REG);
+	__raw_writel(enable, b53_rac_base + rac_offsets[RAC_CONFIG0_REG]);
 }
 
 static void b53_rac_resume(void)
@@ -114,7 +134,12 @@ static int __init b53_rac_init(void)
 		goto out_unmap;
 	}
 
-	if (!of_device_is_compatible(cpu_dn, "brcm,brahma-b53")) {
+	if (of_device_is_compatible(cpu_dn, "brcm,brahma-b53"))
+		rac_offsets = b53_rac_offsets;
+	else if (of_device_is_compatible(cpu_dn, "arm,cortex-a72") &&
+		 of_machine_is_compatible("brcm,bcm7211c0"))
+		rac_offsets = a72_rac_offsets;
+	else {
 		pr_err("Unsupported CPU\n");
 		of_node_put(cpu_dn);
 		ret = -EINVAL;
@@ -127,7 +152,9 @@ static int __init b53_rac_init(void)
 
 	b53_rac_enable_all();
 
-	pr_info("%s: Broadcom Brahma-B53 read-ahead cache\n", dn->full_name);
+	pr_info("%s: Broadcom %s read-ahead cache\n",
+		dn->full_name, rac_offsets == b53_rac_offsets ?
+		"Brahma-B53" : "Cortex-A72");
 
 	goto out;
 

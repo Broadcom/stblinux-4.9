@@ -203,6 +203,15 @@ static int xhci_brcm_remove(struct platform_device *dev)
 	return 0;
 }
 
+static void xhci_brcm_shutdown(struct platform_device *dev)
+{
+	int ret;
+
+	ret = xhci_brcm_remove(dev);
+	if (ret)
+		dev_err(&dev->dev, "failed to shutdown\n");
+}
+
 #ifdef CONFIG_PM_SLEEP
 static int xhci_brcm_suspend(struct device *dev)
 {
@@ -243,6 +252,7 @@ MODULE_DEVICE_TABLE(of, brcm_xhci_of_match);
 static struct platform_driver xhci_brcm_driver = {
 	.probe	= xhci_brcm_probe,
 	.remove	= xhci_brcm_remove,
+	.shutdown = xhci_brcm_shutdown,
 	.driver	= {
 		.name = BRCM_DRIVER_NAME,
 		.pm = &xhci_brcm_pm_ops,

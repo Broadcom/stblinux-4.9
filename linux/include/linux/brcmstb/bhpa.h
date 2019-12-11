@@ -27,6 +27,7 @@ int bhpa_find_region(phys_addr_t addr, phys_addr_t size);
 int bhpa_region_info(int idx, phys_addr_t *addr, phys_addr_t *size);
 
 void __init brcmstb_bhpa_reserve(void);
+void __init brcmstb_bhpa_setup(phys_addr_t addr, phys_addr_t size);
 void brcmstb_hpa_print(struct seq_file *seq);
 int brcmstb_hpa_alloc(unsigned int memcIndex, uint64_t *pages,
 		      unsigned int count, unsigned int *alloced,

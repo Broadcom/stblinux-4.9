@@ -47,6 +47,7 @@ struct bcm7038_l1_chip {
 	struct list_head	list;
 	u32			wake_mask[MAX_WORDS];
 #endif
+	u32			irq_fwd_mask[MAX_WORDS];
 	u8			affinity[MAX_WORDS * IRQS_PER_WORD];
 };
 
@@ -266,6 +267,7 @@ static int __init bcm7038_l1_init_one(struct device_node *dn,
 	resource_size_t sz;
 	struct bcm7038_l1_cpu *cpu;
 	unsigned int i, n_words, parent_irq;
+	int ret;
 
 	if (of_address_to_resource(dn, idx, &res))
 		return -EINVAL;
@@ -279,6 +281,14 @@ static int __init bcm7038_l1_init_one(struct device_node *dn,
 	else if (intc->n_words != n_words)
 		return -EINVAL;
 
+	ret = of_property_read_u32_array(dn , "brcm,int-fwd-mask",
+					 intc->irq_fwd_mask, n_words);
+	if (ret != 0 && ret != -EINVAL) {
+		/* property exists but has the wrong number of words */
+		pr_err("invalid brcm,int-fwd-mask property\n");
+		return -EINVAL;
+	}
+
 	cpu = intc->cpus[idx] = kzalloc(sizeof(*cpu) + n_words * sizeof(u32),
 					GFP_KERNEL);
 	if (!cpu)
@@ -289,8 +299,11 @@ static int __init bcm7038_l1_init_one(struct device_node *dn,
 		return -ENOMEM;
 
 	for (i = 0; i < n_words; i++) {
-		l1_writel(0xffffffff, cpu->map_base + reg_mask_set(intc, i));
-		cpu->mask_cache[i] = 0xffffffff;
+		l1_writel(~intc->irq_fwd_mask[i],
+			  cpu->map_base + reg_mask_set(intc, i));
+		l1_writel(intc->irq_fwd_mask[i],
+			  cpu->map_base + reg_mask_clr(intc, i));
+		cpu->mask_cache[i] = ~intc->irq_fwd_mask[i];
 	}
 
 	parent_irq = irq_of_parse_and_map(dn, idx);
@@ -314,6 +327,7 @@ static int bcm7038_l1_suspend(void)
 	struct bcm7038_l1_chip *intc;
 	unsigned long flags;
 	int boot_cpu, word;
+	u32 val;
 
 	/* Wakeup interrupt should only come from the boot cpu */
 	boot_cpu = cpu_logical_map(smp_processor_id());
@@ -321,10 +335,11 @@ static int bcm7038_l1_suspend(void)
 	list_for_each_entry(intc, &bcm7038_l1_intcs_list, list) {
 		raw_spin_lock_irqsave(&intc->lock, flags);
 		for (word = 0; word < intc->n_words; word++) {
-			l1_writel(~intc->wake_mask[word],
+			val = intc->wake_mask[word] | intc->irq_fwd_mask[word];
+			l1_writel(~val,
 				intc->cpus[boot_cpu]->map_base +
 				reg_mask_set(intc, word));
-			l1_writel(intc->wake_mask[word],
+			l1_writel(val,
 				intc->cpus[boot_cpu]->map_base +
 				reg_mask_clr(intc, word));
 		}
@@ -384,7 +399,7 @@ static struct irq_chip bcm7038_l1_irq_chip = {
 	.irq_mask		= bcm7038_l1_mask,
 	.irq_unmask		= bcm7038_l1_unmask,
 	.irq_set_affinity	= bcm7038_l1_set_affinity,
-#if CONFIG_PM_SLEEP
+#ifdef CONFIG_PM_SLEEP
 	.irq_set_wake		= bcm7038_l1_set_wake,
 #endif
 #ifdef CONFIG_SMP
@@ -395,6 +410,13 @@ static struct irq_chip bcm7038_l1_irq_chip = {
 static int bcm7038_l1_map(struct irq_domain *d, unsigned int virq,
 			  irq_hw_number_t hw_irq)
 {
+	struct bcm7038_l1_chip *intc = d->host_data;
+	u32 mask = BIT(hw_irq % IRQS_PER_WORD);
+	u32 word = hw_irq / IRQS_PER_WORD;
+
+	if (intc->irq_fwd_mask[word] & mask)
+		return -EPERM;
+
 	irq_set_chip_and_handler(virq, &bcm7038_l1_irq_chip, handle_level_irq);
 	irq_set_chip_data(virq, d->host_data);
 	return 0;

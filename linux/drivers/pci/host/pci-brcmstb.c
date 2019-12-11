@@ -1657,6 +1657,15 @@ static int brcm_pcie_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static void brcm_pcie_shutdown(struct platform_device *pdev)
+{
+	int ret;
+
+	ret = brcm_pcie_remove(pdev);
+	if (ret)
+		dev_err(&pdev->dev, "failed to shutdown\n");
+}
+
 static const struct dev_pm_ops brcm_pcie_pm_ops = {
 	.suspend_noirq = brcm_pcie_suspend,
 	.resume_noirq = brcm_pcie_resume,
@@ -1665,6 +1674,7 @@ static const struct dev_pm_ops brcm_pcie_pm_ops = {
 static struct platform_driver __refdata brcm_pci_driver = {
 	.probe = brcm_pcie_probe,
 	.remove = brcm_pcie_remove,
+	.shutdown = brcm_pcie_shutdown,
 	.driver = {
 		.name = "brcm-pci",
 		.owner = THIS_MODULE,
