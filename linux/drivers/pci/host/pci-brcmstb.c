@@ -809,7 +809,7 @@ static void set_regulators(struct brcm_pcie *pcie, bool on)
 		 * source, do not turn off regulators
 		 */
 		pcie->ep_wakeup_capable = false;
-		if (pcie->bridge_setup_done) {
+		if (pcie->bridge_setup_done && bus) {
 			pci_walk_bus(bus, pci_dev_may_wakeup, &pcie->ep_wakeup_capable);
 			if (pcie->ep_wakeup_capable)
 				return;
@@ -1652,6 +1652,7 @@ static int brcm_pcie_remove(struct platform_device *pdev)
 
 	pci_stop_root_bus(pcie->bus);
 	pci_remove_root_bus(pcie->bus);
+	pcie->bus = NULL;
 	_brcm_pcie_remove(pcie);
 
 	return 0;

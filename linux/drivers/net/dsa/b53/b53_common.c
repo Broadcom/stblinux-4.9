@@ -578,10 +578,12 @@ static u16 b53_default_pvid(struct b53_device *dev)
 		return 0;
 }
 
-static int b53_configure_vlan(struct b53_device *dev)
+int b53_configure_vlan(struct b53_device *dev)
 {
 	struct b53_vlan vl = { 0 };
+	struct b53_vlan *v;
 	int i, def_vid;
+	u16 vid;
 
 	def_vid = b53_default_pvid(dev);
 
@@ -593,7 +595,7 @@ static int b53_configure_vlan(struct b53_device *dev)
 		b53_do_vlan_op(dev, VTA_CMD_CLEAR);
 	}
 
-	b53_enable_vlan(dev, false, dev->vlan_filtering_enabled);
+	b53_enable_vlan(dev, dev->vlan_enabled, dev->vlan_filtering_enabled);
 
 	b53_for_each_port(dev, i)
 		b53_write16(dev, B53_VLAN_PAGE,
@@ -602,8 +604,22 @@ static int b53_configure_vlan(struct b53_device *dev)
 	if (!is5325(dev) && !is5365(dev))
 		b53_set_jumbo(dev, dev->enable_jumbo, false);
 
+	/* Upon initial call we have not set-up any VLANs, but upon
+	 * system resume, we need to restore all VLAN entries.
+	 */
+	for (vid = def_vid; vid < dev->num_vlans; vid++) {
+		v = &dev->vlans[vid];
+
+		if (!v->members)
+			continue;
+
+		b53_set_vlan_entry(dev, vid, v);
+		b53_fast_age_vlan(dev, vid);
+	}
+
 	return 0;
 }
+EXPORT_SYMBOL(b53_configure_vlan);
 
 static void b53_switch_reset_gpio(struct b53_device *dev)
 {
@@ -1002,6 +1018,14 @@ static int b53_vlan_prepare(struct dsa_switch *ds, int port,
 	if ((is5325(dev) || is5365(dev)) && vlan->vid_begin == 0)
 		return -EOPNOTSUPP;
 
+	/* Port 7 on 7278 connects to the ASP's UniMAC which is not capable of
+	 * receiving VLAN tagged frames at all, we can still allow the port to
+	 * be configured for egress untagged.
+	 */
+	if (dev->chip_id == BCM7278_DEVICE_ID && port == 7 &&
+	    !(vlan->flags & BRIDGE_VLAN_INFO_UNTAGGED))
+		return -EINVAL;
+
 	if (vlan->vid_end > dev->num_vlans)
 		return -ERANGE;
 
@@ -1025,6 +1049,9 @@ static void b53_vlan_add(struct dsa_switch *ds, int port,
 		vl = &dev->vlans[vid];
 
 		b53_get_vlan_entry(dev, vid, vl);
+
+		if (vid == b53_default_pvid(dev))
+			untagged = true;
 
 		vl->members |= BIT(port) | BIT(cpu_port);
 		if (untagged)
@@ -1508,6 +1535,12 @@ static int b53_br_join(struct dsa_switch *ds, int port,
 	s8 cpu_port = ds->dst->cpu_port;
 	u16 pvlan, reg;
 	unsigned int i;
+
+	/* On 7278, port 7 which connects to the ASP should only receive
+	 * traffic from matching CFP rules.
+	 */
+	if (dev->chip_id == BCM7278_DEVICE_ID && port == 7)
+		return -EINVAL;
 
 	/* Make this port leave the all VLANs join since we will have proper
 	 * VLAN entries from now on

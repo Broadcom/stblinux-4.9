@@ -10,7 +10,6 @@ DOSFSTOOLS_SITE = https://github.com/dosfstools/dosfstools/releases/download/v$(
 DOSFSTOOLS_LICENSE = GPL-3.0+
 DOSFSTOOLS_LICENSE_FILES = COPYING
 DOSFSTOOLS_CONF_OPTS = --enable-compat-symlinks --exec-prefix=/
-DOSFSTOOLS_TEMP=$(BASE_DIR)/build/dosfstools-install
 HOST_DOSFSTOOLS_CONF_OPTS = --enable-compat-symlinks
 
 ifeq ($(BR2_PACKAGE_HAS_UDEV),y)

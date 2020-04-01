@@ -1,7 +1,7 @@
 /*
  * Broadcom GENET (Gigabit Ethernet) controller driver
  *
- * Copyright (c) 2014-2017 Broadcom
+ * Copyright (c) 2014-2020 Broadcom
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -2645,6 +2645,8 @@ static void umac_enable_set(struct bcmgenet_priv *priv, u32 mask, bool enable)
 	u32 reg;
 
 	reg = bcmgenet_umac_readl(priv, UMAC_CMD);
+	if (reg & CMD_SW_RESET)
+		return;
 	if (enable)
 		reg |= mask;
 	else
@@ -2664,11 +2666,9 @@ static void reset_umac(struct bcmgenet_priv *priv)
 	bcmgenet_rbuf_ctrl_set(priv, 0);
 	udelay(10);
 
-	/* disable MAC while updating its registers */
-	bcmgenet_umac_writel(priv, 0, UMAC_CMD);
-
-	/* issue soft reset with (rg)mii loopback to ensure a stable rxclk */
-	bcmgenet_umac_writel(priv, CMD_SW_RESET | CMD_LCL_LOOP_EN, UMAC_CMD);
+	/* issue soft reset and disable MAC while updating its registers */
+	bcmgenet_umac_writel(priv, CMD_SW_RESET, UMAC_CMD);
+	udelay(2);
 }
 
 static void bcmgenet_intr_disable(struct bcmgenet_priv *priv)
@@ -2839,8 +2839,8 @@ static void bcmgenet_init_tx_ring(struct bcmgenet_priv *priv,
 				  DMA_END_ADDR);
 
 	/* Initialize Tx NAPI */
-	netif_napi_add(priv->dev, &ring->napi, bcmgenet_tx_poll,
-		       NAPI_POLL_WEIGHT);
+	netif_tx_napi_add(priv->dev, &ring->napi, bcmgenet_tx_poll,
+			  NAPI_POLL_WEIGHT);
 }
 
 /* Initialize a RDMA ring */
@@ -3584,7 +3584,13 @@ static int bcmgenet_open(struct net_device *dev)
 
 	/* Turn on the clock */
 	clk_prepare_enable(priv->clk);
-	clk_set_parent(priv->clk_mux, priv->clk_fast);
+
+	if (priv->clk_mux) {
+		if (priv->clk_fast)
+			clk_set_parent(priv->clk_mux, priv->clk_fast);
+		else
+			clk_set_rate(priv->clk_mux, priv->clk_fast_rate);
+	}
 
 	/* If this is an internal GPHY, power it back on now, before UniMAC is
 	 * brought out of reset as absolutely no UniMAC activity is allowed
@@ -3814,6 +3820,39 @@ static u16 bcmgenet_select_queue(struct net_device *dev, struct sk_buff *skb,
 	 * small rings which get overflowed very quickly when pushing
 	 * up to 17 fragments
 	 */
+	return 0;
+}
+
+/* We know that if priv->clk_mux exist it is a MUX clock with
+ * two inputs.  We do not know their frequency but we can
+ * determine the higher and lower frequency by setting its
+ * rate to ULONG_MAX and 1, respectively.  This assumes that
+ * after clk_set_rate() is called the closer possible frequency
+ * is selected even if it exceeds the rate requested.
+ */
+static int get_mux_rates(struct bcmgenet_priv *priv)
+{
+	if (clk_set_rate(priv->clk_mux, 1UL))
+		return -EINVAL;
+
+	priv->clk_slow_rate = clk_get_rate(priv->clk_mux);
+	if (priv->clk_slow_rate == 0)
+		return -EINVAL;
+
+	dev_dbg(&priv->pdev->dev, "genet mux clock slow rate is %ld\n",
+		priv->clk_slow_rate);
+
+	/* We'd like to use ULONG_MAX, but clk_round_rate returns() a long */
+	if (clk_set_rate(priv->clk_mux, ULONG_MAX >> 1))
+		return -EINVAL;
+	priv->clk_fast_rate = clk_get_rate(priv->clk_mux);
+
+	if (priv->clk_fast_rate == 0)
+		return -EINVAL;
+
+	dev_dbg(&priv->pdev->dev, "genet mux clock fast rate is %ld\n",
+		priv->clk_fast_rate);
+
 	return 0;
 }
 
@@ -4153,7 +4192,7 @@ static int bcmgenet_probe(struct platform_device *pdev)
 
 	/* Set hardware features */
 	dev->hw_features |= NETIF_F_SG | NETIF_F_IP_CSUM |
-		NETIF_F_IPV6_CSUM | NETIF_F_RXCSUM;
+		NETIF_F_IPV6_CSUM | NETIF_F_HIGHDMA | NETIF_F_RXCSUM;
 
 	/* Request the WOL interrupt and advertise suspend if available */
 	priv->wol_irq_disabled = true;
@@ -4223,20 +4262,28 @@ static int bcmgenet_probe(struct platform_device *pdev)
 						 "sw_genetmux");
 		mux = of_parse_phandle(dn, "clocks", index);
 		if (mux) {
+			bool set_by_rate = false;
+			bool set_by_parent = false;
+
 			priv->clk_fast = of_clk_get(mux, 0);
 			priv->clk_slow = of_clk_get(mux, 1);
 			of_node_put(mux);
-			if (IS_ERR(priv->clk_fast)) {
-				dev_warn(&priv->pdev->dev,
-					 "failed to get enet-fast clock\n");
+
+			set_by_parent = !(IS_ERR(priv->clk_slow) ||
+					  IS_ERR(priv->clk_fast));
+			if (!set_by_parent)
+				set_by_rate = !get_mux_rates(priv);
+
+			if (set_by_rate) {
 				priv->clk_fast = NULL;
-				priv->clk_mux = NULL;
-			}
-			if (IS_ERR(priv->clk_slow)) {
-				dev_warn(&priv->pdev->dev,
-					 "failed to get enet-slow clock\n");
 				priv->clk_slow = NULL;
+			} else if (set_by_parent) {
+				priv->clk_slow_rate = 0;
+				priv->clk_fast_rate = 0;
+			} else {
 				priv->clk_mux = NULL;
+				dev_warn(&priv->pdev->dev,
+					 "cannot control enet fast/slow clk");
 			}
 		}
 	} else {

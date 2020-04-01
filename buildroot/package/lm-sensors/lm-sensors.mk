@@ -4,8 +4,8 @@
 #
 ################################################################################
 
-LM_SENSORS_VERSION = V3-5-0
-LM_SENSORS_SITE = $(call github,lm-sensors,lm-sensors,$(LM_SENSORS_VERSION))
+LM_SENSORS_VERSION = 3-5-0
+LM_SENSORS_SITE = $(call github,lm-sensors,lm-sensors,V$(LM_SENSORS_VERSION))
 LM_SENSORS_INSTALL_STAGING = YES
 LM_SENSORS_DEPENDENCIES = host-bison host-flex
 LM_SENSORS_LICENSE = LGPL-2.1+ (libsensors), GPL-2.0+ (programs)
@@ -21,7 +21,8 @@ LM_SENSORS_BINS_$(BR2_PACKAGE_LM_SENSORS_SENSORS_DETECT) += sbin/sensors-detect
 
 LM_SENSORS_MAKE_OPTS = \
 	MACHINE=$(KERNEL_ARCH) \
-	PREFIX=/usr
+	PREFIX=/usr \
+	LIBDIR=/usr/$(call qstrip,$(BR2_ROOTFS_LIB_DIR))
 
 ifeq ($(BR2_STATIC_LIBS),y)
 LM_SENSORS_MAKE_OPTS += BUILD_SHARED_LIB=0 EXLDFLAGS=-static

@@ -130,7 +130,7 @@ int brcmstb_vpucom_send_vpu_msg(u32 *pmsg, size_t msg_words)
 	}
 
 	scmi_one_xfer_put(handle, xfer);
-	return 0;
+	return ret;
 }
 EXPORT_SYMBOL(brcmstb_vpucom_send_vpu_msg);
 

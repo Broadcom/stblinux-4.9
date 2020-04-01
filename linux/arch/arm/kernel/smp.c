@@ -513,60 +513,20 @@ void __init set_smp_cross_call(void (*fn)(const struct cpumask *, unsigned int))
 		__smp_cross_call = fn;
 }
 
-struct ipi {
-	const char *desc;
-	void (*handler)(void *priv);
-	void (*priv);
-};
-
-#define IPI_DESC_STRING_IPI_WAKEUP "CPU wakeup interrupts"
-#define IPI_DESC_STRING_IPI_TIMER "Timer broadcast interrupts"
-#define IPI_DESC_STRING_IPI_RESCHEDULE "Rescheduling interrupts"
-#define IPI_DESC_STRING_IPI_CALL_FUNC "Function call interrupts"
-#define IPI_DESC_STRING_IPI_CPU_STOP "CPU stop interrupts"
-#define IPI_DESC_STRING_IPI_IRQ_WORK "IRQ work interrupts"
-#define IPI_DESC_STRING_IPI_COMPLETION "completion interrupts"
-
-/* In order to export the IPI string to the tracing tools, it needs
- * to be added in the __tracepoint_string section.
- * This requires definining a separate variable tp_<ipistr>_varname
- * that points to the string being used, and this will allow
- * the tracing userspace tools to be able to decipher the string
- * address to the matching string..
- */
-#ifdef CONFIG_TRACING
-# define DEFINE_IPI_TPS(x) \
-static char x##_varname[] = IPI_DESC_STRING_ ## x; \
-static const char *tp_##x##__varname __used __tracepoint_string = x##_varname;
-# define IPI_DESC_STR(x) x##_varname
-#else
-#define DEFINE_IPI_TPS(x)
-#define IPI_DESC_STR(x) IPI_DESC_STRING_ ## x
-#endif
-
-DEFINE_IPI_TPS(IPI_WAKEUP);
-DEFINE_IPI_TPS(IPI_TIMER);
-DEFINE_IPI_TPS(IPI_RESCHEDULE);
-DEFINE_IPI_TPS(IPI_CALL_FUNC);
-DEFINE_IPI_TPS(IPI_CPU_STOP);
-DEFINE_IPI_TPS(IPI_IRQ_WORK);
-DEFINE_IPI_TPS(IPI_COMPLETION);
-
-static struct ipi ipi_types[NR_IPI] = {
-#define S(x, f) \
-	[x].desc = IPI_DESC_STR(x), [x].handler = f
-	S(IPI_WAKEUP, NULL),
-	S(IPI_TIMER, NULL),
-	S(IPI_RESCHEDULE, NULL),
-	S(IPI_CALL_FUNC, NULL),
-	S(IPI_CPU_STOP, NULL),
-	S(IPI_IRQ_WORK, NULL),
-	S(IPI_COMPLETION, NULL),
+static const char *ipi_types[NR_IPI] __tracepoint_string = {
+#define S(x,s)	[x] = s
+	S(IPI_WAKEUP, "CPU wakeup interrupts"),
+	S(IPI_TIMER, "Timer broadcast interrupts"),
+	S(IPI_RESCHEDULE, "Rescheduling interrupts"),
+	S(IPI_CALL_FUNC, "Function call interrupts"),
+	S(IPI_CPU_STOP, "CPU stop interrupts"),
+	S(IPI_IRQ_WORK, "IRQ work interrupts"),
+	S(IPI_COMPLETION, "completion interrupts"),
 };
 
 static void smp_cross_call(const struct cpumask *target, unsigned int ipinr)
 {
-	trace_ipi_raise_rcuidle(target, ipi_types[ipinr].desc);
+	trace_ipi_raise_rcuidle(target, ipi_types[ipinr]);
 	__smp_cross_call(target, ipinr);
 }
 
@@ -575,15 +535,13 @@ void show_ipi_list(struct seq_file *p, int prec)
 	unsigned int cpu, i;
 
 	for (i = 0; i < NR_IPI; i++) {
-		if (ipi_types[i].desc) {
-			seq_printf(p, "%*s%u: ", prec - 1, "IPI", i);
+		seq_printf(p, "%*s%u: ", prec - 1, "IPI", i);
 
-			for_each_online_cpu(cpu)
-				seq_printf(p, "%10u ",
-					   __get_irq_stat(cpu, ipi_irqs[i]));
+		for_each_online_cpu(cpu)
+			seq_printf(p, "%10u ",
+				   __get_irq_stat(cpu, ipi_irqs[i]));
 
-			seq_printf(p, " %s\n", ipi_types[i].desc);
-		}
+		seq_printf(p, " %s\n", ipi_types[i]);
 	}
 }
 
@@ -681,7 +639,7 @@ void handle_IPI(int ipinr, struct pt_regs *regs)
 	struct pt_regs *old_regs = set_irq_regs(regs);
 
 	if ((unsigned)ipinr < NR_IPI) {
-		trace_ipi_entry_rcuidle(ipi_types[ipinr].desc);
+		trace_ipi_entry_rcuidle(ipi_types[ipinr]);
 		__inc_irq_stat(cpu, ipi_irqs[ipinr]);
 	}
 
@@ -736,60 +694,15 @@ void handle_IPI(int ipinr, struct pt_regs *regs)
 		break;
 
 	default:
-		if (ipi_types[ipinr].handler) {
-			irq_enter();
-			(*ipi_types[ipinr].handler)(ipi_types[ipinr].priv);
-			irq_exit();
-		} else
-			pr_crit("CPU%u: Unknown IPI message 0x%x\n",
-				cpu, ipinr);
+		pr_crit("CPU%u: Unknown IPI message 0x%x\n",
+		        cpu, ipinr);
 		break;
 	}
 
 	if ((unsigned)ipinr < NR_IPI)
-		trace_ipi_exit_rcuidle(ipi_types[ipinr].desc);
+		trace_ipi_exit_rcuidle(ipi_types[ipinr]);
 	set_irq_regs(old_regs);
 }
-
-/*
- * set_ipi_handler:
- * Interface provided for a kernel module to specify an IPI handler function.
- */
-int set_ipi_handler_priv(int ipinr, void *handler, char *desc, void *priv)
-{
-	unsigned int cpu = smp_processor_id();
-
-	if (ipi_types[ipinr].handler) {
-		pr_crit("CPU%u: IPI handler 0x%x already registered to %pf\n",
-			cpu, ipinr, ipi_types[ipinr].handler);
-		return -1;
-	}
-
-	ipi_types[ipinr].handler = handler;
-	ipi_types[ipinr].desc = desc;
-	ipi_types[ipinr].priv = priv;
-
-	return 0;
-}
-EXPORT_SYMBOL(set_ipi_handler_priv);
-
-int set_ipi_handler(int ipinr, void *handler, char *desc)
-{
-	return set_ipi_handler_priv(ipinr, handler, desc, NULL);
-}
-EXPORT_SYMBOL(set_ipi_handler);
-
-/*
- * clear_ipi_handler:
- * Interface provided for a kernel module to clear an IPI handler function.
- */
-void clear_ipi_handler(int ipinr)
-{
-	ipi_types[ipinr].handler = NULL;
-	ipi_types[ipinr].desc = NULL;
-	ipi_types[ipinr].priv = NULL;
-}
-EXPORT_SYMBOL(clear_ipi_handler);
 
 void smp_send_reschedule(int cpu)
 {

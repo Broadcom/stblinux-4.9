@@ -4,8 +4,8 @@
 #
 ################################################################################
 
-LIBPCAP_VERSION = 1.9.0
-LIBPCAP_SITE = http://www.tcpdump.org/release
+LIBPCAP_VERSION = 711885e9bf0e31eac2b1717f67ac862224fc42a7
+LIBPCAP_SITE = $(call github,the-tcpdump-group,libpcap,$(LIBPCAP_VERSION))
 LIBPCAP_LICENSE = BSD-3-Clause
 LIBPCAP_LICENSE_FILES = LICENSE
 LIBPCAP_INSTALL_STAGING = YES

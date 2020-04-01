@@ -146,6 +146,7 @@ static void __init zone_sizes_init(unsigned long min, unsigned long max)
 	/* 4GB maximum for 32-bit only capable devices */
 #ifdef CONFIG_ZONE_DMA
 	max_dma = PFN_DOWN(arm64_dma_phys_limit);
+	max_dma = min(max_dma, max_norm);
 	zone_size[ZONE_DMA] = max_dma - min;
 #endif
 	zone_size[ZONE_NORMAL] = max_norm - max_dma;
@@ -194,6 +195,14 @@ int pfn_valid(unsigned long pfn)
 
 	if ((addr >> PAGE_SHIFT) != pfn)
 		return 0;
+
+#ifdef CONFIG_SPARSEMEM
+	if (pfn_to_section_nr(pfn) >= NR_MEM_SECTIONS)
+		return 0;
+
+	if (!valid_section(__nr_to_section(pfn_to_section_nr(pfn))))
+		return 0;
+#endif
 	return memblock_is_map_memory(addr);
 }
 EXPORT_SYMBOL(pfn_valid);
@@ -343,11 +352,6 @@ void __init arm64_memblock_init(void)
 		arm64_dma_phys_limit = max_zone_dma_phys();
 	else
 		arm64_dma_phys_limit = PHYS_MASK + 1;
-#ifdef CONFIG_ZONE_MOVABLE
-	if (movable_start &&
-	    __pfn_to_phys(movable_start) < arm64_dma_phys_limit)
-		arm64_dma_phys_limit = __pfn_to_phys(movable_start);
-#endif
 	high_memory = __va(memblock_end_of_DRAM() - 1) + 1;
 	dma_contiguous_reserve(arm64_dma_phys_limit);
 

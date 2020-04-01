@@ -26,6 +26,7 @@
 #include <linux/of_address.h>
 #include <linux/gpio/driver.h>
 #include <linux/gpio/consumer.h>
+#include <linux/slab.h>
 
 #include <linux/brcmstb/brcmstb.h>
 #include <linux/brcmstb/gpio_api.h>
@@ -58,6 +59,17 @@
 struct bcm2835_pinctrl {
 	struct device *dev;
 	void __iomem *base;
+};
+
+struct brcmstb_gpio_ctl_list_ent {
+	struct device_node *dn;
+	struct list_head next;
+};
+
+static LIST_HEAD(brcmstb_gpio_ctl_list);
+static const char *brcmstb_gpio_compats[] = {
+	"brcm,brcmstb-gpio",
+	"brcm,bcm2835-gpio",
 };
 
 static int brcmstb_gpio_chip_find(struct gpio_chip *chip, void *data)
@@ -100,9 +112,9 @@ static int brcmstb_gpio_request(unsigned int gpio)
 }
 
 static struct gpio_chip *brcmstb_gpio_find_chip_by_addr(uint32_t addr,
-							struct resource *res,
-							const char *compat)
+							struct resource *res)
 {
+	struct brcmstb_gpio_ctl_list_ent *ent;
 	struct device_node *dn;
 	struct gpio_chip *gc;
 	int ret;
@@ -110,7 +122,8 @@ static struct gpio_chip *brcmstb_gpio_find_chip_by_addr(uint32_t addr,
 	if (!res)
 		return NULL;
 
-	for_each_compatible_node(dn, NULL, compat) {
+	list_for_each_entry(ent, &brcmstb_gpio_ctl_list, next) {
+		dn = ent->dn;
 		ret = of_address_to_resource(dn, 0, res);
 		if (ret) {
 			pr_err("%s: unable to translate resource\n", __func__);
@@ -155,8 +168,7 @@ static int brcmstb_gpio_find_base_by_addr(uint32_t addr, uint32_t mask,
 	int ret, bit, gpio, gpio_base, bank_offset, field_width = 1;
 
 	if (IS_ENABLED(CONFIG_GPIO_BRCMSTB) && !gc) {
-		gc = brcmstb_gpio_find_chip_by_addr(addr, &res,
-						    "brcm,brcmstb-gpio");
+		gc = brcmstb_gpio_find_chip_by_addr(addr, &res);
 		if (gc) {
 			gpio_base = gc->base;
 			gc_start = (uint32_t)(res.start & BCHP_BUS_MASK);
@@ -172,8 +184,7 @@ static int brcmstb_gpio_find_base_by_addr(uint32_t addr, uint32_t mask,
 	}
 
 	if (IS_ENABLED(CONFIG_PINCTRL_BCM2835) && !gc) {
-		gc = brcmstb_gpio_find_chip_by_addr(addr, &res,
-						    "brcm,bcm2835-gpio");
+		gc = brcmstb_gpio_find_chip_by_addr(addr, &res);
 		if (gc) {
 			gpio_base = gc->base;
 			gc_start = (uint32_t)(res.start & BCHP_BUS_MASK);
@@ -365,3 +376,42 @@ void brcmstb_gpio_remove(void)
     }
 }
 EXPORT_SYMBOL(brcmstb_gpio_remove);
+
+static int brcmstb_gpio_cache_entry(struct device_node *dn)
+{
+	struct brcmstb_gpio_ctl_list_ent *ent;
+
+	ent = kzalloc(sizeof(*ent), GFP_KERNEL);
+	if (!ent)
+		return -ENOMEM;
+
+	INIT_LIST_HEAD(&ent->next);
+	ent->dn = dn;
+
+	pr_debug("%s: added GPIO %s\n", __func__, dn->full_name);
+
+	list_add_tail(&ent->next, &brcmstb_gpio_ctl_list);
+
+	return 0;
+}
+
+static int brcmstb_gpio_cache_init(void)
+{
+	struct device_node *dn;
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < ARRAY_SIZE(brcmstb_gpio_compats); i++) {
+		for_each_compatible_node(dn, NULL, brcmstb_gpio_compats[i]) {
+			if (!of_device_is_available(dn))
+				continue;
+
+			ret = brcmstb_gpio_cache_entry(dn);
+			if (ret)
+				return ret;
+		}
+	}
+
+	return 0;
+}
+device_initcall(brcmstb_gpio_cache_init);

@@ -623,10 +623,13 @@ static int bdc_remove(struct platform_device *pdev)
 static int bdc_suspend(struct platform_device *pdev, pm_message_t mesg)
 {
 	struct bdc *bdc = platform_get_drvdata(pdev);
+	int ret;
 
 	/* Halt the controller */
-	return bdc_stop(bdc);
-	clk_disable_unprepare(bdc->clk);
+	ret = bdc_stop(bdc);
+	if (!ret)
+		clk_disable_unprepare(bdc->clk);
+	return ret;
 }
 
 static int bdc_resume(struct platform_device *pdev)

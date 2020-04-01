@@ -71,6 +71,9 @@ static LIST_HEAD(scmi_list);
 /* Protection for the entire list */
 static DEFINE_MUTEX(scmi_list_mutex);
 
+static int max_rx_timeout_ms;
+module_param(max_rx_timeout_ms, int, 0664);
+
 static struct scmi_xfer *scmi_one_xfer_get(const struct scmi_handle *handle);
 
 /**
@@ -558,7 +561,8 @@ int scmi_do_xfer(const struct scmi_handle *handle, struct scmi_xfer *xfer)
 			ret = -ETIMEDOUT;
 	} else {
 		/* And we wait for the response. */
-		timeout = msecs_to_jiffies(info->desc->max_rx_timeout_ms);
+		timeout = msecs_to_jiffies(max_rx_timeout_ms ? max_rx_timeout_ms
+					   : info->desc->max_rx_timeout_ms);
 		if (!wait_for_completion_timeout(&xfer->done, timeout)) {
 			dev_err(dev, "mbox timed out in resp(caller: %pS)\n",
 				(void *)_RET_IP_);
@@ -740,7 +744,7 @@ int scmi_handle_put(const struct scmi_handle *handle)
 }
 
 static const struct scmi_desc scmi_generic_desc = {
-	.max_rx_timeout_ms = 30,	/* we may increase this if required */
+	.max_rx_timeout_ms = 120,	/* we may increase this if required */
 	.max_msg = 20,		/* Limited by MBOX_TX_QUEUE_LEN */
 	.max_msg_size = 128,
 };

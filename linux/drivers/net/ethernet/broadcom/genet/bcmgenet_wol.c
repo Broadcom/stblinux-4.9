@@ -122,8 +122,12 @@ int bcmgenet_wol_power_down_cfg(struct bcmgenet_priv *priv,
 		return -EINVAL;
 	}
 
-	/* disable RX */
+	/* Can't suspend with WoL if MAC is still in reset */
 	reg = bcmgenet_umac_readl(priv, UMAC_CMD);
+	if (reg & CMD_SW_RESET)
+		reg &= ~CMD_SW_RESET;
+
+	/* disable RX */
 	reg &= ~CMD_RX_EN;
 	bcmgenet_umac_writel(priv, reg, UMAC_CMD);
 	mdelay(10);
@@ -160,8 +164,12 @@ int bcmgenet_wol_power_down_cfg(struct bcmgenet_priv *priv,
 
 	/* Switch enet_clock_sel */
 	clk_prepare_enable(priv->clk_wol);
-	if (priv->internal_phy)
-		clk_set_parent(priv->clk_mux, priv->clk_slow);
+	if (priv->clk_mux) {
+		if (priv->clk_slow)
+			clk_set_parent(priv->clk_mux, priv->clk_slow);
+		else
+			clk_set_rate(priv->clk_mux, priv->clk_slow_rate);
+	}
 
 	hfb_ctrl_reg = 0;
 	list_for_each_entry(rule, &priv->rxnfc_list, list) {
@@ -227,6 +235,12 @@ void bcmgenet_wol_power_up_cfg(struct bcmgenet_priv *priv,
 	priv->crc_fwd_en = 0;
 
 	/* Switch enet_clock_sel */
-	clk_set_parent(priv->clk_mux, priv->clk_fast);
+	if (priv->clk_mux) {
+		if (priv->clk_fast)
+			clk_set_parent(priv->clk_mux, priv->clk_fast);
+		else
+			clk_set_rate(priv->clk_mux, priv->clk_fast_rate);
+	}
+
 	clk_disable_unprepare(priv->clk_wol);
 }

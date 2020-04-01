@@ -1,0 +1,63 @@
+From 50c5a8dec79691c6bbc4d200d27d67ef13d7b72a Mon Sep 17 00:00:00 2001
+From: Markus Mayer <mmayer@broadcom.com>
+Date: Mon, 27 Jan 2020 11:10:58 -0800
+Subject: [PATCH 2/2] i386/readelflib.c: add support for ARM libraries
+
+We include ARM's readelflib.c and add some code to the ELF parser, so
+it'll hand off parsing ARM & Aarch64 files to the ARM routine.
+
+The resulting ldconfig, which runs on x86, is, thus, able to parse ARM
+libraries properly and generate a correct ld.so.cache. This can be used
+during cross-compilation to generate ld.so.cache for ARM on the x86
+build host.
+
+Signed-off-by: Markus Mayer <mmayer@broadcom.com>
+---
+ sysdeps/unix/sysv/linux/i386/readelflib.c | 24 +++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/sysdeps/unix/sysv/linux/i386/readelflib.c b/sysdeps/unix/sysv/linux/i386/readelflib.c
+index 05f182734a23..67b4ea446eb1 100644
+--- a/sysdeps/unix/sysv/linux/i386/readelflib.c
++++ b/sysdeps/unix/sysv/linux/i386/readelflib.c
+@@ -25,6 +25,24 @@ int process_elf64_file (const char *file_name, const char *lib, int *flag,
+ 			unsigned int *osversion, char **soname,
+ 			void *file_contents, size_t file_length);
+ 
++/*
++ * This ARM + x86 hack works as follows.
++ *
++ * We set SKIP_READELF_INCLUDE, so ARM's readelflib.c won't try to include the
++ * generic readelflib.c. We do that at the bottom of this file instead.
++ * Next, we map the name of ARM's process_elf_file() to
++ * process_elf_file_arm(). This way, its name won't clash with our own.
++ * Lastly, we add code to the x86 version of process_elf_file() to recognize ARM
++ * files and call process_elf_file_arm() instead of trying to process them
++ * directly.
++ */
++
++#define SKIP_READELF_INCLUDE
++#define process_elf_file process_elf_file_arm
++#include "sysdeps/unix/sysv/linux/arm/readelflib.c"
++#undef process_elf_file
++#undef SKIP_READELF_INCLUDE
++
+ /* Returns 0 if everything is ok, != 0 in case of error.  */
+ int
+ process_elf_file (const char *file_name, const char *lib, int *flag,
+@@ -36,6 +54,12 @@ process_elf_file (const char *file_name, const char *lib, int *flag,
+ 
+   switch (elf_header->e_machine)
+     {
++    case EM_ARM:
++    case EM_AARCH64:
++      /* Call the ARM parser for ARM & AArch64. Skip the x86 code by exiting. */
++      ret = process_elf_file_arm (file_name, lib, flag, osversion, soname,
++			          file_contents, file_length);
++      return ret;
+     case EM_X86_64:
+       if (elf_header->e_ident[EI_CLASS] == ELFCLASS64)
+ 	/* X86-64 64bit libraries are always libc.so.6+.  */
+-- 
+2.17.1
+

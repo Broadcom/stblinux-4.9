@@ -4,40 +4,15 @@ set -u
 set -e
 
 prg=`basename $0`
+board_dir=`dirname $0`
+custom_files="${BASE_DIR}/files"
+custom_script="${BASE_DIR}/scripts/${prg}"
 
-# BR config file
-DOT_CONFIG="${TARGET_DIR}/../.config"
-# Temp directory for old skeleton (not currently used)
-SKEL_DIR="${BUILD_DIR}/brcmstb_skel"
-# stbtools version (GIT hash)
-STBTOOLS_VERSION=`grep BR2_BRCM_STB_TOOLS_VERSION= "${DOT_CONFIG}" | \
-	cut -d= -f2 | sed -e 's/"//g'`
-STBTOOLS_TAR="stbtools-${STBTOOLS_VERSION}.tar.gz"
-STBTOOLS="dl/brcm-pm/${STBTOOLS_TAR}"
+image_path="$1"
+# The output directory is one level up from the image directory.
+output_path=`dirname "$image_path"`
+dot_config="${output_path}/.config"
 
-# If the stbtools tar-ball doesn't exist in the local download directory, check
-# if we have a download cache elsewhere.
-if [ ! -r "${STBTOOLS}" ]; then
-	dl_cache=`grep BR2_DL_DIR= "${DOT_CONFIG}" | cut -d= -f2 | \
-		sed -e 's/"//g'`
-	if [ "${dl_cache}" != "" ]; then
-		echo "Attempting to find stbtools in ${dl_cache}..."
-		STBTOOLS="${dl_cache}/brcm-pm/${STBTOOLS_TAR}"
-	fi
-fi
-
-# BRCMSTB skeleton
-if [ ! -r "${STBTOOLS}" ]; then
-	echo "$prg: stbtools tar-ball not found, aborting!" 1>&2
-	exit 1
-fi
-
-echo "Extracting skel from ${STBTOOLS}..."
-# Extract old "skel" directory straight into our new rootfs. If we ever need to
-# be more selective, we'll extract it into a temporary location (${SKEL_DIR})
-# and pick what we need from there.
-tar -C "${TARGET_DIR}" -x -z -f "${STBTOOLS}" --wildcards \
-	--strip-components=2 '*/skel'
 sed -i 's|$(cat $DT_DIR|$(tr -d "\\0" <$DT_DIR|' \
 	${TARGET_DIR}/etc/config/ifup.default
 
@@ -58,11 +33,11 @@ if [ -e ${TARGET_DIR}/etc/inittab ]; then
 		${TARGET_DIR}/etc/inittab
 fi
 
-if ls board/brcmstb/dropbear_*_host_key >/dev/null 2>&1; then
+if ls ${board_dir}/dropbear_*_host_key >/dev/null 2>&1; then
 	echo "Installing pre-generated SSH keys..."
 	rm -rf ${TARGET_DIR}/etc/dropbear
 	mkdir -p ${TARGET_DIR}/etc/dropbear
-	for key in board/brcmstb/dropbear_*_host_key; do
+	for key in ${board_dir}/dropbear_*_host_key; do
 		b=`basename "${key}"`
 		echo "    ${b}"
 		install -D -p -m 0600 -t ${TARGET_DIR}/etc/dropbear ${key}
@@ -78,12 +53,12 @@ fi
 
 # Add SSH key for root
 sshdir="${TARGET_DIR}/root/.ssh"
-if [ -r board/brcmstb/brcmstb_root ]; then
+if [ -r ${board_dir}/brcmstb_root ]; then
 	echo "Installing SSH key for root..."
 	rm -rf "${sshdir}"
 	mkdir "${sshdir}"
 	chmod go= "${sshdir}"
-	cp board/brcmstb/brcmstb_root.pub "${sshdir}/authorized_keys"
+	cp ${board_dir}/brcmstb_root.pub "${sshdir}/authorized_keys"
 fi
 
 # Create mount points
@@ -121,6 +96,21 @@ fi
 # Add ldd from the host's sysroot
 echo "Copying ldd..."
 cp -p ${HOST_DIR}/*gnu*/sysroot/usr/bin/ldd ${TARGET_DIR}/usr/bin
+if grep '^RTLDLIST=/lib/ld-linux-aarch64' "${TARGET_DIR}/usr/bin/ldd" >/dev/null; then
+	set +e
+	ld32=`ls "${TARGET_DIR}/lib/"ld-linux-arm* 2>/dev/null`
+	ld64=`ls "${TARGET_DIR}/lib/"ld-linux-aarch* 2>/dev/null`
+	set -e
+	if [ "${ld32}" = "" -o "${ld64}" = "" ]; then
+		echo "Couldn't find shared library loader(s), not updating ldd!"
+	else
+		echo "Adding Aarch32 capabilities to ldd..."
+		ld32="/lib/`basename ${ld32}`"
+		ld64="/lib/`basename ${ld64}`"
+		sed -i "s|^RTLDLIST=.*|RTLDLIST=\"${ld64} ${ld32}\"|" \
+			"${TARGET_DIR}/usr/bin/ldd"
+	fi
+fi
 
 # Generate brcmstb.conf
 echo "Generating /etc/brcmstb.conf..."
@@ -136,22 +126,62 @@ PLAT=$arch
 VERSION=$linux_ver
 EOF
 
-# Check that shared libraries were installed properly
-if [ -x bin/find_64bit_libs.sh ]; then
-	echo "Checking that shared libraries were installed properly..."
-	bin/find_64bit_libs.sh "${TARGET_DIR}"
+if grep 'BR2_NEED_LD_SO_CONF=y' "${dot_config}" >/dev/null; then
+	echo "Copying ${board_dir}/ld.so.conf..."
+	cp -p "${board_dir}/ld.so.conf" ${TARGET_DIR}/etc
+	echo "Copying ldconfig..."
+	cp -p ${HOST_DIR}/*gnu*/sysroot/sbin/ldconfig ${TARGET_DIR}/sbin
+	echo "Running host-ldconfig..."
+	./bin/ldconfig -r ${TARGET_DIR}
 fi
 
-# Generate list of GPL-3.0 packages
-echo "Generating GPL-3.0 packages list"
-make -C ${BASE_DIR} legal-info
-rm -rf ${TARGET_DIR}/usr/share/legal-info/
-mkdir ${TARGET_DIR}/usr/share/legal-info/
-grep "GPL-3.0" ${BASE_DIR}/legal-info/manifest.csv  | cut -d, -f1 > ${TARGET_DIR}/usr/share/legal-info/GPL-3.0-packages
-sed -i 's| -e /bin/gdbserver -o -e /bin/gdb | -s /usr/share/legal-info/GPL-3.0-packages |' ${rcS}
+# BR_SKIP_LEGAL_INFO permits a developer to skip the "make legal-info" stage to
+# shorten build time. This option is for development only and must not be used
+# for release builds.
+set +u
+test -z ${BR_SKIP_LEGAL_INFO} && BR_SKIP_LEGAL_INFO=""
+set -u
+if [ "${BR_SKIP_LEGAL_INFO}" != "" ]; then
+	echo "Not generating GPL-3.0 packages list per user request."
+	echo "See environment variable \$BR_SKIP_LEGAL_INFO."
+else
+	# Generate list of GPL-3.0 packages
+	echo "Generating GPL-3.0 packages list"
+	make -C ${BASE_DIR} legal-info
+	rm -rf ${TARGET_DIR}/usr/share/legal-info/
+	mkdir ${TARGET_DIR}/usr/share/legal-info/
+	grep "GPL-3.0" ${BASE_DIR}/legal-info/manifest.csv | \
+		cut -d, -f1 \
+			> ${TARGET_DIR}/usr/share/legal-info/GPL-3.0-packages
+	sed -i 's| -e /bin/gdbserver -o -e /bin/gdb | -s /usr/share/legal-info/GPL-3.0-packages |' ${rcS}
+fi
 
 # Copy directory structure from ${BASE_DIR}/files to the target
-echo "Copying supplemental files"
-if [ -d "${BASE_DIR}/files" ]; then
-	cp -fpR ${BASE_DIR}/files/* ${TARGET_DIR}
+echo "Copying supplemental files..."
+if [ -d "${custom_files}" ]; then
+	rsync -a "${custom_files}/" "${TARGET_DIR}"
+fi
+
+# Checking for custom post-build script
+if [ -x "${custom_script}" ]; then
+	echo "Executing ${custom_script}..."
+	"${custom_script}" "$@"
+fi
+
+# The diff command below may return an error code. We don't want to abort the
+# script if that happens. We want to handle the error case ourselves.
+set +e
+
+# Check if start-up files somehow got overwritten. It should never happen, but
+# we want to know at build time if it ever does.
+SKEL_VERSION=`grep default package/brcm-pm/Config.in | awk '{print $2}'`
+SKEL_PATH=`dirname ${TARGET_DIR}`/build/brcm-skel-${SKEL_VERSION}
+echo "Performing consistency check..."
+init_diff=`diff -u ${TARGET_DIR}/etc/inittab ${SKEL_PATH}/skel/etc/inittab`
+if [ $? != 0 ]; then
+	echo "Detected a potential problem with the start-up files."
+	echo "It is recommended to remove the output/<arch> directory and"
+	echo "rebuild from scratch."
+	echo "$init_diff"
+	exit 1
 fi

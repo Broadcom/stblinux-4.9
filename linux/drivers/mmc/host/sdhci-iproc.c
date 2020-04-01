@@ -348,11 +348,10 @@ err:
 
 static void sdhci_iproc_shutdown(struct platform_device *pdev)
 {
-	int ret;
+	struct sdhci_host *host = platform_get_drvdata(pdev);
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 
-	ret = sdhci_pltfm_unregister(pdev);
-	if (ret)
-		dev_err(&pdev->dev, "failed to shutdown\n");
+	clk_disable_unprepare(pltfm_host->clk);
 }
 
 static struct platform_driver sdhci_iproc_driver = {

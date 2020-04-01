@@ -2275,7 +2275,7 @@ static int bcm_sysport_map_queues(struct bcm_sysport_priv *priv,
 		ring->switch_queue = qp;
 		ring->switch_port = port;
 		ring->inspect = true;
-		priv->ring_map[q + port * num_tx_queues] = ring;
+		priv->ring_map[qp + port * num_tx_queues] = ring;
 		qp++;
 	}
 
@@ -2288,7 +2288,7 @@ static int bcm_sysport_unmap_queues(struct bcm_sysport_priv *priv,
 	struct net_device *dev = priv->netdev;
 	struct bcm_sysport_tx_ring *ring;
 	unsigned int num_tx_queues;
-	unsigned int q, port;
+	unsigned int q, qp, port;
 
 	port = dsa_slave_dev_port_num(slave_dev);
 	num_tx_queues = slave_dev->real_num_tx_queues;
@@ -2303,7 +2303,8 @@ static int bcm_sysport_unmap_queues(struct bcm_sysport_priv *priv,
 			continue;
 
 		ring->inspect = false;
-		priv->ring_map[q + port * num_tx_queues] = NULL;
+		qp = ring->switch_queue;
+		priv->ring_map[qp + port * num_tx_queues] = NULL;
 	}
 
 	return NOTIFY_OK;
@@ -2458,7 +2459,7 @@ static int bcm_sysport_probe(struct platform_device *pdev)
 
 	priv->phy_interface = of_get_phy_mode(dn);
 	/* Default to GMII interface mode */
-	if (priv->phy_interface < 0)
+	if ((int)priv->phy_interface < 0)
 		priv->phy_interface = PHY_INTERFACE_MODE_GMII;
 
 	/* In the case of a fixed PHY, the DT node associated
@@ -2727,6 +2728,9 @@ static int __maybe_unused bcm_sysport_resume(struct device *d)
 	}
 
 	umac_reset(priv);
+
+	/* Disable the UniMAC RX/TX */
+	umac_enable_set(priv, CMD_RX_EN | CMD_TX_EN, 0);
 
 	/* We may have been suspended and never received a WOL event that
 	 * would turn off MPD detection, take care of that now

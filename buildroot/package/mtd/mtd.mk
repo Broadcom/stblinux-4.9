@@ -4,7 +4,7 @@
 #
 ################################################################################
 
-MTD_VERSION = 2.0.2
+MTD_VERSION = 2.1.1
 MTD_SOURCE = mtd-utils-$(MTD_VERSION).tar.bz2
 MTD_SITE = ftp://ftp.infradead.org/pub/mtd-utils
 MTD_LICENSE = GPL-2.0
@@ -21,6 +21,20 @@ endif
 ifeq ($(BR2_PACKAGE_MTD_UBIFS_UTILS),y)
 MTD_DEPENDENCIES += util-linux zlib lzo host-pkgconf
 MTD_CONF_OPTS += --with-ubifs
+ifeq ($(BR2_PACKAGE_OPENSSL),y)
+MTD_DEPENDENCIES += openssl
+MTD_CONF_OPTS += --with-crypto
+else
+MTD_CONF_OPTS += --without-crypto
+# Without encryption, we have to silence the assert() calls.
+TARGET_CPPFLAGS += -DNDEBUG
+endif
+ifeq ($(BR2_PACKAGE_ZSTD),y)
+MTD_DEPENDENCIES += zstd
+MTD_CONF_OPTS += --with-zstd
+else
+MTD_CONF_OPTS += --without-zstd
+endif
 else
 MTD_CONF_OPTS += --without-ubifs
 endif
@@ -40,10 +54,14 @@ else
 MTD_CONF_OPTS += --without-xattr
 endif
 
-HOST_MTD_DEPENDENCIES = host-zlib host-lzo host-util-linux
+# The host build doesn't support encryption. We must silence the assert() calls.
+HOST_CPPFLAGS += -DNDEBUG
+
+HOST_MTD_DEPENDENCIES = host-zlib host-lzo host-util-linux host-zstd
 HOST_MTD_CONF_OPTS = \
 	--with-jffs \
 	--with-ubifs \
+	--without-crypto \
 	--disable-tests
 
 MKFS_JFFS2 = $(HOST_DIR)/sbin/mkfs.jffs2

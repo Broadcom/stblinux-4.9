@@ -32,6 +32,7 @@
 #ifdef CONFIG_BRCMSTB_NEXUS_RESET_API
 int brcm_reset_assert(unsigned int rst_id);
 int brcm_reset_deassert(unsigned int rst_id);
+int brcm_overtemp_reset(unsigned int temp);
 
 #else
 static inline int brcm_reset_assert(unsigned int rst_id)
@@ -39,6 +40,10 @@ static inline int brcm_reset_assert(unsigned int rst_id)
 	return -ENOTSUPP;
 }
 static inline int brcm_reset_deassert(unsigned int rst_id)
+{
+	return -ENOTSUPP;
+}
+static inline int brcm_overtemp_reset(unsigned int temp)
 {
 	return -ENOTSUPP;
 }

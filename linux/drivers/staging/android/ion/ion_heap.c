@@ -61,12 +61,14 @@ void *ion_heap_map_kernel(struct ion_heap *heap,
 
 	return vaddr;
 }
+EXPORT_SYMBOL(ion_heap_map_kernel);
 
 void ion_heap_unmap_kernel(struct ion_heap *heap,
 			   struct ion_buffer *buffer)
 {
 	vunmap(buffer->vaddr);
 }
+EXPORT_SYMBOL(ion_heap_unmap_kernel);
 
 int ion_heap_map_user(struct ion_heap *heap, struct ion_buffer *buffer,
 		      struct vm_area_struct *vma)
@@ -102,6 +104,7 @@ int ion_heap_map_user(struct ion_heap *heap, struct ion_buffer *buffer,
 	}
 	return 0;
 }
+EXPORT_SYMBOL(ion_heap_map_user);
 
 static int ion_heap_clear_pages(struct page **pages, int num, pgprot_t pgprot)
 {
@@ -150,6 +153,7 @@ int ion_heap_buffer_zero(struct ion_buffer *buffer)
 
 	return ion_heap_sglist_zero(table->sgl, table->nents, pgprot);
 }
+EXPORT_SYMBOL(ion_heap_buffer_zero);
 
 int ion_heap_pages_zero(struct page *page, size_t size, pgprot_t pgprot)
 {

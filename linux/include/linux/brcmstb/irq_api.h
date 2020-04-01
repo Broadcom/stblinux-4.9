@@ -52,4 +52,7 @@ typedef enum brcmstb_l2_irq {
 
 int brcmstb_get_l2_irq_id(brcmstb_l2_irq irq);
 
+int set_ipi_handler(int ipinr, void *handler, char *desc);
+void clear_ipi_handler(int ipinr);
+
 #endif /* _BRCMSTB_IRQ_API_H */

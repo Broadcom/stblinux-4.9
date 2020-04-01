@@ -1,0 +1,41 @@
+From 4e7805f5addf63b201dfce083ede23b0f02596ed Mon Sep 17 00:00:00 2001
+From: Markus Mayer <mmayer@broadcom.com>
+Date: Mon, 27 Jan 2020 11:07:42 -0800
+Subject: [PATCH 1/2] elf/readelflib.c: introduce SKIP_READELF_INCLUDE
+
+The define SKIP_READELF_INCLUDE allows us to instruct elf/readelflib.c
+not to include any of its code.
+
+This will allow us to include multiple arch-specific readelflib.c files
+together while avoiding duplicate code. The resulting ldconfig will be
+able to parse shared libraries for multiple architectures.
+
+Signed-off-by: Markus Mayer <mmayer@broadcom.com>
+---
+ elf/readelflib.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/elf/readelflib.c b/elf/readelflib.c
+index 5905f6d344d0..e265b01547fa 100644
+--- a/elf/readelflib.c
++++ b/elf/readelflib.c
+@@ -22,6 +22,11 @@
+    which need to handle both 32bit and 64bit ELF libraries,  this file is
+    included twice for each arch size.  */
+ 
++/*
++ * SKIP_READELF_INCLUDE provides a means to skip including this file if we know
++ * it will be included a different way.
++ */
++#ifndef SKIP_READELF_INCLUDE
+ /* check_ptr checks that a pointer is in the mmaped file and doesn't
+    point outside it.  */
+ #undef check_ptr
+@@ -253,3 +258,4 @@ process_elf_file (const char *file_name, const char *lib, int *flag,
+ 
+   return 0;
+ }
++#endif /* SKIP_READELF_INCLUDE */
+-- 
+2.17.1
+

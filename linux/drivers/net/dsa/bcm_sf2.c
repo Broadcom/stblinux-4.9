@@ -239,6 +239,7 @@ static void bcm_sf2_imp_setup(struct dsa_switch *ds, int port)
 	/* Force link status for IMP port */
 	reg = core_readl(priv, offset);
 	reg |= (MII_SW_OR | LINK_STS);
+	reg &= ~GMII_SPEED_UP_2G;
 	core_writel(priv, reg, offset);
 
 	/* Enable Broadcast, Unicast forwarding to IMP port */
@@ -579,11 +580,10 @@ static int bcm_sf2_sw_mdio_write(struct mii_bus *bus, int addr, int regnum,
 	 * send them to our master MDIO bus controller
 	 */
 	if (addr == BRCM_PSEUDO_PHY_ADDR && priv->indir_phy_mask & BIT(addr))
-		bcm_sf2_sw_indir_rw(priv, 0, addr, regnum, val);
+		return bcm_sf2_sw_indir_rw(priv, 0, addr, regnum, val);
 	else
-		mdiobus_write_nested(priv->master_mii_bus, addr, regnum, val);
-
-	return 0;
+		return mdiobus_write_nested(priv->master_mii_bus, addr,
+				regnum, val);
 }
 
 static irqreturn_t bcm_sf2_switch_0_isr(int irq, void *dev_id)
@@ -1056,44 +1056,6 @@ static int bcm_sf2_sw_set_wol(struct dsa_switch *ds, int port,
 	return p->ethtool_ops->set_wol(p, wol);
 }
 
-static int bcm_sf2_vlan_op_wait(struct bcm_sf2_priv *priv)
-{
-	unsigned int timeout = 10;
-	u32 reg;
-
-	do {
-		reg = core_readl(priv, CORE_ARLA_VTBL_RWCTRL);
-		if (!(reg & ARLA_VTBL_STDN))
-			return 0;
-
-		usleep_range(1000, 2000);
-	} while (timeout--);
-
-	return -ETIMEDOUT;
-}
-
-static int bcm_sf2_vlan_op(struct bcm_sf2_priv *priv, u8 op)
-{
-	core_writel(priv, ARLA_VTBL_STDN | op, CORE_ARLA_VTBL_RWCTRL);
-
-	return bcm_sf2_vlan_op_wait(priv);
-}
-
-static void bcm_sf2_sw_configure_vlan(struct dsa_switch *ds)
-{
-	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
-	unsigned int port;
-
-	/* Clear all VLANs */
-	bcm_sf2_vlan_op(priv, ARLA_VTBL_CMD_CLEAR);
-
-	for (port = 0; port < priv->hw_params.num_ports; port++) {
-		if (((1 << port) & ds->enabled_port_mask) ||
-		    dsa_is_cpu_port(ds, port))
-			core_writel(priv, 0, CORE_DEFAULT_1Q_TAG_P(port));
-	}
-}
-
 static int bcm_sf2_sw_setup(struct dsa_switch *ds)
 {
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
@@ -1110,7 +1072,7 @@ static int bcm_sf2_sw_setup(struct dsa_switch *ds)
 			bcm_sf2_port_disable(ds, port, NULL);
 	}
 
-	bcm_sf2_sw_configure_vlan(ds);
+	b53_configure_vlan(priv->dev);
 	bcm_sf2_enable_acb(ds);
 
 	return 0;

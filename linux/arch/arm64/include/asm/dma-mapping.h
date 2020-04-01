@@ -37,7 +37,12 @@ static inline struct dma_map_ops *__generic_dma_ops(struct device *dev)
 	 * We expect no ISA devices, and all other DMA masters are expected to
 	 * have someone call arch_setup_dma_ops at device creation time.
 	 */
+#ifdef CONFIG_ARCH_BRCMSTB
+	/* Broadcom STB devices are not cache coherent */
+	return &swiotlb_dma_ops;
+#else
 	return &dummy_dma_ops;
+#endif
 }
 
 static inline struct dma_map_ops *get_dma_ops(struct device *dev)
@@ -68,15 +73,23 @@ static inline bool is_device_dma_coherent(struct device *dev)
 static inline dma_addr_t phys_to_dma(struct device *dev, phys_addr_t paddr)
 {
 	dma_addr_t dev_addr = (dma_addr_t)paddr;
+	dma_addr_t offset = 0;
 
-	return dev_addr - ((dma_addr_t)dev->dma_pfn_offset << PAGE_SHIFT);
+	if (likely(dev))
+		offset = ((dma_addr_t)dev->dma_pfn_offset << PAGE_SHIFT);
+
+	return dev_addr - offset;
 }
 
 static inline phys_addr_t dma_to_phys(struct device *dev, dma_addr_t dev_addr)
 {
 	phys_addr_t paddr = (phys_addr_t)dev_addr;
+	phys_addr_t offset = 0;
 
-	return paddr + ((phys_addr_t)dev->dma_pfn_offset << PAGE_SHIFT);
+	if (likely(dev))
+		offset = ((phys_addr_t)dev->dma_pfn_offset << PAGE_SHIFT);
+
+	return paddr + offset;
 }
 
 static inline bool dma_capable(struct device *dev, dma_addr_t addr, size_t size)

@@ -701,6 +701,8 @@ struct bcmgenet_priv {
 	/* WOL */
 	struct clk *clk_fast;
 	struct clk *clk_slow;
+	unsigned long clk_fast_rate;
+	unsigned long clk_slow_rate;
 	struct clk *clk_mux;
 	struct clk *clk_wol;
 	u32 wolopts;

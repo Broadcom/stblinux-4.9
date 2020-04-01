@@ -85,8 +85,7 @@ enum brcm_ahci_version {
 };
 
 enum brcm_ahci_quirks {
-	BRCM_AHCI_QUIRK_NO_NCQ		= BIT(0),
-	BRCM_AHCI_QUIRK_SKIP_PHY_ENABLE	= BIT(1),
+	BRCM_AHCI_QUIRK_SKIP_PHY_ENABLE	= BIT(0),
 };
 
 struct brcm_ahci_priv {
@@ -347,7 +346,6 @@ static const struct ata_port_info ahci_brcm_port_info = {
 	.port_ops	= &ahci_brcm_platform_ops,
 };
 
-#ifdef CONFIG_PM_SLEEP
 static int brcm_ahci_suspend(struct device *dev)
 {
 	struct ata_host *host = dev_get_drvdata(dev);
@@ -357,14 +355,17 @@ static int brcm_ahci_suspend(struct device *dev)
 
 	brcm_sata_phys_disable(priv);
 
-	ret = ahci_platform_suspend(dev);
+	if (IS_ENABLED(CONFIG_PM_SLEEP))
+		ret = ahci_platform_suspend(dev);
+	else
+		ret = 0;
 
 	if (priv->rescal)
 		reset_control_assert(priv->rescal);
 	return ret;
 }
 
-static int brcm_ahci_resume(struct device *dev)
+static int __maybe_unused brcm_ahci_resume(struct device *dev)
 {
 	struct ata_host *host = dev_get_drvdata(dev);
 	struct ahci_host_priv *hpriv = host->private_data;
@@ -411,7 +412,6 @@ out_disable_phys:
 	ahci_platform_disable_clks(hpriv);
 	return ret;
 }
-#endif
 
 static struct scsi_host_template ahci_platform_sht = {
 	AHCI_SHT(DRV_NAME),
@@ -461,17 +461,23 @@ static int brcm_ahci_probe(struct platform_device *pdev)
 			dev_err(&pdev->dev, "failed to deassert 'rescal'\n");
 	}
 
-	if ((priv->version == BRCM_SATA_BCM7425) ||
-		(priv->version == BRCM_SATA_NSP)) {
-		priv->quirks |= BRCM_AHCI_QUIRK_NO_NCQ;
-		priv->quirks |= BRCM_AHCI_QUIRK_SKIP_PHY_ENABLE;
-	}
-
 	hpriv = ahci_platform_get_resources(pdev);
 	if (IS_ERR(hpriv))
 		return PTR_ERR(hpriv);
 	hpriv->plat_data = priv;
-	hpriv->flags = AHCI_HFLAG_WAKE_BEFORE_STOP;
+	hpriv->flags = AHCI_HFLAG_WAKE_BEFORE_STOP | AHCI_HFLAG_NO_WRITE_TO_RO;
+
+	switch (priv->version) {
+	case BRCM_SATA_BCM7425:
+		hpriv->flags |= AHCI_HFLAG_DELAY_ENGINE;
+		/* fall through */
+	case BRCM_SATA_NSP:
+		hpriv->flags |= AHCI_HFLAG_NO_NCQ;
+		priv->quirks |= BRCM_AHCI_QUIRK_SKIP_PHY_ENABLE;
+		break;
+	default:
+		break;
+	}
 
 	ret = ahci_platform_enable_clks(hpriv);
 	if (ret)
@@ -493,10 +499,6 @@ static int brcm_ahci_probe(struct platform_device *pdev)
 	brcm_sata_phys_enable(priv);
 
 	brcm_sata_alpm_init(hpriv);
-
-	if (priv->quirks & BRCM_AHCI_QUIRK_NO_NCQ)
-		hpriv->flags |= AHCI_HFLAG_NO_NCQ;
-	hpriv->flags |= AHCI_HFLAG_NO_WRITE_TO_RO;
 
 	ret = ahci_platform_enable_phys(hpriv);
 	if (ret)

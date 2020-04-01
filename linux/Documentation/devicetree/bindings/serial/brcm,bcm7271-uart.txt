@@ -1,4 +1,4 @@
-* Broadcom ns16550a UART with optional Baud Rate Mux
+* Broadcom ns16550a UART with optional Baud Rate Mux and optional DMA
 
 Required properties:
 - compatible	  : Should be one of the following
@@ -8,14 +8,18 @@ Required properties:
 - reg		  : offset and length of the register set for the device
 - interrupts	  : should contain UART interrupt line
 - clock-frequency : the input clock frequency for the UART in Hz
-	 or
-- clocks	  : Phandle to a mux clock controlling the input clock
-		    to the base baud divisor
+
+Optional properties:
+- clocks	  : Phandle to an optional mux clock controlling the input
+		    clock to the base baud divisor
 - clock-names	  : "sw_baud" - required if clocks is specified
+
+Some UARTs have an additional DMA controller. These UARTs will have
+an additional four registers and an additional interrupt specified.
 
 Properties in 8250.txt also apply
 
-Example:
+Example without DMA support:
 serial@f040d000 {
 	compatible = "brcm,bcm7271-uart", "ns16550a";
 	reg-io-width = <0x4>;
@@ -27,5 +31,22 @@ serial@f040d000 {
 	fifo-size = <0x20>;
 	auto-flow-control;
 	clocks = <0xc>;
+	clock-names = "sw_baud";
+};
+
+Example with DMA support:
+serial@840e000 {
+	clock-frequency = <0x4d3f640>;
+	compatible = "brcm,bcm7271-uart", "ns16550a";
+	reg-io-width = <0x4>;
+	reg-shift = <0x2>;
+	reg = <0x840e000 0x20 0x840e080 0x8 0x840e100 0xa8 0x840
+	       e200 0x4c 0x840e300 0x30>;
+	reg-names = "uart", "dma_arb", "dma_rx", "dma_tx", "dma_intr2";
+	interrupts = <0x0 0x62 0x4 0x0 0x75 0x4>;
+	interrupt-names = "uart", "dma";
+	fifo-size = <0x20>;
+	auto-flow-control;
+	clocks = <0x9 0xfa>;
 	clock-names = "sw_baud";
 };

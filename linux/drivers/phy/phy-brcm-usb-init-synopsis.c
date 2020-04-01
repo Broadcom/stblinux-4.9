@@ -272,6 +272,16 @@ static void usb_init_common_7211b0(struct brcm_usb_init_params *params)
 	reg |= params->device_mode << USB_PHY_UTMI_CTL_1_PHY_MODE_SHIFT;
 	brcm_usb_writel(reg, usb_phy + USB_PHY_UTMI_CTL_1);
 
+	/*
+	 * Disable FSM, otherwise the PHY will auto suspend when no
+	 * device is connected and will be reset on resume.
+	 */
+	reg = brcm_usb_readl(usb_phy + USB_PHY_UTMI_CTL_1);
+	reg &= ~USB_PHY_UTMI_CTL_1_POWER_UP_FSM_EN_MASK;
+	brcm_usb_writel(reg, usb_phy + USB_PHY_UTMI_CTL_1);
+
+	usb2_eye_fix_7211b0(params);
+
 	/* Fix the incorrect default */
 	reg = brcm_usb_readl(ctrl + USB_CTRL_SETUP);
 	reg &= ~USB_CTRL_SETUP_tca_drv_sel_MASK;
@@ -290,16 +300,6 @@ static void usb_init_common_7211b0(struct brcm_usb_init_params *params)
 		reg |= (0x4 << BDC_EC_AXIRDA_RTS_SHIFT);
 		brcm_usb_writel(reg, bdc_ec + BDC_EC_AXIRDA);
 	}
-
-	/*
-	 * Disable FSM, otherwise the PHY will auto suspend when no
-	 * device is connected and will be reset on resume.
-	 */
-	reg = brcm_usb_readl(usb_phy + USB_PHY_UTMI_CTL_1);
-	reg &= ~USB_PHY_UTMI_CTL_1_POWER_UP_FSM_EN_MASK;
-	brcm_usb_writel(reg, usb_phy + USB_PHY_UTMI_CTL_1);
-
-	usb2_eye_fix_7211b0(params);
 }
 
 static void usb_init_xhci(struct brcm_usb_init_params *params)

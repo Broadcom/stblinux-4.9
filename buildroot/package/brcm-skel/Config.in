@@ -1,0 +1,7 @@
+config BR2_PACKAGE_BRCM_SKEL
+	bool "Broadcom Skeleton"
+	help
+
+	  Broadcom skeleton scripts (/etc, power management scripts, etc.)
+
+	  Say Y, if you are using Broadcom STB.

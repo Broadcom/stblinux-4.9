@@ -4,8 +4,8 @@
 #
 ################################################################################
 
-TCPDUMP_VERSION = 4.9.2
-TCPDUMP_SITE = http://www.tcpdump.org/release
+TCPDUMP_VERSION = dbd70580fa548c39813c3e1b45455a3ac4acf25a
+TCPDUMP_SITE = $(call github,the-tcpdump-group,tcpdump,$(TCPDUMP_VERSION))
 TCPDUMP_LICENSE = BSD-3-Clause
 TCPDUMP_LICENSE_FILES = LICENSE
 TCPDUMP_CONF_ENV = \

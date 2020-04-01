@@ -2,10 +2,10 @@ Introduce $(LIBDIR) to Makefile-libbz2_so
 
 The variable $(LIBDIR) allows us to override where libbz2 is installed.
 
-Index: bzip2-1.0.6/Makefile
+Index: bzip2-1.0.8/Makefile-libbz2_so
 ===================================================================
---- bzip2-1.0.6/Makefile-libbz2_so.orig	2017-11-23 11:08:33.067637637 -0800
-+++ bzip2-1.0.6/Makefile-libbz2_so	2017-11-23 12:51:38.694728036 -0800
+--- bzip2-1.0.8/Makefile-libbz2_so.orig	2019-08-08 07:56:03.724829929 -0700
++++ bzip2-1.0.8/Makefile-libbz2_so	2019-08-08 07:58:32.842637295 -0700
 @@ -23,6 +23,9 @@
  
  SHELL=/bin/sh
@@ -17,15 +17,15 @@ Index: bzip2-1.0.6/Makefile
  
  OBJS= blocksort.sho  \
 @@ -38,9 +41,9 @@
- 	$(CC) $(CFLAGS) -o bzip2-shared bzip2.c libbz2.so.1.0.6
+	$(CC) $(CFLAGS) -o bzip2-shared bzip2.c libbz2.so.1.0.8
  
  install:
--	install -m 0755 -D libbz2.so.1.0.6 $(PREFIX)/lib/libbz2.so.1.0.6
--	ln -sf libbz2.so.1.0.6 $(PREFIX)/lib/libbz2.so
--	ln -sf libbz2.so.1.0.6 $(PREFIX)/lib/libbz2.so.1.0
-+	install -m 0755 -D libbz2.so.1.0.6 $(PREFIX)/$(LIBDIR)/libbz2.so.1.0.6
-+	ln -sf libbz2.so.1.0.6 $(PREFIX)/$(LIBDIR)/libbz2.so
-+	ln -sf libbz2.so.1.0.6 $(PREFIX)/$(LIBDIR)/libbz2.so.1.0
+-	install -m 0755 -D libbz2.so.1.0.8 $(PREFIX)/lib/libbz2.so.1.0.8
+-	ln -sf libbz2.so.1.0.8 $(PREFIX)/lib/libbz2.so
+-	ln -sf libbz2.so.1.0.8 $(PREFIX)/lib/libbz2.so.1.0
++	install -m 0755 -D libbz2.so.1.0.8 $(PREFIX)/$(LIBDIR)/libbz2.so.1.0.8
++	ln -sf libbz2.so.1.0.8 $(PREFIX)/$(LIBDIR)/libbz2.so
++	ln -sf libbz2.so.1.0.8 $(PREFIX)/$(LIBDIR)/libbz2.so.1.0
  
  clean: 
- 	rm -f $(OBJS) bzip2.o libbz2.so.1.0.6 libbz2.so.1.0 bzip2-shared
+	rm -f $(OBJS) bzip2.o libbz2.so.1.0.8 libbz2.so.1.0 bzip2-shared

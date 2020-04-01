@@ -93,6 +93,7 @@ TOOLCHAIN_EXTERNAL_SUFFIX = \
 TOOLCHAIN_EXTERNAL_CROSS = $(TOOLCHAIN_EXTERNAL_BIN)/$(TOOLCHAIN_EXTERNAL_PREFIX)-
 TOOLCHAIN_EXTERNAL_CC = $(TOOLCHAIN_EXTERNAL_CROSS)gcc$(TOOLCHAIN_EXTERNAL_SUFFIX)
 TOOLCHAIN_EXTERNAL_CXX = $(TOOLCHAIN_EXTERNAL_CROSS)g++$(TOOLCHAIN_EXTERNAL_SUFFIX)
+TOOLCHAIN_EXTERNAL_GDC = $(TOOLCHAIN_EXTERNAL_CROSS)gdc$(TOOLCHAIN_EXTERNAL_SUFFIX)
 TOOLCHAIN_EXTERNAL_FC = $(TOOLCHAIN_EXTERNAL_CROSS)gfortran$(TOOLCHAIN_EXTERNAL_SUFFIX)
 TOOLCHAIN_EXTERNAL_READELF = $(TOOLCHAIN_EXTERNAL_CROSS)readelf
 
@@ -112,7 +113,11 @@ endif
 # Definitions of the list of libraries that should be copied to the target.
 #
 
-TOOLCHAIN_EXTERNAL_LIBS += ld*.so* libgcc_s.so.* libatomic.so.*
+TOOLCHAIN_EXTERNAL_LIBS += ld*.so.* libgcc_s.so.* libatomic.so.*
+
+ifneq ($(BR2_SSP_NONE),y)
+TOOLCHAIN_EXTERNAL_LIBS += libssp.so.*
+endif
 
 ifeq ($(BR2_TOOLCHAIN_EXTERNAL_GLIBC)$(BR2_TOOLCHAIN_EXTERNAL_UCLIBC),y)
 TOOLCHAIN_EXTERNAL_LIBS += libc.so.* libcrypt.so.* libdl.so.* libm.so.* libnsl.so.* libresolv.so.* librt.so.* libutil.so.*
@@ -144,23 +149,15 @@ TOOLCHAIN_EXTERNAL_LIBS += libquadmath.so*
 endif
 endif
 
-ifeq ($(BR2_TOOLCHAIN_HAS_LIBASAN),y)
-TOOLCHAIN_EXTERNAL_LIBS += libasan.so*
+ifeq ($(BR2_TOOLCHAIN_HAS_OPENMP),y)
+TOOLCHAIN_EXTERNAL_LIBS += libgomp.so.*
 endif
 
-ifeq ($(BR2_TOOLCHAIN_HAS_LIBLSAN),y)
-TOOLCHAIN_EXTERNAL_LIBS += liblsan.so*
+ifeq ($(BR2_TOOLCHAIN_HAS_DLANG),y)
+TOOLCHAIN_EXTERNAL_LIBS += libgdruntime.so* libgphobos.so*
 endif
 
-ifeq ($(BR2_TOOLCHAIN_HAS_LIBTSAN),y)
-TOOLCHAIN_EXTERNAL_LIBS += libtsan.so*
-endif
-
-ifeq ($(BR2_TOOLCHAIN_HAS_LIBUBSAN),y)
-TOOLCHAIN_EXTERNAL_LIBS += libubsan.so*
-endif
-
-TOOLCHAIN_EXTERNAL_LIBS += $(call qstrip,$(BR2_TOOLCHAIN_EXTRA_EXTERNAL_LIBS))
+TOOLCHAIN_EXTERNAL_LIBS += $(addsuffix .so*,$(call qstrip,$(BR2_TOOLCHAIN_EXTRA_LIBS)))
 
 
 #
@@ -270,7 +267,7 @@ define TOOLCHAIN_EXTERNAL_INSTALL_WRAPPER
 		*-ar|*-ranlib|*-nm) \
 			ln -sf $$(echo $$i | sed 's%^$(HOST_DIR)%..%') .; \
 			;; \
-		*cc|*cc-*|*++|*++-*|*cpp|*-gfortran) \
+		*cc|*cc-*|*++|*++-*|*cpp|*-gfortran|*-gdc) \
 			ln -sf toolchain-wrapper $$base; \
 			;; \
 		*gdb|*gdbtui) \
@@ -343,7 +340,7 @@ endef
 #
 # And variations on these.
 define toolchain_find_sysroot
-$$(printf $(call toolchain_find_libc_a,$(1)) | sed -r -e 's:(usr/)?lib(32|64)?([^/]*)?/([^/]*/)?libc\.a::')
+$$(printf $(call toolchain_find_libc_a,$(1)) | sed -r -e 's:/(usr/)?lib(32|64)?([^/]*)?/([^/]*/)?libc\.a:/:')
 endef
 
 # Returns the lib subdirectory for the given compiler + flags (i.e
@@ -453,11 +450,20 @@ define TOOLCHAIN_EXTERNAL_INSTALL_SYSROOT_LIBS
 		ARCH_SUBDIR=`echo $${ARCH_SYSROOT_DIR} | sed -r -e "s:^$${SYSROOT_DIR}(.*)/$$:\1:"` ; \
 	fi ; \
 	$(call MESSAGE,"Copying external toolchain sysroot to staging...") ; \
-	$(call copy_toolchain_sysroot,$${SYSROOT_DIR},$${ARCH_SYSROOT_DIR},$${ARCH_SUBDIR},$${ARCH_LIB_DIR},$${SUPPORT_LIB_DIR}); \
+	$(call copy_toolchain_sysroot,$${SYSROOT_DIR},$${ARCH_SYSROOT_DIR},$${ARCH_SUBDIR},$${ARCH_LIB_DIR},$${SUPPORT_LIB_DIR},$(BR2_ROOTFS_LIB_DIR)); \
 	if [ "$(BR2_ROOTFS_RUNTIME32)" = "y" ]; then \
 		$(call MESSAGE,"Copying external toolchain 32-bit libraries to staging...") ; \
-		mkdir -p "$${STAGING_DIR}/$(BR2_ROOTFS_LIB32_DIR)"; \
-		rsync -a --exclude '*.a' "$(BR2_ROOTFS_RUNTIME32_PATH)/$(BR2_ROOTFS_LIB32_DIR)" "$${STAGING_DIR}"; \
+		mkdir -p "$${STAGING_DIR}/$(BR2_ROOTFS_LIB32_DIR)" \
+			"$${STAGING_DIR}/usr/$(BR2_ROOTFS_LIB32_DIR)"; \
+		rsync -a --exclude '*.a' "$(BR2_ROOTFS_RUNTIME32_PATH)/lib/" \
+			"$${STAGING_DIR}/$(BR2_ROOTFS_LIB32_DIR)"; \
+		if [ "$(BR2_ROOTFS_LIB32_DIR)" != "lib" ]; then \
+			ldso_32=`ls $${STAGING_DIR}/$(BR2_ROOTFS_LIB32_DIR)/ld-linux*.so*`; \
+			ldso_32=`basename "$${ldso_32}"`; \
+			echo "Creating symlink for $${ldso_32}"; \
+			ln -snf "../$(BR2_ROOTFS_LIB32_DIR)/$${ldso_32}" \
+				"$${STAGING_DIR}/lib/$${ldso_32}"; \
+		fi; \
 	fi
 endef
 
@@ -477,8 +483,16 @@ create_lib_symlinks = \
 	fi
 
 else
+ifeq ($(BR2_ROOTFS_LIB64_LINK),"")
 create_lib_symlinks = \
-	@echo "BR2_ROOTFS_RUNTIME32 is set, skipping lib symlinks creation"
+	$(Q)echo "Skipping lib symlinks (see BR2_ROOTFS_RUNTIME32, BR2_ROOTFS_LIB64_LINK)"
+else
+create_lib_symlinks = \
+	$(Q)DESTDIR="$(strip $1)" ; \
+	echo "Creating $(BR2_ROOTFS_LIB64_LINK) -> $(BR2_ROOTFS_LIB_DIR) symlinks"; \
+	ln -snf $(BR2_ROOTFS_LIB_DIR) "$${DESTDIR}/$(BR2_ROOTFS_LIB64_LINK)"; \
+	ln -snf $(BR2_ROOTFS_LIB_DIR) "$${DESTDIR}/usr/$(BR2_ROOTFS_LIB64_LINK)"
+endif
 endif
 
 define TOOLCHAIN_EXTERNAL_CREATE_STAGING_LIB_SYMLINK
@@ -554,6 +568,7 @@ define $(2)_CONFIGURE_CMDS
 	$$(Q)$$(call check_unusable_toolchain,$$(TOOLCHAIN_EXTERNAL_CC))
 	$$(Q)SYSROOT_DIR="$$(call toolchain_find_sysroot,$$(TOOLCHAIN_EXTERNAL_CC))" ; \
 	$$(call check_kernel_headers_version,\
+		$$(BUILD_DIR)\
 		$$(call toolchain_find_sysroot,$$(TOOLCHAIN_EXTERNAL_CC)),\
 		$$(call qstrip,$$(BR2_TOOLCHAIN_HEADERS_AT_LEAST))); \
 	$$(call check_gcc_version,$$(TOOLCHAIN_EXTERNAL_CC),\
@@ -565,8 +580,14 @@ define $(2)_CONFIGURE_CMDS
 	if test "$$(BR2_INSTALL_LIBSTDCPP)" = "y" ; then \
 		$$(call check_cplusplus,$$(TOOLCHAIN_EXTERNAL_CXX)) ; \
 	fi ; \
+	if test "$$(BR2_TOOLCHAIN_HAS_DLANG)" = "y" ; then \
+		$$(call check_dlang,$$(TOOLCHAIN_EXTERNAL_GDC)) ; \
+	fi ; \
 	if test "$$(BR2_TOOLCHAIN_HAS_FORTRAN)" = "y" ; then \
 		$$(call check_fortran,$$(TOOLCHAIN_EXTERNAL_FC)) ; \
+	fi ; \
+	if test "$$(BR2_TOOLCHAIN_HAS_OPENMP)" = "y" ; then \
+		$$(call check_openmp,$$(TOOLCHAIN_EXTERNAL_CC)) ; \
 	fi ; \
 	if test "$$(BR2_TOOLCHAIN_EXTERNAL_UCLIBC)" = "y" ; then \
 		$$(call check_uclibc,$$$${SYSROOT_DIR}) ; \
@@ -576,7 +597,7 @@ define $(2)_CONFIGURE_CMDS
 	else \
 		$$(call check_glibc,$$$${SYSROOT_DIR}) ; \
 	fi
-	$$(Q)$$(call check_toolchain_ssp,$$(TOOLCHAIN_EXTERNAL_CC))
+	$$(Q)$$(call check_toolchain_ssp,$$(TOOLCHAIN_EXTERNAL_CC),$(BR2_SSP_OPTION))
 endef
 
 $(2)_TOOLCHAIN_WRAPPER_ARGS += $$(TOOLCHAIN_EXTERNAL_TOOLCHAIN_WRAPPER_ARGS)

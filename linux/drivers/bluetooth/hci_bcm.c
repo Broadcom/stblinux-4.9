@@ -624,6 +624,7 @@ unlock:
 }
 #endif
 
+#ifdef CONFIG_ACPI
 static const struct acpi_gpio_params device_wakeup_gpios = { 0, 0, false };
 static const struct acpi_gpio_params shutdown_gpios = { 1, 0, false };
 static const struct acpi_gpio_params host_wakeup_gpios = { 2, 0, false };
@@ -635,7 +636,6 @@ static const struct acpi_gpio_mapping acpi_bcm_default_gpios[] = {
 	{ },
 };
 
-#ifdef CONFIG_ACPI
 static u8 acpi_active_low = ACPI_ACTIVE_LOW;
 
 /* IRQ polarity of some chipsets are not defined correctly in ACPI table. */

@@ -31,14 +31,24 @@ use constant LOCAL_MK => qw(local.mk);
 use constant BR_MIRROR_HOST => qw(stbgit.broadcom.com);
 use constant BR_MIRROR_PATH => qw(/mirror/buildroot);
 use constant FORBIDDEN_PATHS => ( qw(. /tools/bin) );
+use constant MERGED_FRAGMENT => qw(merged_fragment);
 use constant RECOMMENDED_TOOLCHAINS => ( qw(misc/toolchain.master
 					misc/toolchain) );
 use constant SHARED_OSS_DIR => qw(/projects/stbdev/open-source);
 use constant TOOLCHAIN_DIR => qw(/opt/toolchains);
+use constant VERSION_FRAGMENT => qw(local_version.txt);
 use constant VERSION_H => qw(/usr/include/linux/version.h);
 
+use constant SHA_LEN => 12;
 use constant SLEEP_TIME => 5;
 use constant STALE_THRESHOLD => 7 * 24 * 60 * 60; 	# days in seconds
+use constant WORLD_PERMS => (S_IRWXG | S_IRWXO);
+
+my %compiler_map = (
+	'arm64' => 'aarch64-linux-gcc',
+	'arm' => 'arm-linux-gcc',
+	'bmips' => 'mipsel-linux-gcc',
+);
 
 my %arch_config = (
 	'arm64' => {
@@ -115,14 +125,22 @@ sub fix_oss_permissions($);
 sub fix_oss_permissions($)
 {
 	my ($dir) = @_;
-	my $mode = (stat($dir))[2] & 0777;
+	my @st = stat($dir);
+	my $mode = $st[2] & 0777;
+	my $fuid = $st[4];
+	my $uid = $>;
 	my $dh;
 
 	# If directory doesn't have rwx permissions for group and other, we
 	# add them. We silently fail if the attempt is denied, since there is
 	# nothing more we can do.
-	if (($mode & (S_IRWXG | S_IRWXO)) != (S_IRWXG | S_IRWXO)) {
+	if ($uid == $fuid && (($mode & WORLD_PERMS) != WORLD_PERMS)) {
 		chmod(0777, $dir) && print("Fixed permissions of $dir...\n");
+		print("Setting ACL for $dir...\n");
+		system("setfacl -m default:user::rwx $dir");
+		system("setfacl -m default:group::rwx $dir");
+		system("setfacl -m default:other::rwx $dir");
+		system("setfacl -m default:mask::rwx $dir");
 	}
 	opendir($dh, $dir);
 	while (my $entry = readdir($dh)) {
@@ -192,10 +210,8 @@ sub check_oss_stale_sources($$)
 	}
 }
 
-# Check if the specified toolchain is the recommended one.
-sub check_toolchain($)
+sub get_recommended_toolchain()
 {
-	my ($toolchain) = @_;
 	my $recommended;
 	my $found = 0;
 
@@ -205,18 +221,27 @@ sub check_toolchain($)
 			last;
 		}
 	}
-	# If we don't know what the recommended toolchain is, we accept the
-	# one that was specified.
 	if (!$found) {
 		return '';
 	}
-
 	$recommended = <F>;
 	chomp($recommended);
 	close(F);
 
-	$toolchain =~ s|.*/||;
+	return $recommended;
+}
 
+# Check if the specified toolchain is the recommended one.
+sub check_toolchain($)
+{
+	my ($toolchain) = @_;
+	my $recommended;
+
+	$toolchain =~ s|.*/||;
+	$recommended = get_recommended_toolchain();
+
+	# If we don't know what the recommended toolchain is, we accept the
+	# one that was specified.
 	return ($recommended ne $toolchain) ? $recommended : '';
 }
 
@@ -315,10 +340,35 @@ sub find_toolchain($)
 	foreach my $dir (@toolchains) {
 		my $d = TOOLCHAIN_DIR."/$dir";
 
-		return $d if ($dir =~ $toolchain_ver && -d "$d/bin");
+		# If the toolchain version matches or if the version is empty,
+		# return the toolchain, provided the "bin" directory exists.
+		if (-d "$d/bin" && ($dir =~ $toolchain_ver ||
+		    $toolchain_ver eq '')) {
+			return $d;
+		}
 	}
 
 	return undef;
+}
+
+sub set_target_toolchain($$)
+{
+	my ($toolchain, $arch) = @_;
+	my $stbgcc = $toolchain."/bin/".$compiler_map{$arch};
+	my $version = `$stbgcc -v 2>&1 | grep 'gcc version'`;
+
+	if ($version =~ /\s+(\d+)\.(\d+)\.(\d+)/) {
+		my ($major, $minor, $patch) = ($1, $2, $3);
+		my $config_str = "BR2_TOOLCHAIN_EXTERNAL_GCC_$major";
+
+		print("Detected GCC $major ($major.$minor)...\n");
+		$toolchain_config{$arch}{$config_str} = 'y';
+	} else {
+		print("WARNING! Couldn't determine GCC version number. ".
+			"Build may fail.\n");
+		print("Toolchain: $toolchain\n");
+	}
+	$toolchain_config{$arch}{'BR2_TOOLCHAIN_EXTERNAL_PATH'} = $toolchain;
 }
 
 sub trigger_toolchain_sync($$)
@@ -384,6 +434,58 @@ sub get_kernel_header_version($$)
 	return [($version_code >> 16) & 0xff, ($version_code >> 8) & 0xff];
 }
 
+sub get_linux_sha($$$)
+{
+	my ($fragments, $fragment_dir, $cmd) = @_;
+
+	my $version_fragment = "$fragment_dir/".VERSION_FRAGMENT;
+	my $git_sha = `$cmd`;
+
+	chomp($git_sha);
+	if ($git_sha eq '') {
+		print("Couldn't determine SHA for kernel.\n".
+			"Was using \"$cmd\".\n");
+		unlink($version_fragment) if (-e $version_fragment);
+		return $fragments;
+	}
+	print("Local Linux kernel is version $git_sha...\n");
+	open(F, ">$version_fragment");
+	print(F "CONFIG_LOCALVERSION=\"-g$git_sha\"\n");
+	close(F);
+	$version_fragment .= "," if ($fragments ne '');
+
+	return $version_fragment.$fragments;
+}
+
+sub merge_br_fragments($$$)
+{
+	my ($prg, $output_dir, $fragments) = @_;
+	my $out_frag = "$output_dir/".MERGED_FRAGMENT;
+	my $ret = $out_frag;
+
+	open(D, ">$out_frag");
+
+	foreach my $frag (split(/,/, $fragments)) {
+		print("Processing BR fragment $frag...\n");
+		if (!open(S, $frag)) {
+			print(STDERR "$prg: couldn't open $frag\n");
+			$ret = undef;
+			last;
+		}
+		while (my $line = <S>) {
+			chomp($line);
+			print(D "$line\n");
+		}
+		close(S);
+	}
+
+	close(D);
+
+	unlink($out_frag) if (!defined($ret));
+
+	return $ret;
+}
+
 sub move_merged_config($$$$)
 {
 	my ($prg, $arch, $sname, $dname) = @_;
@@ -421,7 +523,7 @@ sub write_localmk($$)
 
 		@buf = <F>;
 		close(F);
-		# Check if we are already including out auto-generated makefile 
+		# Check if we are already including out auto-generated makefile
 		# snipped. Bail if we do.
 		foreach my $line (@buf) {
 			return if ($line =~ /include .*$auto_mk/);
@@ -507,7 +609,8 @@ sub print_usage($)
 	my ($prg) = @_;
 
 	print(STDERR "usage: $prg [argument(s)] arm|arm64|bmips\n".
-		"          -3 <path>....path to 32-bit run-time\n".
+		"          -3 <path>....path to 32-bit run-time ('-' to ".
+			"disable)\n".
 		"          -b...........launch build after configuring\n".
 		"          -c...........clean (remove output/\$platform)\n".
 		"          -D...........use platform's default kernel config\n".
@@ -521,6 +624,7 @@ sub print_usage($)
 		"          -M <url>.....use <url> as BR mirror ('-' for none)\n".
 		"          -n...........do not use shared download cache\n".
 		"          -o <path>....use <path> as the BR output directory\n".
+		"          -S...........suppress using SHA in Linux version\n".
 		"          -T <verstr>..use this toolchain version\n".
 		"          -t <path>....use <path> as toolchain directory\n".
 		"          -v <tag>.....use <tag> as Linux version tag\n");
@@ -539,6 +643,7 @@ my $is_64bit = 0;
 my $relative_outputdir;
 my $br_outputdir;
 my $br_mirror;
+my $kernel_fragments;
 my $local_linux;
 my $toolchain;
 my $toolchain_ver;
@@ -547,7 +652,7 @@ my $kernel_header_version;
 my $arch;
 my %opts;
 
-getopts('3:bcDd:F:f:ij:L:l:M:no:T:t:v:', \%opts);
+getopts('3:bcDd:F:f:ij:L:l:M:no:ST:t:v:', \%opts);
 $arch = $ARGV[0];
 
 if ($#ARGV < 0) {
@@ -585,6 +690,11 @@ if (!sanity_check($prg)) {
 	exit(1);
 }
 
+if (defined($opts{'3'}) && !$is_64bit) {
+	print(STDERR "$prg: WARNING! Option \"-3\" is a no-op for 32-bit ".
+		"platforms.\n");
+}
+
 # Set local Linux directory from environment, if configured.
 if (defined($ENV{'BR_LINUX_OVERRIDE'})) {
 	$local_linux = $ENV{'BR_LINUX_OVERRIDE'};
@@ -593,21 +703,13 @@ if (defined($ENV{'BR_LINUX_OVERRIDE'})) {
 # Command line option -L supersedes environment to specify local Linux directory
 if (defined($opts{'L'})) {
 	# Option "-L -" clears the local Linux directory. This can be used to
-	# pretend environment variable BR_LINUX_OVERRIDE is not set, without 
+	# pretend environment variable BR_LINUX_OVERRIDE is not set, without
 	# having to clear it.
 	if ($opts{'L'} eq '-') {
 		undef($local_linux);
 	} else {
 		$local_linux = $opts{'L'};
 	}
-}
-
-if (defined($local_linux) && !check_linux($local_linux)) {
-	print(STDERR "$prg: your local Linux directory must be pristine; ".
-		"pre-existing\n".
-		"configuration files or build artifacts can interfere with ".
-		"the build.\n");
-	exit(1);
 }
 
 if (defined($opts{'o'})) {
@@ -641,8 +743,21 @@ if (defined($opts{'c'})) {
 	exit($status);
 }
 
+$kernel_fragments = $opts{'F'} || '';
+
 $toolchain_ver = $opts{'T'} || '';
-$toolchain = find_toolchain($toolchain_ver);
+if ($toolchain_ver eq '' && !defined($opts{'t'})) {
+	my $tc_ver = get_recommended_toolchain();
+	if ($tc_ver ne '') {
+		print("Trying to find recommended toolchain $tc_ver...\n");
+		$toolchain = find_toolchain($tc_ver);
+	}
+	if (!defined($toolchain)) {
+		print("Trying to find any toolchain...\n");
+	}
+}
+$toolchain = find_toolchain($toolchain_ver) if (!defined($toolchain));
+
 if (!defined($toolchain) && !defined($opts{'t'})) {
 	print(STDERR
 		"$prg: couldn't find toolchain in your path, use option -t\n");
@@ -653,22 +768,39 @@ if (check_open_source_dir() && !defined($opts{'n'})) {
 	my $br_oss_cache = SHARED_OSS_DIR.'/buildroot';
 
 	if (! -d $br_oss_cache) {
-		print("Creating shared open source directory $br_oss_cache...\n");
-		mkdir($br_oss_cache);
-		chmod(0777, $br_oss_cache);
+		print("Creating shared open source directory ".
+			"$br_oss_cache...\n");
+		if (!mkdir($br_oss_cache)) {
+			print(STDERR
+				"$prg: couldn't create $br_oss_cache -- $!\n");
+		} else {
+			chmod(0777, $br_oss_cache);
+			# Setting the default UMASK to world-writable.
+			system("setfacl -m default:user::rwx $br_oss_cache");
+			system("setfacl -m default:group::rwx $br_oss_cache");
+			system("setfacl -m default:other::rwx $br_oss_cache");
+			system("setfacl -m default:mask::rwx $br_oss_cache");
+		}
 	}
 
 	# This is a best-effort attempt to fix up directory permissions in the
 	# shared download cache. It will only work if the directories with the
 	# wrong permissions are owned by the user running br_config.pl
-	fix_oss_permissions($br_oss_cache);
+	fix_oss_permissions($br_oss_cache) if (-d $br_oss_cache);
 
-	print("Using $br_oss_cache as download cache...\n");
-	$generic_config{'BR2_DL_DIR'} = $br_oss_cache;
-	$generic_config{'BR2_DL_DIR_OPTS'} = '-m 777';
-
-	check_oss_stale_sources($br_oss_cache, $br_outputdir);
-} else {
+	# Make sure the cache directory is writable. Don't use it if we can't
+	# write to it.
+	if (-w $br_oss_cache) {
+		print("Using $br_oss_cache as download cache...\n");
+		$generic_config{'BR2_DL_DIR'} = $br_oss_cache;
+		$generic_config{'BR2_DL_DIR_OPTS'} = '-m 777';
+		check_oss_stale_sources($br_oss_cache, $br_outputdir);
+	} else {
+		print("Ignoring non-writable download cache ".
+			"$br_oss_cache...\n");
+	}
+}
+if (!defined($generic_config{'BR2_DL_DIR'})) {
 	check_oss_stale_sources('dl', $br_outputdir);
 }
 
@@ -694,15 +826,6 @@ if (defined($opts{'D'})) {
 	delete($arch_config{$arch}{'BR2_LINUX_KERNEL_DEFCONFIG'});
 }
 
-if (defined($opts{'F'})) {
-	my $fragments = $opts{'F'};
-
-	# BR wants fragment files to be separated by spaces
-	$fragments =~ s/,/ /g;
-	print("Linux config fragment(s): $fragments\n");
-	$generic_config{'BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES'} = $fragments;
-}
-
 if (defined($opts{'j'})) {
 	my $jval = $opts{'j'};
 
@@ -725,24 +848,98 @@ if (defined($opts{'j'})) {
 	$generic_config{'BR2_JLEVEL'} = get_cores() + 1;
 }
 
-if (defined($local_linux)) {
-	print("Using $local_linux as Linux kernel directory...\n");
-	write_brcmstbmk($prg, $relative_outputdir, $local_linux);
-	write_localmk($prg, $relative_outputdir);
-} else {
-	# Delete our custom makefile, so we don't override the Linux directory.
-	if (-e "$br_outputdir/".AUTO_MK) {
-		unlink("$br_outputdir/".AUTO_MK);
-	}
-}
-
 if (defined($opts{'l'})) {
 	print("Using ".$opts{'l'}." as Linux kernel repo...\n");
 	$generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_URL'} = $opts{'l'};
 }
 
+if (defined($opts{'v'})) {
+	print("Using ".$opts{'v'}." as Linux kernel version...\n");
+	$generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION'} = $opts{'v'};
+}
+
+if (defined($local_linux)) {
+	my $git_dir = "$local_linux/.git";
+
+	print("Using $local_linux as Linux kernel directory...\n");
+	if (!-d $local_linux) {
+		print(STDERR "$prg: Linux directory $local_linux doesn't exist\n");
+		exit(1);
+	}
+	if (!check_linux($local_linux)) {
+		print(STDERR "$prg: your local Linux directory must be ".
+			"pristine; pre-existing\n".
+			"configuration files or build artifacts can interfere ".
+			"with the build.\n");
+		exit(1);
+	}
+
+	write_brcmstbmk($prg, $relative_outputdir, $local_linux);
+	write_localmk($prg, $relative_outputdir);
+	# Get the kernel GIT SHA locally if it's a GIT tree.
+	if (!defined($opts{'S'})) {
+		# If the .git entry is a file rather than a directory, it means
+		# we are dealing with a submodule. We handle that case first.
+		if (-f $git_dir) {
+			open(F, $git_dir);
+			while (<F>) {
+				chomp;
+				if (m|^gitdir:\s+(.*/linux$)|) {
+					$git_dir = $1;
+					last;
+				}
+			}
+			close(F);
+		}
+		if (-d $git_dir) {
+			my $git_cmd = "git --git-dir=\"$git_dir\" rev-parse ".
+				"--short=".SHA_LEN." HEAD";
+			$kernel_fragments = get_linux_sha($kernel_fragments,
+				$relative_outputdir, $git_cmd);
+		}
+	}
+} else {
+	# Delete our custom makefile, so we don't override the Linux directory.
+	if (-e "$br_outputdir/".AUTO_MK) {
+		unlink("$br_outputdir/".AUTO_MK);
+	}
+	# Determine the kernel GIT SHA remotely. The tree hasn't been cloned
+	# yet.
+	if (!defined($opts{'S'})) {
+		my $git_remote =
+			$generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_URL'};
+		my $git_branch =
+			$generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION'};
+		my $git_cmd = "git ls-remote \"$git_remote\" | ".
+			"grep \"refs/heads/$git_branch\$\" | ".
+			"awk '{ print \$1 }' | ".
+			"cut -c1-".SHA_LEN;
+		$kernel_fragments = get_linux_sha($kernel_fragments,
+			$relative_outputdir, $git_cmd);
+	}
+}
+
+# If requested, don't append GIT SHA to kernel version string. Primarily used
+# for release builds.
+if (defined($opts{'S'})) {
+	# Delete our Linux custom version fragment.
+	if (-e "$br_outputdir/".VERSION_FRAGMENT) {
+		unlink("$br_outputdir/".VERSION_FRAGMENT);
+	}
+}
+
+if ($kernel_fragments ne '') {
+	# BR wants fragment files to be separated by spaces
+	$kernel_fragments =~ s/,/ /g;
+	print("Linux config fragment(s): $kernel_fragments\n");
+	$generic_config{'BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES'} =
+		$kernel_fragments;
+}
+
 if (defined($opts{'t'})) {
 	$toolchain = $opts{'t'};
+	# Remove trailing slashes if there are any.
+	$toolchain =~ s|/+$||;
 }
 
 $recommended_toolchain = check_toolchain($toolchain);
@@ -756,17 +953,12 @@ if ($recommended_toolchain ne '') {
 	sleep(SLEEP_TIME);
 }
 print("Using $toolchain as toolchain...\n");
-$toolchain_config{$arch}{'BR2_TOOLCHAIN_EXTERNAL_PATH'} = $toolchain;
+set_target_toolchain($toolchain, $arch);
 
 # The toolchain may have changed since we last configured Buildroot. We need to
 # force it to create the symlinks again, so we are sure to use the toolchain
 # specified now.
 trigger_toolchain_sync($relative_outputdir, $arch);
-
-if (defined($opts{'v'})) {
-	print("Using ".$opts{'v'}." as Linux kernel version...\n");
-	$generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION'} = $opts{'v'};
-}
 
 $kernel_header_version = get_kernel_header_version($toolchain, $arch);
 if (defined($kernel_header_version)) {
@@ -812,6 +1004,11 @@ if ($is_64bit) {
 
 	if (defined($opts{'3'})) {
 		$rt_path = $opts{'3'};
+		if (! -d $rt_path && $rt_path ne '-') {
+			print(STDERR "WARNING: 32-bit directory $rt_path does ".
+				"not exist!\n");
+			$rt_path = '';
+		}
 	} else {
 		my $arch32 = $arch;
 
@@ -826,23 +1023,29 @@ if ($is_64bit) {
 			"support...\n".
 			"Use command line option -3 <path> to specify your ".
 			"32-bit sysroot.\n");
+	} elsif ($rt_path eq '-') {
+		printf("Disabling 32-bit support by user request\n");
 	} else {
 		my $arch64 = $arch_config{$arch}{'arch_name'};
 		my $rt64_path =
 			`ls -d "$runtime_base/$arch64"*/sys*root 2>/dev/null`;
 		chomp($rt64_path);
 
-		# If "lib64" in the sys-root is a sym-link, we can't build a
-		# 64-bit rootfs with 32-bit support. (There's nowhere to put
-		# 32-bit libraries.)
+		print("Using $rt_path for 32-bit environment\n");
+		$arch_config{$arch}{'BR2_ROOTFS_RUNTIME32'} = 'y';
+		$arch_config{$arch}{'BR2_ROOTFS_RUNTIME32_PATH'} = $rt_path;
+
+		# Additional KConfig variables are derived from the value of
+		# BR2_ROOTFS_LIB_DIR in system/Config.in.
 		if (-l "$rt64_path/lib64") {
-			print("Aarch64 toolchain is not multi-lib enabled. ".
-				"Disabling 32-bit support.\n");
+			print("Found new toolchain using /lib and /lib32...\n");
+
 		} else {
-			print("Using $rt_path for 32-bit environment\n");
-			$arch_config{$arch}{'BR2_ROOTFS_RUNTIME32'} = 'y';
-			$arch_config{$arch}{'BR2_ROOTFS_RUNTIME32_PATH'} = $rt_path;
+			print("Found traditional toolchain using /lib64 and ".
+				"/lib...\n");
+			$arch_config{$arch}{'BR2_NEED_LD_SO_CONF'} = 'y';
 		}
+		print("Root file system will use /lib and /lib32...\n");
 	}
 }
 
@@ -853,12 +1056,16 @@ write_config($toolchain_config{$arch}, $temp_config, 0);
 system("support/kconfig/merge_config.sh -m configs/brcmstb_defconfig ".
 	"\"$temp_config\"");
 if (defined($opts{'f'})) {
-	my $fragment_file = $opts{'f'};
+	my $fragment_file = merge_br_fragments($prg, $br_outputdir, $opts{'f'});
+
+	exit(1) if (!defined($fragment_file));
+
 	# Preserve the merged configuration from above and use it as the
 	# starting point.
 	rename('.config', $temp_config);
 	system("support/kconfig/merge_config.sh -m $temp_config ".
 		"\"$fragment_file\"");
+	unlink($fragment_file);
 }
 unlink($temp_config);
 move_merged_config($prg, $arch, ".config", "configs/$merged_config");

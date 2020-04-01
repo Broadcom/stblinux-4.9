@@ -101,7 +101,7 @@ static const struct mbox_chan_ops brcm_mbox_ops = {
 	.startup = brcm_mbox_startup,
 };
 
-static irqreturn_t brcm_a2p_isr(void *data)
+static irqreturn_t brcm_a2p_isr(int irq, void *data)
 {
 	struct mbox_chan *chan = data;
 
@@ -109,7 +109,7 @@ static irqreturn_t brcm_a2p_isr(void *data)
 	return IRQ_HANDLED;
 }
 
-static irqreturn_t brcm_p2a_isr(void *data)
+static irqreturn_t brcm_p2a_isr(int irq, void *data)
 {
 	struct mbox_chan *chan = data;
 	struct chan_priv *priv = (struct chan_priv *) chan->con_priv;
@@ -159,19 +159,14 @@ static int brcm_mbox_probe(struct platform_device *pdev)
 	if (!chan_priv)
 		return -ENOMEM;
 
-	/* Get SGI interrupt number for a2p */
-	ret = of_property_read_u32_index(np, "interrupts", 1,
-					 &mbox->irqs[A2P_CHAN]);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "failed to get SGI a2p intr from DT\n");
-		return ret;
-	}
-	ret = set_ipi_handler_priv(mbox->irqs[A2P_CHAN], brcm_a2p_isr,
-				   "brcm: SCMI a2p intr",
-				   &mbox->controller.chans[A2P_CHAN]);
+	mbox->irqs[A2P_CHAN] = platform_get_irq(pdev, 0);
+	ret = devm_request_irq(&pdev->dev, mbox->irqs[A2P_CHAN], brcm_a2p_isr,
+				IRQF_NO_SUSPEND,
+				"brcm: SCMI a2p intr",
+				&mbox->controller.chans[A2P_CHAN]);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to setup SCMI a2p isr\n");
-		return -EINVAL;
+		return ret;
 	}
 	chan_priv[A2P_CHAN].mbox_num = mbox_num;
 	chan_priv[A2P_CHAN].ch = A2P_CHAN;
@@ -179,16 +174,16 @@ static int brcm_mbox_probe(struct platform_device *pdev)
 	mbox->controller.num_chans++;
 
 	/* Get SGI interrupt number for p2a */
-	ret = of_property_read_u32_index(np, "interrupts", 4,
-					 &mbox->irqs[P2A_CHAN]);
+	mbox->irqs[P2A_CHAN] = platform_get_irq(pdev, 1);
 	if (ret >= 0) {
-		ret = set_ipi_handler_priv(mbox->irqs[P2A_CHAN], brcm_p2a_isr,
-					   "brcm: SCMI p2a intr",
-					   &mbox->controller.chans[P2A_CHAN]);
+		ret = devm_request_irq(&pdev->dev, mbox->irqs[P2A_CHAN],
+				       brcm_p2a_isr,
+				       IRQF_NO_SUSPEND,
+				       "brcm: SCMI p2a intr",
+				       &mbox->controller.chans[P2A_CHAN]);
 		if (ret) {
 			dev_err(&pdev->dev, "failed to setup SCMI p2a isr\n");
-			clear_ipi_handler(mbox->irqs[A2P_CHAN]);
-			return -EINVAL;
+			return ret;
 		}
 		chan_priv[P2A_CHAN].mbox_num = mbox_num;
 		chan_priv[P2A_CHAN].ch = P2A_CHAN;
@@ -216,12 +211,10 @@ static int brcm_mbox_remove(struct platform_device *pdev)
 {
 	struct brcm_mbox *mbox = platform_get_drvdata(pdev);
 
-	clear_ipi_handler(mbox->irqs[A2P_CHAN]);
 	if (mbox->controller.num_chans == NUM_CHAN) {
 		struct chan_priv *priv = (struct chan_priv *)
 			mbox->controller.chans[P2A_CHAN].con_priv;
 
-		clear_ipi_handler(mbox->irqs[P2A_CHAN]);
 		cancel_work_sync((struct work_struct *)&priv->work);
 	}
 	mbox_controller_unregister(&mbox->controller);

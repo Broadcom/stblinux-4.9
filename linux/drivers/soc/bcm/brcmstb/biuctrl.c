@@ -119,6 +119,7 @@ static const char *a72_b53_mach_compat[] = {
 	"brcm,bcm7211c0",
 	"brcm,bcm7216a0",
 	"brcm,bcm7216b0",
+	"brcm,bcm72164a0",
 	"brcm,bcm7255a0",
 	"brcm,bcm7260b0",
 	"brcm,bcm7268b0",

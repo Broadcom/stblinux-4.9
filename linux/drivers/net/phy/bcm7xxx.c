@@ -263,17 +263,24 @@ static int bcm7xxx_28nm_resume(struct phy_device *phydev)
 {
 	int ret;
 
+	mutex_lock(&phydev->lock);
+
 	/* Re-apply workarounds coming out suspend/resume */
 	ret = bcm7xxx_28nm_config_init(phydev);
 	if (ret)
-		return ret;
+		goto unlock;
 
 	/* 28nm Gigabit PHYs come out of reset without any half-duplex
 	 * or "hub" compliant advertised mode, fix that. This does not
 	 * cause any problems with the PHY library since genphy_config_aneg()
 	 * gracefully handles auto-negotiated and forced modes.
 	 */
-	return genphy_config_aneg(phydev);
+	ret = genphy_config_aneg(phydev);
+
+unlock:
+	mutex_unlock(&phydev->lock);
+
+	return ret;
 }
 
 static int phy_set_clr_bits(struct phy_device *dev, int location,
@@ -326,12 +333,26 @@ static int bcm7xxx_config_init(struct phy_device *phydev)
 	return 0;
 }
 
+static int bcm7xxx_resume(struct phy_device *phydev)
+{
+	int ret;
+
+	mutex_lock(&phydev->lock);
+
+	/* Re-apply workarounds coming out suspend/resume */
+	ret = bcm7xxx_config_init(phydev);
+
+	mutex_unlock(&phydev->lock);
+
+	return ret;
+}
+
 /* Workaround for putting the PHY in IDDQ mode, required
  * for all BCM7XXX 40nm and 65nm PHYs
  */
 static int bcm7xxx_suspend(struct phy_device *phydev)
 {
-	int ret;
+	int ret = 0;
 	const struct bcm7xxx_regs {
 		int reg;
 		u16 value;
@@ -345,15 +366,19 @@ static int bcm7xxx_suspend(struct phy_device *phydev)
 	};
 	unsigned int i;
 
+	mutex_lock(&phydev->lock);
+
 	for (i = 0; i < ARRAY_SIZE(bcm7xxx_suspend_cfg); i++) {
 		ret = phy_write(phydev,
 				bcm7xxx_suspend_cfg[i].reg,
 				bcm7xxx_suspend_cfg[i].value);
 		if (ret)
-			return ret;
+			break;
 	}
 
-	return 0;
+	mutex_unlock(&phydev->lock);
+
+	return ret;
 }
 
 static int bcm7xxx_28nm_ephy_apd_enable(struct phy_device *phydev)
@@ -522,12 +547,19 @@ static int bcm7xxx_28nm_ephy_resume(struct phy_device *phydev)
 {
 	int ret;
 
+	mutex_lock(&phydev->lock);
+
 	/* Re-apply workarounds coming out suspend/resume */
 	ret = bcm7xxx_28nm_ephy_config_init(phydev);
 	if (ret)
-		return ret;
+		goto unlock;
 
-	return genphy_config_aneg(phydev);
+	ret = genphy_config_aneg(phydev);
+
+unlock:
+	mutex_unlock(&phydev->lock);
+
+	return ret;
 }
 
 static int bcm7xxx_28nm_probe(struct phy_device *phydev)
@@ -542,6 +574,10 @@ static int bcm7xxx_28nm_probe(struct phy_device *phydev)
 
 	priv->clk = clk_get(&phydev->mdio.dev, "sw_gphy");
 	if (IS_ERR(priv->clk)) {
+		if (PTR_ERR(priv->clk) == -EPROBE_DEFER) {
+			kfree(priv);
+			return -EPROBE_DEFER;
+		}
 		if (phydev->drv->features & PHY_1000BT_FEATURES)
 			phydev_err(phydev, "failed to request GPHY clock\n");
 		priv->clk = NULL;
@@ -612,7 +648,7 @@ static void bcm7xxx_28nm_remove(struct phy_device *phydev)
 	.config_aneg    = genphy_config_aneg,				\
 	.read_status    = genphy_read_status,				\
 	.suspend        = bcm7xxx_suspend,				\
-	.resume         = bcm7xxx_config_init,				\
+	.resume         = bcm7xxx_resume,				\
 }
 
 static struct phy_driver bcm7xxx_driver[] = {

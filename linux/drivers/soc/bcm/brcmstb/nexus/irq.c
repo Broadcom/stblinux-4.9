@@ -21,6 +21,8 @@
 #include <linux/export.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
+#include <linux/irqdomain.h>
+#include <linux/interrupt.h>
 
 #include <linux/brcmstb/irq_api.h>
 
@@ -150,3 +152,74 @@ int brcmstb_get_l2_irq_id(brcmstb_l2_irq irq)
 	return ret;
 }
 EXPORT_SYMBOL(brcmstb_get_l2_irq_id);
+
+struct ipi_handler {
+	void (*handler)(void);
+	int virq;
+};
+
+static struct ipi_handler ipi_handlers[16];
+
+static irqreturn_t set_ipi_handler_compat(int irq, void *dev_id)
+{
+	struct ipi_handler *ipi = dev_id;
+
+	(*ipi->handler)();
+
+	return IRQ_HANDLED;
+}
+
+/*
+ * set_ipi_handler:
+ * Interface provided for a kernel module to specify an IPI handler function.
+ */
+int set_ipi_handler(int ipinr, void *handler, char *desc)
+{
+	struct ipi_handler *ipi = &ipi_handlers[ipinr];
+	unsigned int cpu = smp_processor_id();
+	struct device_node *np = NULL;
+	struct irq_domain *gic;
+	unsigned int irq;
+
+	pr_warn("%s() is deprecated, do not use! (called by %pS)\n",
+		__func__, (void *)_RET_IP_);
+
+	if (ipi->handler) {
+		pr_crit("CPU%u: IPI handler 0x%x already registered to %pf\n",
+			cpu, ipinr, ipi->handler);
+		return -1;
+	}
+
+	np = of_find_compatible_node(NULL, NULL, "arm,cortex-a15-gic");
+	if (!np)
+		np = of_find_compatible_node(NULL, NULL, "arm,gic-400");
+
+	gic = irq_find_host(np);
+	if (!gic)
+		return -1;
+
+	irq = irq_create_mapping(gic, ipinr);
+
+	ipi->handler = handler;
+	ipi->virq = irq;
+
+	return request_irq(irq, set_ipi_handler_compat, IRQF_NO_SUSPEND,
+			   desc, ipi);
+}
+EXPORT_SYMBOL(set_ipi_handler);
+
+/*
+ * clear_ipi_handler:
+ * Interface provided for a kernel module to clear an IPI handler function.
+ */
+void clear_ipi_handler(int ipinr)
+{
+	struct ipi_handler *ipi = &ipi_handlers[ipinr];
+
+	free_irq(ipi->virq, ipi);
+	irq_dispose_mapping(ipi->virq);
+	pr_warn("%s() is deprecated, do not use! (called by %pS)\n",
+		__func__, (void *)_RET_IP_);
+	ipi->handler = NULL;
+}
+EXPORT_SYMBOL(clear_ipi_handler);

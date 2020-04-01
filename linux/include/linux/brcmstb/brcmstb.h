@@ -27,7 +27,7 @@
 #ifndef _ASM_BRCMSTB_BRCMSTB_H
 #define _ASM_BRCMSTB_BRCMSTB_H
 
-#define BRCMSTB_H_VERSION  16
+#define BRCMSTB_H_VERSION  17
 
 #if !defined(__ASSEMBLY__)
 

@@ -361,6 +361,7 @@ static void __exception_irq_entry gic_handle_irq(struct pt_regs *regs)
 		if (likely(irqnr > 15 && irqnr < 1020)) {
 			if (static_key_true(&supports_deactivate))
 				writel_relaxed(irqstat, cpu_base + GIC_CPU_EOI);
+			isb();
 			handle_domain_irq(gic->domain, irqnr, regs);
 			continue;
 		}
@@ -376,9 +377,15 @@ static void __exception_irq_entry gic_handle_irq(struct pt_regs *regs)
 			 *
 			 * Pairs with the write barrier in gic_raise_softirq
 			 */
-			smp_rmb();
-			handle_IPI(irqnr, regs);
+			if (irqnr < NR_IPI) {
+				smp_rmb();
+				handle_IPI(irqnr, regs);
+			} else
 #endif
+			{
+				isb();
+				handle_domain_irq(gic->domain, irqnr, regs);
+			}
 			continue;
 		}
 		break;
@@ -401,10 +408,12 @@ static void gic_handle_cascade_irq(struct irq_desc *desc)
 		goto out;
 
 	cascade_irq = irq_find_mapping(chip_data->domain, gic_irq);
-	if (unlikely(gic_irq < 32 || gic_irq > 1020))
+	if (unlikely(gic_irq < 32 || gic_irq > 1020)) {
 		handle_bad_irq(desc);
-	else
+	} else {
+		isb();
 		generic_handle_irq(cascade_irq);
+	}
 
  out:
 	chained_irq_exit(chip, desc);
@@ -957,7 +966,7 @@ static int gic_irq_domain_map(struct irq_domain *d, unsigned int irq,
 {
 	struct gic_chip_data *gic = d->host_data;
 
-	if (hw < 32) {
+	if (hw < NR_IPI || (hw > 16 && hw < 32)) {
 		irq_set_percpu_devid(irq);
 		irq_domain_set_info(d, irq, hw, &gic->chip, d->host_data,
 				    handle_percpu_devid_irq, NULL, NULL);
@@ -984,20 +993,35 @@ static int gic_irq_domain_translate(struct irq_domain *d,
 			return -EINVAL;
 
 		/* Do not try to map unknown interrupt types */
-		if (fwspec->param[0] > 1)
+		if (fwspec->param[0] > 2)
 			return -EINVAL;
 
-		/* Get the interrupt number and add 16 to skip over SGIs */
-		*hwirq = fwspec->param[1] + 16;
-
-		/*
-		 * For SPIs, we need to add 16 more to get the GIC irq
-		 * ID number
-		 */
-		if (!fwspec->param[0])
+		*hwirq = fwspec->param[1];
+		switch (fwspec->param[0]) {
+		case 0:
+			/*
+			 * For SPIs, we need to add 16 more to get the GIC irq
+			 * ID number
+			 */
 			*hwirq += 16;
+			/* fall through */
+		case 1:
+			/* Add 16 to skip over SGIs */
+			*hwirq += 16;
+			*type = fwspec->param[2] & IRQ_TYPE_SENSE_MASK;
 
-		*type = fwspec->param[2] & IRQ_TYPE_SENSE_MASK;
+			break;
+		case 2:
+			/* Refuse to map internal IPIs */
+			if (*hwirq < NR_IPI)
+				return -EPERM;
+
+			/* Cannot change the SGIs interrupt type */
+			*type = IRQ_TYPE_NONE;
+			break;
+		default:
+			break;
+		}
 		return 0;
 	}
 

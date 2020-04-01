@@ -197,6 +197,10 @@ static const struct of_device_id brcmstb_memc_of_match[] = {
 		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V21]
 	},
 	{
+		.compatible = "brcm,brcmstb-memc-ddr-rev-b.2.5",
+		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V21]
+	},
+	{
 		.compatible = "brcm,brcmstb-memc-ddr-rev-b.3.0",
 		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V21]
 	},
@@ -206,6 +210,14 @@ static const struct of_device_id brcmstb_memc_of_match[] = {
 	},
 	{
 		.compatible = "brcm,brcmstb-memc-ddr-rev-c.1.0",
+		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V21]
+	},
+	{
+		.compatible = "brcm,brcmstb-memc-ddr-rev-c.1.1",
+		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V21]
+	},
+	{
+		.compatible = "brcm,brcmstb-memc-ddr-rev-c.1.3",
 		.data = &brcmstb_memc_versions[BRCMSTB_MEMC_V21]
 	},
 	/* default to the original offset */

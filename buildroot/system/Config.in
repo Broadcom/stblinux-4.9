@@ -11,6 +11,7 @@ config BR2_ROOTFS_SKELETON_DEFAULT
 	bool "default target skeleton"
 	select BR2_PACKAGE_SKELETON_INIT_SYSV if BR2_INIT_SYSV
 	select BR2_PACKAGE_SKELETON_INIT_SYSV if BR2_INIT_BUSYBOX
+	select BR2_PACKAGE_SKELETON_INIT_OPENRC if BR2_INIT_OPENRC
 	select BR2_PACKAGE_SKELETON_INIT_SYSTEMD if BR2_INIT_SYSTEMD
 	select BR2_PACKAGE_SKELETON_INIT_NONE if BR2_INIT_NONE
 	help
@@ -26,7 +27,6 @@ endchoice
 
 config BR2_ROOTFS_LIB_DIR
 	string "Name of system library directories (e.g. lib or lib64)"
-	default "lib64" if BR2_ARCH_IS_64
 	default "lib"
 	help
 	  The name of the directories where system libraries live. This will
@@ -36,19 +36,30 @@ config BR2_ROOTFS_LIB_DIR
 
 if BR2_ARCH_IS_64
 
-config BR2_ROOTFS_LIB32_DIR
-	string "Name of directory for 32-bit libraries (e.g. lib or lib32)"
-	default "lib"
-	help
-	  The name of the directories where 32-bit libraries live. This will
-	  most often be "lib" or "lib32". This name will be used in the root
-	  directory (e.g. /lib) as well as the /usr directory (e.g. /usr/lib).
-
 config BR2_ROOTFS_RUNTIME32
 	bool "Install 32-bit runtime on 64-bit system"
 	help
 	  Install 32-bit libraries and the 32-bit shared library loader on a
 	  64-bit system, so it is possible to execute 32-bit applications.
+
+if BR2_ROOTFS_RUNTIME32
+
+config BR2_ROOTFS_LIB64_LINK
+	string "Optional symlink to the 64-bit library location"
+	default "lib64" if BR2_ROOTFS_LIB_DIR = "lib"
+	help
+	  The name an optional symlink for the 64-bit library location. If this
+	  variable is non-empty a symlink BR2_ROOTFS_LIB64_LINK -> ARCH_LIB_DIR
+	  will be created (e.g. /lib64 -> lib).
+
+config BR2_ROOTFS_LIB32_DIR
+	string "Name of directory for 32-bit libraries (e.g. lib or lib32)"
+	default "lib32" if BR2_ROOTFS_LIB_DIR = "lib"
+	default "lib"
+	help
+	  The name of the directories where 32-bit libraries live. This will
+	  most often be "lib" or "lib32". This name will be used in the root
+	  directory (e.g. /lib) as well as the /usr directory (e.g. /usr/lib).
 
 config BR2_ROOTFS_RUNTIME32_PATH
 	string "Path to the 32-bit run-time"
@@ -56,7 +67,17 @@ config BR2_ROOTFS_RUNTIME32_PATH
 	  Specifies the path to the 32-bit run-time that should be copied into
 	  the root file system.
 
-endif
+config BR2_NEED_LD_SO_CONF
+	bool "ld.so.conf is required by the root file system"
+	help
+	  Indicates whether the 64-bit system needs ld.so.conf to execute 32-bit
+	  binaries.
+
+	  Say 'y' if you have a traditional Broadcom STB toolchain that uses
+	  /lib64 for 64-bit shared libraries.
+
+endif	# BR2_ROOTFS_RUNTIME32
+endif	# BR2_ARCH_IS_64
 
 if BR2_ROOTFS_SKELETON_CUSTOM
 
@@ -131,6 +152,16 @@ config BR2_INIT_SYSV
 	select BR2_PACKAGE_BUSYBOX_SHOW_OTHERS # sysvinit
 	select BR2_PACKAGE_INITSCRIPTS
 	select BR2_PACKAGE_SYSVINIT
+
+config BR2_INIT_OPENRC
+	bool "OpenRC"
+	depends on BR2_USE_MMU
+	depends on !BR2_STATIC_LIBS
+	select BR2_PACKAGE_OPENRC
+
+comment "openrc needs a toolchain w/ dynamic library"
+	depends on BR2_USE_MMU
+	depends on BR2_STATIC_LIBS
 
 # In Buildroot, we decided not to support a split-usr when systemd is
 # used as an init system. This is a design decision, not a systemd
@@ -371,16 +402,16 @@ config BR2_TARGET_GENERIC_GETTY_BAUDRATE
 config BR2_TARGET_GENERIC_GETTY_TERM
 	string "TERM environment variable"
 	default "vt100"
-	# currently observed only by busybox and sysvinit
-	depends on BR2_INIT_BUSYBOX || BR2_INIT_SYSV
+	# currently observed by all but systemd
+	depends on !BR2_INIT_SYSTEMD
 	help
 	  Specify a TERM type.
 
 config BR2_TARGET_GENERIC_GETTY_OPTIONS
 	string "other options to pass to getty"
 	default ""
-	# currently observed only by busybox and sysvinit
-	depends on BR2_INIT_BUSYBOX || BR2_INIT_SYSV
+	# currently observed by all but systemd
+	depends on !BR2_INIT_SYSTEMD
 	help
 	  Any other flags you want to pass to getty,
 	  Refer to getty --help for details.
@@ -400,7 +431,8 @@ config BR2_TARGET_GENERIC_REMOUNT_ROOTFS_RW
 config BR2_SYSTEM_DHCP
 	string "Network interface to configure through DHCP"
 	default ""
-	depends on BR2_PACKAGE_BUSYBOX || BR2_PACKAGE_IFUPDOWN || BR2_PACKAGE_SYSTEMD_NETWORKD
+	depends on BR2_PACKAGE_BUSYBOX || BR2_PACKAGE_IFUPDOWN || \
+		BR2_PACKAGE_SYSTEMD_NETWORKD || BR2_PACKAGE_NETIFRC
 	help
 	  Enter here the name of the network interface (E.G. eth0) to
 	  automatically configure through DHCP at bootup.
@@ -411,8 +443,9 @@ config BR2_SYSTEM_DHCP
 	  overwrite /etc/network/interfaces or add a networkd
 	  configuration file.
 
-comment "automatic network configuration via DHCP needs ifupdown or busybox or networkd"
-	depends on !(BR2_PACKAGE_BUSYBOX || BR2_PACKAGE_IFUPDOWN || BR2_PACKAGE_SYSTEMD_NETWORKD)
+comment "automatic network configuration via DHCP needs ifupdown or busybox or networkd or netifrc"
+	depends on !(BR2_PACKAGE_BUSYBOX || BR2_PACKAGE_IFUPDOWN || \
+		BR2_PACKAGE_SYSTEMD_NETWORKD || BR2_PACKAGE_NETIFRC)
 
 endif # BR2_ROOTFS_SKELETON_DEFAULT
 
@@ -515,6 +548,8 @@ config BR2_TARGET_LOCALTIME
 	    Pacific/Wallis
 	    ...
 
+	  Set to empty to not install a default time zone.
+
 endif # BR2_TARGET_TZ_INFO
 
 config BR2_ROOTFS_USERS_TABLES
@@ -536,6 +571,16 @@ config BR2_ROOTFS_OVERLAY
 
 	  They are copied as-is into the rootfs, excluding files ending
 	  with ~ and .git, .svn and .hg directories.
+
+config BR2_ROOTFS_PRE_BUILD_SCRIPT
+	string "Custom scripts to run before commencing the build"
+	default ""
+	help
+	  Specify a space-separated list of scripts to be run before the
+	  build commences.
+
+	  This gives users the opportunity to do board-specific
+	  preparations before starting the build.
 
 config BR2_ROOTFS_POST_BUILD_SCRIPT
 	string "Custom scripts to run before creating filesystem images"

@@ -80,6 +80,11 @@ main() {
         warn "Re-downloading '%s'...\n" "${output##*/}"
     fi
 
+    if [[ "${dl_dir}" =~ "/projects/stbdev/open-source" ]]; then
+        echo "Found shared download cache, setting umask to 0..."
+        umask 0
+    fi
+
     # Look through all the uris that we were given to download the package
     # source
     download_and_check=0

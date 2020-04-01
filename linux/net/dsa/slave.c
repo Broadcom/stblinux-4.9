@@ -1126,18 +1126,12 @@ static int dsa_slave_set_rxnfc(struct net_device *dev,
 	return ds->ops->set_rxnfc(ds, p->port, nfc);
 }
 
-static u16 dsa_slave_select_queue(struct net_device *dev, struct sk_buff *skb,
-				  void *accel_priv,
-				  select_queue_fallback_t fallback)
-{
-	return skb_get_queue_mapping(skb);
-}
-
 static int dsa_slave_vlan_rx_add_vid(struct net_device *dev, __be16 proto,
 				     u16 vid)
 {
 	struct dsa_slave_priv *p = netdev_priv(dev);
 	struct switchdev_obj_port_vlan vlan = { };
+	struct switchdev_trans trans;
 	int ret = 0;
 
 	/* If the port is bridged and the bridge is VLAN aware, let the bridge
@@ -1149,11 +1143,13 @@ static int dsa_slave_vlan_rx_add_vid(struct net_device *dev, __be16 proto,
 	vlan.vid_begin = vid;
 	vlan.vid_end = vid;
 
-	ret = dsa_slave_port_vlan_add(dev, &vlan, NULL);
+	trans.ph_prepare = true;
+	ret = dsa_slave_port_vlan_add(dev, &vlan, &trans);
 	if (ret == -EOPNOTSUPP)
-		ret = 0;
+		return 0;
 
-	return ret;
+	trans.ph_prepare = false;
+	return dsa_slave_port_vlan_add(dev, &vlan, &trans);
 }
 
 static int dsa_slave_vlan_rx_kill_vid(struct net_device *dev, __be16 proto,
@@ -1221,7 +1217,6 @@ static const struct net_device_ops dsa_slave_netdev_ops = {
 	.ndo_bridge_getlink	= switchdev_port_bridge_getlink,
 	.ndo_bridge_setlink	= switchdev_port_bridge_setlink,
 	.ndo_bridge_dellink	= switchdev_port_bridge_dellink,
-	.ndo_select_queue	= dsa_slave_select_queue,
 	.ndo_get_phys_port_name	= dsa_slave_get_phys_port_name,
 	.ndo_vlan_rx_add_vid	= dsa_slave_vlan_rx_add_vid,
 	.ndo_vlan_rx_kill_vid	= dsa_slave_vlan_rx_kill_vid,

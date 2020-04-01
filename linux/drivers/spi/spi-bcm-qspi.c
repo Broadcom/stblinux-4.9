@@ -94,6 +94,9 @@
 /* MSPI register offsets */
 #define MSPI_SPCR0_LSB				0x000
 #define MSPI_SPCR0_MSB				0x004
+#define MSPI_SPCR0_MSB_CPHA			BIT(0)
+#define MSPI_SPCR0_MSB_CPOL			BIT(1)
+#define MSPI_SPCR0_MSB_BITS_SHIFT		0x2
 #define MSPI_SPCR1_LSB				0x008
 #define MSPI_SPCR1_MSB				0x00c
 #define MSPI_NEWQP				0x010
@@ -113,10 +116,25 @@
 #define MSPI_NUM_CDRAM				16
 #define MSPI_CDRAM_CONT_BIT			BIT(7)
 #define MSPI_CDRAM_BITSE_BIT			BIT(6)
+#define MSPI_CDRAM_DT_BIT			BIT(5)
 #define MSPI_CDRAM_PCS				0xf
 
 #define MSPI_SPCR2_SPE				BIT(6)
 #define MSPI_SPCR2_CONT_AFTER_CMD		BIT(7)
+
+#define MSPI_SPCR3_FASTBR			BIT(0)
+#define MSPI_SPCR3_FASTDT			BIT(1)
+#define MSPI_SPCR3_TXRXDAM_MASK			GENMASK(4, 2)
+#define MSPI_SPCR3_DAM_8BYTE			0
+#define MSPI_SPCR3_DAM_16BYTE			(BIT(2) | BIT(4))
+#define MSPI_SPCR3_DAM_32BYTE			(BIT(3) | BIT(5))
+#define MSPI_SPCR3_DATA_REG_SZ			BIT(8)
+#define MSPI_SPCR3_CPHARX			BIT(9)
+#define MSPI_SPCR3_SYSCLKSEL_MASK		GENMASK(11, 10)
+#define MSPI_SPCR3_SYSCLKSEL_27			(MSPI_SPCR3_SYSCLKSEL_MASK & \
+						 ~(BIT(10) | BIT(11)))
+#define MSPI_SPCR3_SYSCLKSEL_108		(MSPI_SPCR3_SYSCLKSEL_MASK & \
+						 BIT(11))
 
 #define MSPI_MSPI_STATUS_SPIF			BIT(0)
 
@@ -155,6 +173,14 @@
 /* events that make us deassert CS */
 #define TRANS_STATUS_BREAK_DESELECT (TRANS_STATUS_BREAK_EOM |		\
 				     TRANS_STATUS_BREAK_CS_CHANGE)
+
+/*
+ * Used for writing and reading data in the right order
+ * to TXRAM and RXRAM when used as 32-bit registers respectively
+ */
+#define swap4bytes(__val) \
+	((((__val) >> 24) & 0x000000FF) | (((__val) >>  8) & 0x0000FF00) | \
+	 (((__val) <<  8) & 0x00FF0000) | (((__val) << 24) & 0xFF000000))
 
 struct bcm_qspi_parms {
 	u32 speed_hz;
@@ -231,6 +257,7 @@ struct bcm_qspi {
 	struct completion bspi_done;
 	u8 mspi_maj_rev;
 	u8 mspi_min_rev;
+	bool mspi_spcr3_sysclk;
 };
 
 static inline bool has_bspi(struct bcm_qspi *qspi)
@@ -238,13 +265,23 @@ static inline bool has_bspi(struct bcm_qspi *qspi)
 	return qspi->bspi_mode;
 }
 
-/* hardware supports fast baud-rate? */
+/* hardware supports spcr3 and fast baud-rate  */
 static inline bool bcm_qspi_has_fastbr(struct bcm_qspi *qspi)
 {
 	if (!has_bspi(qspi) &&
-	    ((qspi->mspi_maj_rev > 1) ||
-	    ((qspi->mspi_maj_rev == 1) &&
-	     (qspi->mspi_min_rev >= 5))))
+	    ((qspi->mspi_maj_rev >= 1) &&
+	     (qspi->mspi_min_rev >= 5)))
+		return true;
+
+	return false;
+}
+
+/* hardware supports sys clk 108Mhz  */
+static inline bool bcm_qspi_has_sysclk_108(struct bcm_qspi *qspi)
+{
+	if (!has_bspi(qspi) && (qspi->mspi_spcr3_sysclk ||
+	    ((qspi->mspi_maj_rev >= 1) &&
+	     (qspi->mspi_min_rev >= 6))))
 		return true;
 
 	return false;
@@ -596,12 +633,63 @@ static void bcm_qspi_hw_set_parms(struct bcm_qspi *qspi,
 	spcr = clamp_val(spbr, bcm_qspi_spbr_min(qspi), QSPI_SPBR_MAX);
 	bcm_qspi_write(qspi, MSPI, MSPI_SPCR0_LSB, spcr);
 
-	spcr = MSPI_MASTER_BIT;
-	/* for 16 bit the data should be zero */
-	if (xp->bits_per_word != 16)
-		spcr |= xp->bits_per_word << 2;
-	spcr |= xp->mode & 3;
+	if (!qspi->mspi_maj_rev)
+		/* legacy controller */
+		spcr = MSPI_MASTER_BIT;
+	else
+		spcr = 0;
+
+	/*
+	 * Bits per transfer.  BITS determines the number of data bits
+	 * transferred if the command control bit (BITSE of a
+	 * CDRAM Register) is equal to 1.
+	 * If CDRAM BITSE is equal to 0, 8 data bits are transferred
+	 * regardless
+	 */
+	if (xp->bits_per_word != 16 && xp->bits_per_word != 64)
+		spcr |= xp->bits_per_word << MSPI_SPCR0_MSB_BITS_SHIFT;
+
+	spcr |= xp->mode & (MSPI_SPCR0_MSB_CPHA | MSPI_SPCR0_MSB_CPOL);
 	bcm_qspi_write(qspi, MSPI, MSPI_SPCR0_MSB, spcr);
+
+	if (bcm_qspi_has_fastbr(qspi)) {
+		spcr = 0;
+
+		/* enable fastdt, fastbr  */
+		spcr |=	MSPI_SPCR3_FASTBR | MSPI_SPCR3_FASTDT;
+
+		if (bcm_qspi_has_sysclk_108(qspi)) {
+			/* SYSCLK_108 */
+			spcr |= MSPI_SPCR3_SYSCLKSEL_108;
+			qspi->base_clk = MSPI_BASE_FREQ * 4;
+			/* Change spbr as we changed sysclk */
+			bcm_qspi_write(qspi, MSPI, MSPI_SPCR0_LSB, 4);
+		}
+
+		if (xp->bits_per_word > 16) {
+			/* data_reg_size 1 (64bit) */
+			spcr |=	MSPI_SPCR3_DATA_REG_SZ;
+			/* TxRx RAM data access mode 2 for 32B*/
+			spcr |=	MSPI_SPCR3_DAM_32BYTE;
+			bcm_qspi_write(qspi, MSPI, MSPI_SPCR3, spcr);
+
+			/*
+			 *  Set length of delay after transfer
+			 *  DTL from 0(256) to 1
+			 */
+			bcm_qspi_write(qspi, MSPI, MSPI_SPCR1_LSB, 1);
+		} else {
+			/* data_reg_size[8] = 0 */
+			spcr &=	~(MSPI_SPCR3_DATA_REG_SZ);
+
+			/*
+			 * TxRx RAM access mode 8B
+			 * and disable fastdt
+			 */
+			spcr &= ~(MSPI_SPCR3_FASTDT | MSPI_SPCR3_DAM_32BYTE);
+			bcm_qspi_write(qspi, MSPI, MSPI_SPCR3, spcr);
+		}
+	}
 
 	qspi->last_parms = *xp;
 }
@@ -623,7 +711,7 @@ static int bcm_qspi_setup(struct spi_device *spi)
 {
 	struct bcm_qspi_parms *xp;
 
-	if (spi->bits_per_word > 16)
+	if (spi->bits_per_word > 64)
 		return -EINVAL;
 
 	xp = spi_get_ctldata(spi);
@@ -662,8 +750,12 @@ static int update_qspi_trans_byte_count(struct bcm_qspi *qspi,
 	/* count the last transferred bytes */
 	if (qt->trans->bits_per_word <= 8)
 		qt->byte++;
-	else
+	else if (qt->trans->bits_per_word <= 16)
 		qt->byte += 2;
+	else if (qt->trans->bits_per_word <= 32)
+		qt->byte += 4;
+	else if (qt->trans->bits_per_word <= 64)
+		qt->byte += 8;
 
 	if (qt->byte >= qt->trans->len) {
 		/* we're at the end of the spi_transfer */
@@ -706,6 +798,33 @@ static inline u16 read_rxram_slot_u16(struct bcm_qspi *qspi, int slot)
 		((bcm_qspi_read(qspi, MSPI, msb_offset) & 0xff) << 8);
 }
 
+static inline u32 read_rxram_slot_u32(struct bcm_qspi *qspi, int slot)
+{
+	u32 reg_offset = MSPI_RXRAM;
+	u32 offset = reg_offset + (slot << 3);
+	u32 val;
+
+	val = bcm_qspi_read(qspi, MSPI, offset);
+	val = swap4bytes(val);
+
+	return val;
+}
+
+static inline u64 read_rxram_slot_u64(struct bcm_qspi *qspi, int slot)
+{
+	u32 reg_offset = MSPI_RXRAM;
+	u32 lsb_offset = reg_offset + (slot << 3) + 0x4;
+	u32 msb_offset = reg_offset + (slot << 3);
+	u32 msb, lsb;
+
+	msb = bcm_qspi_read(qspi, MSPI, msb_offset);
+	msb = swap4bytes(msb);
+	lsb = bcm_qspi_read(qspi, MSPI, lsb_offset);
+	lsb = swap4bytes(lsb);
+
+	return ((u64)msb << 32 | lsb);
+}
+
 static void read_from_hw(struct bcm_qspi *qspi, int slots)
 {
 	struct qspi_trans tp;
@@ -728,15 +847,34 @@ static void read_from_hw(struct bcm_qspi *qspi, int slots)
 			if (buf)
 				buf[tp.byte] = read_rxram_slot_u8(qspi, slot);
 			dev_dbg(&qspi->pdev->dev, "RD %02x\n",
-				buf ? buf[tp.byte] : 0x00);
-		} else {
+				buf ? buf[tp.byte] : 0x0);
+		} else if (tp.trans->bits_per_word <= 16) {
 			u16 *buf = tp.trans->rx_buf;
 
 			if (buf)
 				buf[tp.byte / 2] = read_rxram_slot_u16(qspi,
 								      slot);
 			dev_dbg(&qspi->pdev->dev, "RD %04x\n",
-				buf ? buf[tp.byte] : 0x0000);
+				buf ? buf[tp.byte / 2] : 0x0);
+		} else if (tp.trans->bits_per_word <= 32) {
+			u32 *buf = tp.trans->rx_buf;
+
+			if (buf)
+				buf[tp.byte / 4] = read_rxram_slot_u32(qspi,
+								      slot);
+			dev_dbg(&qspi->pdev->dev, "RD %08x\n",
+				buf ? buf[tp.byte / 4] : 0x0);
+
+		} else if (tp.trans->bits_per_word <= 64) {
+			u64 *buf = tp.trans->rx_buf;
+
+			if (buf)
+				buf[tp.byte / 8] = read_rxram_slot_u64(qspi,
+								      slot);
+			dev_dbg(&qspi->pdev->dev, "RD %llx\n",
+				buf ? buf[tp.byte / 8] : 0x0);
+
+
 		}
 
 		update_qspi_trans_byte_count(qspi, &tp,
@@ -766,6 +904,28 @@ static inline void write_txram_slot_u16(struct bcm_qspi *qspi, int slot,
 	bcm_qspi_write(qspi, MSPI, lsb_offset, (val & 0xff));
 }
 
+static inline void write_txram_slot_u32(struct bcm_qspi *qspi, int slot,
+					u32 val)
+{
+	u32 reg_offset = MSPI_TXRAM;
+	u32 msb_offset = reg_offset + (slot << 3);
+
+	bcm_qspi_write(qspi, MSPI, msb_offset, swap4bytes(val));
+}
+
+static inline void write_txram_slot_u64(struct bcm_qspi *qspi, int slot,
+					u64 val)
+{
+	u32 reg_offset = MSPI_TXRAM;
+	u32 msb_offset = reg_offset + (slot << 3);
+	u32 lsb_offset = reg_offset + (slot << 3) + 0x4;
+	u32 msb = upper_32_bits(val);
+	u32 lsb = lower_32_bits(val);
+
+	bcm_qspi_write(qspi, MSPI, msb_offset, swap4bytes(msb));
+	bcm_qspi_write(qspi, MSPI, lsb_offset, swap4bytes(lsb));
+}
+
 static inline u32 read_cdram_slot(struct bcm_qspi *qspi, int slot)
 {
 	return bcm_qspi_read(qspi, MSPI, MSPI_CDRAM + (slot << 2));
@@ -789,29 +949,45 @@ static int write_to_hw(struct bcm_qspi *qspi, struct spi_device *spi)
 
 	/* Run until end of transfer or reached the max data */
 	while (!tstatus && slot < MSPI_NUM_CDRAM) {
+		mspi_cdram = MSPI_CDRAM_CONT_BIT;
 		if (tp.trans->bits_per_word <= 8) {
 			const u8 *buf = tp.trans->tx_buf;
 			u8 val = buf ? buf[tp.byte] : 0x00;
 
 			write_txram_slot_u8(qspi, slot, val);
 			dev_dbg(&qspi->pdev->dev, "WR %02x\n", val);
-		} else {
+		} else if (tp.trans->bits_per_word <= 16) {
 			const u16 *buf = tp.trans->tx_buf;
 			u16 val = buf ? buf[tp.byte / 2] : 0x0000;
 
 			write_txram_slot_u16(qspi, slot, val);
 			dev_dbg(&qspi->pdev->dev, "WR %04x\n", val);
+		} else if (tp.trans->bits_per_word <= 32) {
+			const u32 *buf = tp.trans->tx_buf;
+			u32 val = buf ? buf[tp.byte/4] : 0x0;
+
+			write_txram_slot_u32(qspi, slot, val);
+			dev_dbg(&qspi->pdev->dev, "WR %08x\n", val);
+		} else if (tp.trans->bits_per_word <= 64) {
+			const u64 *buf = tp.trans->tx_buf;
+			u64 val = (buf ? buf[tp.byte/8] : 0x0);
+
+			/* use the length of delay from SPCR1_LSB */
+			if (bcm_qspi_has_fastbr(qspi))
+				mspi_cdram |= MSPI_CDRAM_DT_BIT;
+
+			write_txram_slot_u64(qspi, slot, val);
+			dev_dbg(&qspi->pdev->dev, "WR %llx\n", val);
 		}
-		mspi_cdram = MSPI_CDRAM_CONT_BIT;
+
+		mspi_cdram |= ((tp.trans->bits_per_word <= 8) ? 0 :
+			       MSPI_CDRAM_BITSE_BIT);
 
 		if (has_bspi(qspi))
 			mspi_cdram &= ~1;
 		else
 			mspi_cdram |= (~(1 << spi->chip_select) &
 				       MSPI_CDRAM_PCS);
-
-		mspi_cdram |= ((tp.trans->bits_per_word <= 8) ? 0 :
-				MSPI_CDRAM_BITSE_BIT);
 
 		write_cdram_slot(qspi, slot, mspi_cdram);
 
@@ -1233,9 +1409,6 @@ static void bcm_qspi_hw_init(struct bcm_qspi *qspi)
 	bcm_qspi_write(qspi, MSPI, MSPI_ENDQP, 0);
 	bcm_qspi_write(qspi, MSPI, MSPI_SPCR2, 0x20);
 
-	if (bcm_qspi_has_fastbr(qspi))
-		bcm_qspi_write(qspi, MSPI, MSPI_SPCR3, 0x1);
-
 	parms.mode = SPI_MODE_3;
 	parms.bits_per_word = 8;
 	parms.speed_hz = qspi->max_speed_hz;
@@ -1255,14 +1428,22 @@ static void bcm_qspi_hw_uninit(struct bcm_qspi *qspi)
 
 struct bcm_qspi_data {
 	bool	has_mspi_rev;
+	bool	has_spcr3_sysclk;
 };
 
 static const struct bcm_qspi_data bcm_qspi_no_rev_data = {
 	.has_mspi_rev	= false,
+	.has_spcr3_sysclk = false,
 };
 
 static const struct bcm_qspi_data bcm_qspi_rev_data = {
 	.has_mspi_rev	= true,
+	.has_spcr3_sysclk = false,
+};
+
+static const struct bcm_qspi_data bcm_qspi_spcr3_data = {
+	.has_mspi_rev	= true,
+	.has_spcr3_sysclk = true,
 };
 
 static const struct of_device_id bcm_qspi_of_match[] = {
@@ -1281,6 +1462,14 @@ static const struct of_device_id bcm_qspi_of_match[] = {
 	{
 		.compatible = "brcm,spi-bcm-qspi",
 		.data = &bcm_qspi_rev_data,
+	},
+	{
+		.compatible = "brcm,spi-bcm7216-qspi",
+		.data = &bcm_qspi_spcr3_data,
+	},
+	{
+		.compatible = "brcm,spi-bcm7278-qspi",
+		.data = &bcm_qspi_spcr3_data,
 	},
 	{},
 };
@@ -1458,6 +1647,7 @@ int bcm_qspi_probe(struct platform_device *pdev,
 
 	qspi->mspi_maj_rev = (rev >> 4) & 0xf;
 	qspi->mspi_min_rev = rev & 0xf;
+	qspi->mspi_spcr3_sysclk = data->has_spcr3_sysclk;
 
 	qspi->max_speed_hz = qspi->base_clk / (bcm_qspi_spbr_min(qspi) * 2);
 

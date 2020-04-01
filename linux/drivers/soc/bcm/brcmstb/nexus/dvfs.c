@@ -47,6 +47,7 @@ enum brcm_protocol_cmd {
 	BRCM_CLK_SHOW_NEW_CMD = 0x6,
 	BRCM_RESET_ENABLE_CMD = 0x7,
 	BRCM_RESET_DISABLE_CMD = 0x8,
+	BRCM_OVERTEMP_RESET_CMD = 0x9,
 };
 
 static const char *pmap_cores[BCLK_SW_NUM_CORES] = {
@@ -372,6 +373,22 @@ int brcm_reset_deassert(unsigned int reset_id)
 }
 EXPORT_SYMBOL(brcm_reset_deassert);
 
+int brcm_overtemp_reset(unsigned int reset_temp)
+{
+	int ret;
+	u32 params = reset_temp;
+
+	clk_api_lock();
+	ret = brcm_send_cmd_via_scmi(handle, BRCM_OVERTEMP_RESET_CMD, 0,
+				     SCMI_PROTOCOL_BRCM,
+				     1, 0,
+				     &params);
+	clk_api_unlock();
+
+	return ret;
+}
+EXPORT_SYMBOL(brcm_overtemp_reset);
+
 #ifdef CONFIG_DEBUG_FS
 #include <linux/debugfs.h>
 
@@ -652,7 +669,7 @@ static int brcm_scmi_debug_init(void)
 
 		if (brcm_pmap_num_pstates(i + BCLK_SW_OFFSET, &n))
 			continue;
-		if (n == 0)
+		if (n == 0 || !pmap_cores[i])
 			continue;
 		d_core = debugfs_create_dir(pmap_cores[i], d_cores);
 		if (!d_core)
@@ -1007,7 +1024,7 @@ EXPORT_SYMBOL(brcmstb_avs_get_pmic_reg_status);
 
 static int brcm_scmi_dvfs_probe(struct scmi_device *sdev)
 {
-	int ret, value;
+	int value = 0;
 
 	handle = sdev->handle;
 
@@ -1019,9 +1036,9 @@ static int brcm_scmi_dvfs_probe(struct scmi_device *sdev)
 #endif
 
 	/* This tells AVS we are using the new API */
-	ret = brcmstb_stb_avs_read_debug(0, &value);
+	(void)brcmstb_stb_avs_read_debug(0, &value);
 
-	return ret;
+	return 0;
 }
 
 static void brcm_scmi_dvfs_remove(struct scmi_device *sdev)

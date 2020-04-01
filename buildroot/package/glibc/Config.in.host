@@ -1,0 +1,7 @@
+config BR2_PACKAGE_HOST_GLIBC
+	bool "host glibc"
+	help
+	  Host package of GLIBC for the purpose of building ldconfig.
+	  https://www.gnu.org/software/libc/
+
+	  Don't say 'y' unless you know what you are doing.

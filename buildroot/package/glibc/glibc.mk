@@ -5,15 +5,18 @@
 ################################################################################
 
 ifeq ($(BR2_arc),y)
-GLIBC_VERSION =  arc-2018.09-release
+GLIBC_VERSION =  arc-2019.09-rc1
 GLIBC_SITE = $(call github,foss-for-synopsys-dwc-arc-processors,glibc,$(GLIBC_VERSION))
 else ifeq ($(BR2_RISCV_32),y)
-GLIBC_VERSION = 4e2943456e690d89f48e6e710757dd09404b0c9a
+GLIBC_VERSION = 06983fe52cfe8e4779035c27e8cc5d2caab31531
 GLIBC_SITE = $(call github,riscv,riscv-glibc,$(GLIBC_VERSION))
+else ifeq ($(BR2_csky),y)
+GLIBC_VERSION = 7630ed2fa60caea98f500e4a7a51b88f9bf1e176
+GLIBC_SITE = $(call github,c-sky,glibc,$(GLIBC_VERSION))
 else
 # Generate version string using:
-#   git describe --match 'glibc-*' --abbrev=40 origin/release/MAJOR.MINOR/master
-GLIBC_VERSION = glibc-2.28-94-g4aeff335ca19286ee2382d8eba794ae5fd49281a
+#   git describe --match 'glibc-*' --abbrev=40 origin/release/MAJOR.MINOR/master | cut -d '-' -f 2-
+GLIBC_VERSION = 2.30-20-g50f20fe506abb8853641006a7b90a81af21d7b91
 # Upstream doesn't officially provide an https download link.
 # There is one (https://sourceware.org/git/glibc.git) but it's not reliable,
 # sometimes the connection times out. So use an unofficial github mirror.
@@ -32,7 +35,7 @@ GLIBC_ADD_TOOLCHAIN_DEPENDENCY = NO
 # Before glibc is configured, we must have the first stage
 # cross-compiler and the kernel headers
 GLIBC_DEPENDENCIES = host-gcc-initial linux-headers host-bison host-gawk \
-	$(BR2_MAKE_HOST_DEPENDENCY)
+	$(BR2_MAKE_HOST_DEPENDENCY) $(BR2_PYTHON3_HOST_DEPENDENCY)
 
 GLIBC_SUBDIR = build
 
@@ -147,3 +150,116 @@ define GLIBC_INSTALL_TARGET_CMDS
 endef
 
 $(eval $(autotools-package))
+
+
+#############################################################
+#### Below follows the host portion of the GLIBC package ####
+#############################################################
+
+#### Make functions taken from the Linux kernel ####
+
+# try-run
+# Usage: option = $(call try-run, $(CC)...-o "$$TMP",option-ok,otherwise)
+# Exit code chooses option. "$$TMP" serves as a temporary file and is
+# automatically cleaned up.
+try-run = $(shell set -e;		\
+	TMP="$(TMPOUT).$$$$.tmp";	\
+	TMPO="$(TMPOUT).$$$$.o";	\
+	if ($(1)) >/dev/null 2>&1;	\
+	then echo "$(2)";		\
+	else echo "$(3)";		\
+	fi;				\
+	rm -f "$$TMP" "$$TMPO")
+
+# __cc-option
+# Usage: MY_CFLAGS += $(call __cc-option,$(CC),$(MY_CFLAGS),-march=winchip-c6,-march=i586)
+__cc-option = $(call try-run,\
+	$(1) -Werror $(2) $(3) -c -x c /dev/null -o "$$TMP",$(3),$(4))
+
+# Do not attempt to build with gcc plugins during cc-option tests.
+# (And this uses delayed resolution so the flags will be up to date.)
+CC_OPTION_CFLAGS = $(filter-out $(GCC_PLUGINS_CFLAGS),$(KBUILD_CFLAGS))
+
+# cc-option
+# Usage: cflags-y += $(call cc-option,-march=winchip-c6,-march=i586)
+cc-option = $(call __cc-option, $(CC),$(CC_OPTION_CFLAGS),$(1),$(2))
+
+# cc-option-yn
+# Usage: flag := $(call cc-option-yn,-march=winchip-c6)
+cc-option-yn = $(call try-run,\
+	$(CC) -Werror $(KBUILD_CPPFLAGS) $(CC_OPTION_CFLAGS) $(1) -c -x c /dev/null -o "$$TMP",y,n)
+
+#### End of Linux code ####
+
+# TODO: We may want to consider using host-make to build GLIBC, since it
+# requires at least GNU Make 4.0. However, there are also other minimum
+# requirements that make Ubuntu 16.04 and 14.04 unsuitable to build GLIBC.
+#HOST_GLIBC_DEPENDENCIES = host-make
+
+# We want host-ldconfig to read ARM & Aarch64 files in addition to x86.
+HOST_GLIBC_PATCHES = \
+	0001-elf-readelflib.c-introduce-SKIP_READELF_INCLUDE.patch \
+	0002-i386-readelflib.c-add-support-for-ARM-libraries.patch
+
+define HOST_GLIBC_APPLY_PATCHES
+	$(Q)for p in $(HOST_GLIBC_PATCHES); do \
+		echo "Applying $${p}..."; \
+		$(APPLY_PATCHES) $(@D) package/glibc $${p}; \
+	done
+endef
+
+HOST_GLIBC_POST_PATCH_HOOKS += HOST_GLIBC_APPLY_PATCHES
+
+# Regarding GLIBC and --enable-cet, see https://tinyurl.com/tnycxev.
+ifeq ($(call cc-option-yn,-fcf-protection),y)
+HOST_GLIBC_ENABLE_CET = --enable-cet
+endif
+
+define HOST_GLIBC_CONFIGURE_CMDS
+	mkdir -p $(@D)/build
+	# Do the configuration
+	(cd $(@D)/build; \
+		$(HOST_CONFIGURE_OPTS) \
+		CFLAGS="-O2 $(GLIBC_EXTRA_CFLAGS)" CPPFLAGS="" \
+		CXXFLAGS="-O2 $(GLIBC_EXTRA_CFLAGS)" \
+		$(SHELL) $(@D)/configure \
+		--prefix=/usr \
+		$(HOST_GLIBC_ENABLE_CET) \
+		--enable-shared \
+		--with-pkgversion="Buildroot" \
+		--without-cvs \
+		--disable-profile \
+		--without-gd \
+		--enable-obsolete-rpc)
+endef
+
+#
+# TODO: Reducing the binaries we build requires further investigation. Leaving
+# this here for now as starting point for future research.
+#
+# We only want ldconfig. Limited number of build targets for the host to save
+# compilation time.
+#HOST_GLIBC_TARGETS= csu iconv locale localedata iconvdata assert ctype intl \
+#	catgets math setjmp signal stdlib stdio-common libio dlfcn nptl \
+#	malloc string wcsmbs timezone time dirent grp pwd posix io termios \
+#	resource misc socket sysvipc gmon gnulib wctype manual shadow \
+#	gshadow po argp rt conform debug mathvec support crypt nptl_db inet \
+#	resolv nss hesiod sunrpc nis nscd login elf
+#
+#define HOST_GLIBC_BUILD_CMDS
+#	$(Q)for t in $(HOST_GLIBC_TARGETS); do \
+#		echo "Building $${t}..."; \
+#		$(MAKE) objdir=$(@D)/build \
+#			-C $(@D)/$${t} subdir=$${t} ..=../ subdir_lib; \
+#	done
+#endef
+
+define HOST_GLIBC_BUILD_CMDS
+	$(MAKE) -j $(BR2_JLEVEL) -C $(@D)/build
+endef
+
+define HOST_GLIBC_INSTALL_CMDS
+	install -p -m 0755 $(@D)/build/elf/ldconfig $(HOST_DIR)/sbin
+endef
+
+$(eval $(host-autotools-package))

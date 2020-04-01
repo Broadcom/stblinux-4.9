@@ -5,6 +5,7 @@
 #    option BR2_ROOTFS_POST_SCRIPT_ARGS
 
 prg=`basename $0`
+custom_script="${BASE_DIR}/scripts/${prg}"
 
 LINUX_STAMPS=".stamp_kconfig_fixup_done .stamp_built .stamp_target_installed"
 LINUX_STAMPS="$LINUX_STAMPS .stamp_images_installed .stamp_initramfs_rebuilt"
@@ -27,7 +28,6 @@ linux_dir=`ls -drt ${BUILD_DIR}/linux-* | egrep 'linux-(stb|custom)' | head -1`
 arch=`basename "$output_path"`
 test "$arch" = "mips" && arch="bmips"
 
-rootfs_cpio="$image_path/rootfs.cpio"
 rootfs_tar="$image_path/rootfs.tar"
 nfs_tar="nfsroot-$arch.tar"
 
@@ -47,11 +47,6 @@ if [ -r "$kern_config" ]; then
 	mv "$tmp" "$kern_config"
 else
 	echo "WARNING: couldn't read $kern_config"
-fi
-
-if [ -r "$rootfs_cpio" ]; then
-	echo "Removing rootfs_cpio..."
-	rm "$rootfs_cpio"
 fi
 
 echo "Creating romfs staging area..."
@@ -94,4 +89,10 @@ if [ "$arch" = "arm64" -o "$arch" = "bmips" ]; then
 	mv "$linux_image.norootfs.gz" "$image_path/vmlinuz-$arch"
 else
 	mv "$linux_image.norootfs" "$image_path/vmlinuz-$arch"
+fi
+
+# Checking for custom post-image script
+if [ -x "${custom_script}" ]; then
+	echo "Executing ${custom_script}..."
+	"${custom_script}" "$@"
 fi

@@ -1461,6 +1461,14 @@ choice
 		bool "1G/3G user/kernel split"
 endchoice
 
+config ARCH_ENABLE_MEMORY_HOTPLUG
+	bool
+	default y if ARM_LPAE
+
+config ARCH_MEMORY_PROBE
+	bool
+	default y if MEMORY_HOTPLUG
+
 config PAGE_OFFSET
 	hex
 	default PHYS_OFFSET if !MMU
