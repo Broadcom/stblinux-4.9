@@ -82,6 +82,7 @@ enum brcm_ahci_version {
 	BRCM_SATA_BCM7425 = 1,
 	BRCM_SATA_BCM7445,
 	BRCM_SATA_NSP,
+	BRCM_SATA_BCM7216,
 };
 
 enum brcm_ahci_quirks {
@@ -418,6 +419,7 @@ static struct scsi_host_template ahci_platform_sht = {
 };
 
 static const struct of_device_id ahci_of_match[] = {
+	{.compatible = "brcm,bcm7216-ahci", .data = (void *)BRCM_SATA_BCM7216},
 	{.compatible = "brcm,bcm7425-ahci", .data = (void *)BRCM_SATA_BCM7425},
 	{.compatible = "brcm,bcm7445-ahci", .data = (void *)BRCM_SATA_BCM7445},
 	{.compatible = "brcm,bcm-nsp-ahci", .data = (void *)BRCM_SATA_NSP},

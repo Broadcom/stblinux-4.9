@@ -127,6 +127,9 @@ static int brcm_send_cmd_via_scmi(const struct scmi_handle *handle,
 	__le32 *p;
 	int i, j = 0;
 
+	if (!handle)
+		return -ENODEV;
+
 	if ((num_in || num_out) && !params)
 		return -EINVAL;
 

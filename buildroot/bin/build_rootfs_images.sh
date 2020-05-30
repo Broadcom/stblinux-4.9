@@ -5,13 +5,22 @@ parent_dir=$(dirname $(dirname $0))
 # UBIFS logical eraseblock limit - increase this number if mkfs.ubifs complains
 max_leb_cnt=2047
 
-# change to '1' to build NAND ubifs images (they might be large files,
-# particularly for bigger eraseblock sizes)
+# NAND ubifs images can be large files, especially for bigger eraseblock sizes.
+# Building them is disabled by default. (Use option -u to enable.)
 build_nand_ubifs=0
 
 LINUXDIR=linux
 DEVTABLE=misc/devtable.txt
 WARN_FILE="THIS_IS_NOT_YOUR_ROOT_FILESYSTEM"
+
+while getopts hu arg; do
+	case $arg in
+		h) hflag=1;;
+		u) uflag=1;;
+		?) exit 1;;
+	esac
+done
+shift `expr $OPTIND - 1`
 
 TARGET=$1
 if [ -d "target" -a -d "images" ]; then
@@ -94,9 +103,15 @@ function make_jffs2_img()
 # MAIN
 #
 
-if [ $# -lt 1 ]; then
-	echo "usage: $0 <arm|arm64|mips>" 1>&2
+if [ $# -lt 1 ] || [ ! -z $hflag ]; then
+	echo "usage: $0 [-u] <arm|arm64|mips>" 1>&2
+	echo "       -u....generate NAND UBI images (can be large)" 1>&2
 	exit 1
+fi
+
+if [ ! -z $uflag ]; then
+	build_nand_ubifs=1
+	max_leb_cnt=2075
 fi
 
 rm -rf tmp
@@ -147,6 +162,7 @@ if which mkfs.ubifs >/dev/null; then
 	make_ubi_img 256 1
 
 	if [ "$build_nand_ubifs" = "1" ]; then
+		echo "Building NAND UBI images..."
 		# 16k erase / 512B page - small NAND
 		make_ubi_img 16 512
 
@@ -172,7 +188,7 @@ if which mkfs.ubifs >/dev/null; then
 		make_ubi_img 2048 8192
 	else
 		echo "[INFO] Skipping NAND UBIFS images."
-		echo "[INFO] Set build_nand_ubifs=1 if they are needed"
+		echo "[INFO] Use option \"-u\" if they are needed."
 	fi
 else
 	echo "[WARNING] Couldn't find mkfs.ubifs. Skipping ubifs images."

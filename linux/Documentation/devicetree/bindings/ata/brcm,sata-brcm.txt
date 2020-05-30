@@ -5,6 +5,7 @@ Each SATA controller should have its own node.
 
 Required properties:
 - compatible         : should be one or more of
+			"brcm,bcm7216-ahci"
 			"brcm,bcm7425-ahci"
 			"brcm,bcm7445-ahci"
 			"brcm,bcm-nsp-ahci"

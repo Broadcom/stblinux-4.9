@@ -106,6 +106,22 @@ static void sdhci_brcmstb_set_clock(struct sdhci_host *host, unsigned int clock)
 	sdhci_writew(host, clk, SDHCI_CLOCK_CONTROL);
 }
 
+void brcmstb_set_uhs_signaling(struct sdhci_host *host, unsigned int timing)
+{
+	u16 ctrl_2;
+
+	ctrl_2 = sdhci_readw(host, SDHCI_HOST_CONTROL2);
+	ctrl_2 &= ~SDHCI_CTRL_UHS_MASK;
+	if (timing == MMC_TIMING_SD_HS ||
+		 timing == MMC_TIMING_MMC_HS ||
+		 timing == MMC_TIMING_UHS_SDR25) {
+		ctrl_2 |= SDHCI_CTRL_UHS_SDR25;
+		sdhci_writew(host, ctrl_2, SDHCI_HOST_CONTROL2);
+	} else {
+		sdhci_set_uhs_signaling(host, timing);
+	}
+}
+
 #ifdef CONFIG_PM_SLEEP
 static int sdhci_brcmstb_suspend(struct device *dev)
 {
@@ -148,7 +164,7 @@ static const struct sdhci_ops sdhci_brcmstb_ops_7216 = {
 	.set_clock = sdhci_brcmstb_set_clock,
 	.set_bus_width = sdhci_set_bus_width,
 	.reset = sdhci_reset,
-	.set_uhs_signaling = sdhci_set_uhs_signaling,
+	.set_uhs_signaling = brcmstb_set_uhs_signaling,
 };
 
 static const struct brcmstb_match_priv match_priv_7425 = {

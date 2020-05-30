@@ -233,10 +233,11 @@ static int unimac_mdio_probe(struct platform_device *pdev)
 	}
 
 	priv->clk = devm_clk_get(&pdev->dev, NULL);
-	if (PTR_ERR(priv->clk) == -EPROBE_DEFER)
-		return PTR_ERR(priv->clk);
-	else
+	if (IS_ERR(priv->clk)) {
+		if (PTR_ERR(priv->clk) == -EPROBE_DEFER)
+			return PTR_ERR(priv->clk);
 		priv->clk = NULL;
+	}
 
 	ret = clk_prepare_enable(priv->clk);
 	if (ret)

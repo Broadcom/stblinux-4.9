@@ -12,7 +12,8 @@ Required properties:
 - interrupt-parent: specifies the phandle to the parent interrupt controller
   this arbiter gets interrupt line from
 - interrupts: specifies the two interrupts (timeout and TEA) to be used from
-  the parent interrupt controller
+  the parent interrupt controller. A third optional interrupt may be specified
+  for breakpoints.
 
 Optional properties:
 

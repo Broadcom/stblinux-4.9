@@ -45,7 +45,7 @@ void bcmgenet_get_wol(struct net_device *dev, struct ethtool_wolinfo *wol)
 {
 	struct bcmgenet_priv *priv = netdev_priv(dev);
 
-	wol->supported = WAKE_MAGIC | WAKE_MAGICSECURE;
+	wol->supported = WAKE_MAGIC | WAKE_MAGICSECURE | WAKE_FILTER;
 	wol->wolopts = priv->wolopts;
 	memset(wol->sopass, 0, sizeof(wol->sopass));
 
@@ -64,7 +64,7 @@ int bcmgenet_set_wol(struct net_device *dev, struct ethtool_wolinfo *wol)
 	if (!device_can_wakeup(kdev))
 		return -ENOTSUPP;
 
-	if (wol->wolopts & ~(WAKE_MAGIC | WAKE_MAGICSECURE))
+	if (wol->wolopts & ~(WAKE_MAGIC | WAKE_MAGICSECURE | WAKE_FILTER))
 		return -EINVAL;
 
 	if (wol->wolopts & WAKE_MAGICSECURE)
@@ -108,13 +108,21 @@ static int bcmgenet_poll_wol_status(struct bcmgenet_priv *priv)
 	return retries;
 }
 
+static void bcmgenet_set_mpd_password(struct bcmgenet_priv *priv)
+{
+	bcmgenet_umac_writel(priv, get_unaligned_be16(&priv->sopass[0]),
+			     UMAC_MPD_PW_MS);
+	bcmgenet_umac_writel(priv, get_unaligned_be32(&priv->sopass[2]),
+			     UMAC_MPD_PW_LS);
+}
+
 int bcmgenet_wol_power_down_cfg(struct bcmgenet_priv *priv,
 				enum bcmgenet_power_mode mode)
 {
 	struct net_device *dev = priv->dev;
 
 	struct bcmgenet_rxnfc_rule *rule;
-	u32 reg, hfb_ctrl_reg;
+	u32 reg, hfb_ctrl_reg, hfb_enable = 0;
 	int retries = 0;
 
 	if (mode != GENET_POWER_WOL_MAGIC) {
@@ -132,22 +140,30 @@ int bcmgenet_wol_power_down_cfg(struct bcmgenet_priv *priv,
 	bcmgenet_umac_writel(priv, reg, UMAC_CMD);
 	mdelay(10);
 
-	hfb_ctrl_reg = bcmgenet_hfb_reg_readl(priv, HFB_CTRL);
-	reg = (hfb_ctrl_reg & ~RBUF_HFB_EN) | RBUF_ACPI_EN;
-	bcmgenet_hfb_reg_writel(priv, reg, HFB_CTRL);
-
-	reg = bcmgenet_umac_readl(priv, UMAC_MPD_CTRL);
-	if (priv->wolopts & WAKE_MAGICSECURE) {
-		bcmgenet_umac_writel(priv, get_unaligned_be16(&priv->sopass[0]),
-				     UMAC_MPD_PW_MS);
-		bcmgenet_umac_writel(priv, get_unaligned_be32(&priv->sopass[2]),
-				     UMAC_MPD_PW_LS);
-		reg |= MPD_EN | MPD_PW_EN;
-	} else {
+	if (priv->wolopts & (WAKE_MAGIC | WAKE_MAGICSECURE)) {
+		list_for_each_entry(rule, &priv->rxnfc_list, list) {
+			if (!rule->fs.ring_cookie)
+				hfb_enable |= (1 << rule->fs.location);
+		}
+		reg = bcmgenet_umac_readl(priv, UMAC_MPD_CTRL);
 		reg |= MPD_EN;
+		if (priv->wolopts & WAKE_MAGICSECURE) {
+			bcmgenet_set_mpd_password(priv);
+			reg |= MPD_PW_EN;
+		}
+		bcmgenet_umac_writel(priv, reg, UMAC_MPD_CTRL);
 	}
-	bcmgenet_umac_writel(priv, reg, UMAC_MPD_CTRL);
 
+	hfb_ctrl_reg = bcmgenet_hfb_reg_readl(priv, HFB_CTRL);
+	if (priv->wolopts & WAKE_FILTER) {
+		hfb_enable = 0;
+		list_for_each_entry(rule, &priv->rxnfc_list, list) {
+			if (rule->fs.ring_cookie == RX_CLS_FLOW_WAKE)
+				hfb_enable |= (1 << rule->fs.location);
+		}
+		reg = (hfb_ctrl_reg & ~RBUF_HFB_EN) | RBUF_ACPI_EN;
+		bcmgenet_hfb_reg_writel(priv, reg, HFB_CTRL);
+	}
 
 	/* Do not leave UniMAC in MPD mode only */
 	retries = bcmgenet_poll_wol_status(priv);
@@ -171,13 +187,8 @@ int bcmgenet_wol_power_down_cfg(struct bcmgenet_priv *priv,
 			clk_set_rate(priv->clk_mux, priv->clk_slow_rate);
 	}
 
-	hfb_ctrl_reg = 0;
-	list_for_each_entry(rule, &priv->rxnfc_list, list) {
-		if (rule->fs.ring_cookie == 0)
-			hfb_ctrl_reg |= (1 << rule->fs.location);
-	}
-	if (hfb_ctrl_reg) {
-		bcmgenet_hfb_reg_writel(priv, hfb_ctrl_reg,
+	if (hfb_enable) {
+		bcmgenet_hfb_reg_writel(priv, hfb_enable,
 					HFB_FLT_ENABLE_V3PLUS + 4);
 		hfb_ctrl_reg = RBUF_HFB_EN | RBUF_ACPI_EN;
 		bcmgenet_hfb_reg_writel(priv, hfb_ctrl_reg, HFB_CTRL);

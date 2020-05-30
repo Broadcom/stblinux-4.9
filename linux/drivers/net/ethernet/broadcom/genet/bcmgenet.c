@@ -97,12 +97,6 @@ static inline void dmadesc_set_length_status(struct bcmgenet_priv *priv,
 	bcmgenet_writel(value, d + DMA_DESC_LENGTH_STATUS);
 }
 
-static inline u32 dmadesc_get_length_status(struct bcmgenet_priv *priv,
-					    void __iomem *d)
-{
-	return bcmgenet_readl(d + DMA_DESC_LENGTH_STATUS);
-}
-
 static inline void dmadesc_set_addr(struct bcmgenet_priv *priv,
 				    void __iomem *d,
 				    dma_addr_t addr)
@@ -735,7 +729,7 @@ static int bcmgenet_hfb_filter_create_rxnfc(struct bcmgenet_priv *priv,
 		break;
 	}
 
-	if (!fs->ring_cookie) {
+	if (!fs->ring_cookie || fs->ring_cookie == RX_CLS_FLOW_WAKE) {
 		/* Ring 0 flows can be handled by the default Descriptor Ring
 		 * We'll map them to ring 0, but don't enable the filter
 		 */
@@ -888,76 +882,22 @@ static int bcmgenet_set_link_ksettings(struct net_device *dev,
 	return phy_ethtool_ksettings_set(dev->phydev, cmd);
 }
 
-static int bcmgenet_set_rx_csum(struct net_device *dev,
-				netdev_features_t wanted)
-{
-	struct bcmgenet_priv *priv = netdev_priv(dev);
-	u32 rbuf_chk_ctrl;
-	bool rx_csum_en;
-
-	rx_csum_en = !!(wanted & NETIF_F_RXCSUM);
-
-	rbuf_chk_ctrl = bcmgenet_rbuf_readl(priv, RBUF_CHK_CTRL);
-
-	/* enable rx checksumming */
-	if (rx_csum_en)
-		rbuf_chk_ctrl |= RBUF_RXCHK_EN;
-	else
-		rbuf_chk_ctrl &= ~RBUF_RXCHK_EN;
-	priv->desc_rxchk_en = rx_csum_en;
-
-	/* If UniMAC forwards CRC, we need to skip over it to get
-	 * a valid CHK bit to be set in the per-packet status word
-	*/
-	if (rx_csum_en && priv->crc_fwd_en)
-		rbuf_chk_ctrl |= RBUF_SKIP_FCS;
-	else
-		rbuf_chk_ctrl &= ~RBUF_SKIP_FCS;
-
-	bcmgenet_rbuf_writel(priv, rbuf_chk_ctrl, RBUF_CHK_CTRL);
-
-	return 0;
-}
-
-static int bcmgenet_set_tx_csum(struct net_device *dev,
-				netdev_features_t wanted)
-{
-	struct bcmgenet_priv *priv = netdev_priv(dev);
-	bool desc_64b_en;
-	u32 tbuf_ctrl, rbuf_ctrl;
-
-	tbuf_ctrl = bcmgenet_tbuf_ctrl_get(priv);
-	rbuf_ctrl = bcmgenet_rbuf_readl(priv, RBUF_CTRL);
-
-	desc_64b_en = !!(wanted & (NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM));
-
-	/* enable 64 bytes descriptor in both directions (RBUF and TBUF) */
-	if (desc_64b_en) {
-		tbuf_ctrl |= RBUF_64B_EN;
-		rbuf_ctrl |= RBUF_64B_EN;
-	} else {
-		tbuf_ctrl &= ~RBUF_64B_EN;
-		rbuf_ctrl &= ~RBUF_64B_EN;
-	}
-	priv->desc_64b_en = desc_64b_en;
-
-	bcmgenet_tbuf_ctrl_set(priv, tbuf_ctrl);
-	bcmgenet_rbuf_writel(priv, rbuf_ctrl, RBUF_CTRL);
-
-	return 0;
-}
-
 static int bcmgenet_set_features(struct net_device *dev,
 				 netdev_features_t features)
 {
-	netdev_features_t changed = features ^ dev->features;
-	netdev_features_t wanted = dev->wanted_features;
-	int ret = 0;
+	struct bcmgenet_priv *priv = netdev_priv(dev);
+	u32 reg;
+	int ret;
 
-	if (changed & (NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM))
-		ret = bcmgenet_set_tx_csum(dev, wanted);
-	if (changed & (NETIF_F_RXCSUM))
-		ret = bcmgenet_set_rx_csum(dev, wanted);
+	ret = clk_prepare_enable(priv->clk);
+	if (ret)
+		return ret;
+
+	/* Make sure we reflect the value of CRC_CMD_FWD */
+	reg = bcmgenet_umac_readl(priv, UMAC_CMD);
+	priv->crc_fwd_en = !!(reg & CMD_CRC_FWD);
+
+	clk_disable_unprepare(priv->clk);
 
 	return ret;
 }
@@ -1293,6 +1233,9 @@ static const struct bcmgenet_stats bcmgenet_gstrings_stats[] = {
 	STAT_GENET_SOFT_MIB("alloc_rx_buff_failed", mib.alloc_rx_buff_failed),
 	STAT_GENET_SOFT_MIB("rx_dma_failed", mib.rx_dma_failed),
 	STAT_GENET_SOFT_MIB("tx_dma_failed", mib.tx_dma_failed),
+	STAT_GENET_SOFT_MIB("tx_realloc_tsb", mib.tx_realloc_tsb),
+	STAT_GENET_SOFT_MIB("tx_realloc_tsb_failed",
+			    mib.tx_realloc_tsb_failed),
 	/* Per TX queues */
 	STAT_GENET_Q(0),
 	STAT_GENET_Q(1),
@@ -1619,7 +1562,8 @@ static int bcmgenet_flow_insert(struct net_device *dev,
 		return -EINVAL;
 	}
 
-	if (cmd->fs.ring_cookie > priv->hw_params->rx_queues) {
+	if (cmd->fs.ring_cookie > priv->hw_params->rx_queues &&
+	    cmd->fs.ring_cookie != RX_CLS_FLOW_WAKE) {
 		netdev_err(dev, "rxnfc: Unsupported action (%llu)\n",
 			cmd->fs.ring_cookie);
 		return -EINVAL;
@@ -2154,9 +2098,10 @@ static void bcmgenet_tx_reclaim_all(struct net_device *dev)
 /* Reallocate the SKB to put enough headroom in front of it and insert
  * the transmit checksum offsets in the descriptors
  */
-static struct sk_buff *bcmgenet_put_tx_csum(struct net_device *dev,
-					    struct sk_buff *skb)
+static struct sk_buff *bcmgenet_add_tsb(struct net_device *dev,
+					struct sk_buff *skb)
 {
+	struct bcmgenet_priv *priv = netdev_priv(dev);
 	struct status_64 *status = NULL;
 	struct sk_buff *new_skb;
 	u16 offset;
@@ -2169,12 +2114,15 @@ static struct sk_buff *bcmgenet_put_tx_csum(struct net_device *dev,
 		 * enough headroom for us to insert 64B status block.
 		 */
 		new_skb = skb_realloc_headroom(skb, sizeof(*status));
-		dev_kfree_skb(skb);
 		if (!new_skb) {
+			dev_kfree_skb_any(skb);
+			priv->mib.tx_realloc_tsb_failed++;
 			dev->stats.tx_dropped++;
 			return NULL;
 		}
+		dev_consume_skb_any(skb);
 		skb = new_skb;
+		priv->mib.tx_realloc_tsb++;
 	}
 
 	skb_push(skb, sizeof(*status));
@@ -2190,23 +2138,19 @@ static struct sk_buff *bcmgenet_put_tx_csum(struct net_device *dev,
 			ip_proto = ipv6_hdr(skb)->nexthdr;
 			break;
 		default:
-			return skb;
+			/* don't use UDP flag */
+			ip_proto = 0;
+			break;
 		}
 
 		offset = skb_checksum_start_offset(skb) - sizeof(*status);
 		tx_csum_info = (offset << STATUS_TX_CSUM_START_SHIFT) |
-				(offset + skb->csum_offset);
+				(offset + skb->csum_offset) |
+				STATUS_TX_CSUM_LV;
 
-		/* Set the length valid bit for TCP and UDP and just set
-		 * the special UDP flag for IPv4, else just set to 0.
-		 */
-		if (ip_proto == IPPROTO_TCP || ip_proto == IPPROTO_UDP) {
-			tx_csum_info |= STATUS_TX_CSUM_LV;
-			if (ip_proto == IPPROTO_UDP && ip_ver == ETH_P_IP)
-				tx_csum_info |= STATUS_TX_CSUM_PROTO_UDP;
-		} else {
-			tx_csum_info = 0;
-		}
+		/* Set the special UDP flag for UDP */
+		if (ip_proto == IPPROTO_UDP)
+			tx_csum_info |= STATUS_TX_CSUM_PROTO_UDP;
 
 		status->tx_csum_info = tx_csum_info;
 	}
@@ -2269,13 +2213,11 @@ static netdev_tx_t bcmgenet_xmit(struct sk_buff *skb, struct net_device *dev)
 	 */
 	GENET_CB(skb)->bytes_sent = skb->len;
 
-	/* set the SKB transmit checksum */
-	if (priv->desc_64b_en) {
-		skb = bcmgenet_put_tx_csum(dev, skb);
-		if (!skb) {
-			ret = NETDEV_TX_OK;
-			goto out;
-		}
+	/* add the Transmit Status Block */
+	skb = bcmgenet_add_tsb(dev, skb);
+	if (!skb) {
+		ret = NETDEV_TX_OK;
+		goto out;
 	}
 
 	for (i = 0; i <= nr_frags; i++) {
@@ -2419,7 +2361,6 @@ static unsigned int bcmgenet_desc_rx(struct bcmgenet_rx_ring *ring,
 	unsigned int p_index;
 	unsigned int bytes_processed = 0;
 	unsigned int discards;
-	unsigned int chksum_ok = 0;
 
 	/* Clear status before servicing to reduce spurious interrupts */
 	if (ring->index == DESC_INDEX)
@@ -2455,6 +2396,9 @@ static unsigned int bcmgenet_desc_rx(struct bcmgenet_rx_ring *ring,
 
 	while ((rxpktprocessed < rxpkttoprocess) &&
 	       (rxpktprocessed < budget)) {
+		struct status_64 *status;
+		__be16 rx_csum;
+
 		cb = &priv->rx_cbs[ring->read_ptr];
 		skb = bcmgenet_rx_refill(priv, cb);
 
@@ -2463,14 +2407,12 @@ static unsigned int bcmgenet_desc_rx(struct bcmgenet_rx_ring *ring,
 			goto next;
 		}
 
-		if (!priv->desc_64b_en) {
-			dma_length_status =
-				dmadesc_get_length_status(priv, cb->bd_addr);
-		} else {
-			struct status_64 *status;
-
-			status = (struct status_64 *)skb->data;
-			dma_length_status = status->length_status;
+		status = (struct status_64 *)skb->data;
+		dma_length_status = status->length_status;
+		if (dev->features & NETIF_F_RXCSUM) {
+			rx_csum = (__force __be16)(status->rx_csum & 0xffff);
+			skb->csum = (__force __wsum)ntohs(rx_csum);
+			skb->ip_summed = CHECKSUM_COMPLETE;
 		}
 
 		/* DMA flags and length are still valid no matter how
@@ -2513,21 +2455,11 @@ static unsigned int bcmgenet_desc_rx(struct bcmgenet_rx_ring *ring,
 			goto next;
 		} /* error packet */
 
-		chksum_ok = (dma_flag & priv->dma_rx_chk_bit) &&
-			     priv->desc_rxchk_en;
-
 		skb_put(skb, len);
-		if (priv->desc_64b_en) {
-			skb_pull(skb, 64);
-			len -= 64;
-		}
 
-		if (likely(chksum_ok))
-			skb->ip_summed = CHECKSUM_UNNECESSARY;
-
-		/* remove hardware 2bytes added for IP alignment */
-		skb_pull(skb, 2);
-		len -= 2;
+		/* remove RSB and hardware 2bytes added for IP alignment */
+		skb_pull(skb, 66);
+		len -= 66;
 
 		if (priv->crc_fwd_en) {
 			skb_trim(skb, len - ETH_FCS_LEN);
@@ -2718,10 +2650,27 @@ static void init_umac(struct bcmgenet_priv *priv)
 
 	bcmgenet_umac_writel(priv, ENET_MAX_MTU_SIZE, UMAC_MAX_FRAME_LEN);
 
-	/* init rx registers, enable ip header optimization */
+	/* init tx registers, enable TSB */
+	reg = bcmgenet_tbuf_ctrl_get(priv);
+	reg |= TBUF_64B_EN;
+	bcmgenet_tbuf_ctrl_set(priv, reg);
+
+	/* init rx registers, enable ip header optimization and RSB */
 	reg = bcmgenet_rbuf_readl(priv, RBUF_CTRL);
-	reg |= RBUF_ALIGN_2B;
+	reg |= RBUF_ALIGN_2B | RBUF_64B_EN;
 	bcmgenet_rbuf_writel(priv, reg, RBUF_CTRL);
+
+	/* enable rx checksumming */
+	reg = bcmgenet_rbuf_readl(priv, RBUF_CHK_CTRL);
+	reg |= RBUF_RXCHK_EN | RBUF_L3_PARSE_DIS;
+	/* If UniMAC forwards CRC, we need to skip over it to get
+	 * a valid CHK bit to be set in the per-packet status word
+	 */
+	if (priv->crc_fwd_en)
+		reg |= RBUF_SKIP_FCS;
+	else
+		reg &= ~RBUF_SKIP_FCS;
+	bcmgenet_rbuf_writel(priv, reg, RBUF_CHK_CTRL);
 
 	if (!GENET_IS_V1(priv) && !GENET_IS_V2(priv))
 		bcmgenet_rbuf_writel(priv, 1, RBUF_TBUF_SIZE_CTRL);
@@ -3577,7 +3526,6 @@ static int bcmgenet_open(struct net_device *dev)
 {
 	struct bcmgenet_priv *priv = netdev_priv(dev);
 	unsigned long dma_ctrl;
-	u32 reg;
 	int ret;
 
 	netif_dbg(priv, ifup, dev, "bcmgenet_open\n");
@@ -3603,9 +3551,10 @@ static int bcmgenet_open(struct net_device *dev)
 
 	init_umac(priv);
 
-	/* Make sure we reflect the value of CRC_CMD_FWD */
-	reg = bcmgenet_umac_readl(priv, UMAC_CMD);
-	priv->crc_fwd_en = !!(reg & CMD_CRC_FWD);
+	/* Apply features again in case we changed them while interface was
+	 * down
+	 */
+	bcmgenet_set_features(dev, dev->features);
 
 	bcmgenet_set_hw_addr(priv, dev->dev_addr);
 
@@ -4018,23 +3967,18 @@ static void bcmgenet_set_hw_params(struct bcmgenet_priv *priv)
 	if (GENET_IS_V5(priv)) {
 		bcmgenet_dma_regs = bcmgenet_dma_regs_v3plus;
 		genet_dma_ring_regs = genet_dma_ring_regs_v4;
-		priv->dma_rx_chk_bit = DMA_RX_CHK_V3PLUS;
 	} else if (GENET_IS_V4(priv)) {
 		bcmgenet_dma_regs = bcmgenet_dma_regs_v3plus;
 		genet_dma_ring_regs = genet_dma_ring_regs_v4;
-		priv->dma_rx_chk_bit = DMA_RX_CHK_V3PLUS;
 	} else if (GENET_IS_V3(priv)) {
 		bcmgenet_dma_regs = bcmgenet_dma_regs_v3plus;
 		genet_dma_ring_regs = genet_dma_ring_regs_v123;
-		priv->dma_rx_chk_bit = DMA_RX_CHK_V3PLUS;
 	} else if (GENET_IS_V2(priv)) {
 		bcmgenet_dma_regs = bcmgenet_dma_regs_v2;
 		genet_dma_ring_regs = genet_dma_ring_regs_v123;
-		priv->dma_rx_chk_bit = DMA_RX_CHK_V12;
 	} else if (GENET_IS_V1(priv)) {
 		bcmgenet_dma_regs = bcmgenet_dma_regs_v1;
 		genet_dma_ring_regs = genet_dma_ring_regs_v123;
-		priv->dma_rx_chk_bit = DMA_RX_CHK_V12;
 	}
 
 	/* enum genet_version starts at 1 */
@@ -4190,9 +4134,11 @@ static int bcmgenet_probe(struct platform_device *pdev)
 
 	priv->msg_enable = netif_msg_init(-1, GENET_MSG_DEFAULT);
 
-	/* Set hardware features */
-	dev->hw_features |= NETIF_F_SG | NETIF_F_IP_CSUM |
-		NETIF_F_IPV6_CSUM | NETIF_F_HIGHDMA | NETIF_F_RXCSUM;
+	/* Set default features */
+	dev->features |= NETIF_F_SG | NETIF_F_HIGHDMA | NETIF_F_HW_CSUM |
+			 NETIF_F_RXCSUM;
+	dev->hw_features |= dev->features;
+	dev->vlan_features |= dev->features;
 
 	/* Request the WOL interrupt and advertise suspend if available */
 	priv->wol_irq_disabled = true;
@@ -4419,6 +4365,9 @@ static int bcmgenet_resume(struct device *d)
 	/* Speed settings must be restored */
 	genphy_config_aneg(dev->phydev);
 	bcmgenet_mii_config(priv->dev, false);
+
+	/* Restore enabled features */
+	bcmgenet_set_features(dev, dev->features);
 
 	bcmgenet_set_hw_addr(priv, dev->dev_addr);
 
