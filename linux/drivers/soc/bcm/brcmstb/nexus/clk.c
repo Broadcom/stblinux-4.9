@@ -38,7 +38,7 @@ static const char * const sw_names_stb[] = {
 	"sw_m2mc1", "sw_mipmap0", "sw_tsx0", "sw_smartcard0",
 
 	/* [10..1f] */
-	"sw_smartcard1", "reserved", "reserved", "reserved",
+	"sw_smartcard1", "reserved", "sw_bne", "sw_asp",
 	"reserved", "reserved", "reserved", "reserved",
 	"reserved", "reserved", "reserved", "reserved",
 	"reserved", "reserved", "reserved", "reserved",

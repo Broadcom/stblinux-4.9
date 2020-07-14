@@ -693,6 +693,8 @@ static int bcm6802_hw_specific_init(struct bcm6802_priv *priv, u32 eport_mux,
 
 	if (eport_mux == 0) /* Shutdown Gphy */
 		REG_WR(EPORT_REG_GPHY_CNTRL, 0x02A4C00F);
+	else
+		REG_WR(EPORT_REG_GPHY_CNTRL, 0x02A4C000);
 
 	/* Power down all LEAP memories */
 	REG_WR(CLKGEN_LEAP_TOP_INST_DATA, 0x6);

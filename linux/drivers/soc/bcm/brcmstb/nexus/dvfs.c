@@ -50,7 +50,7 @@ enum brcm_protocol_cmd {
 	BRCM_OVERTEMP_RESET_CMD = 0x9,
 };
 
-static const char *pmap_cores[BCLK_SW_NUM_CORES] = {
+static const char *pmap_cores[BCLK_SW_NUM_CORES - BCLK_SW_OFFSET] = {
 	[BCLK_SW_CPU_CORE - BCLK_SW_OFFSET] = "cpu",
 	[BCLK_SW_V3D - BCLK_SW_OFFSET] = "v3d0",
 	[BCLK_SW_SYSIF - BCLK_SW_OFFSET] = "sysif0",
@@ -69,6 +69,8 @@ static const char *pmap_cores[BCLK_SW_NUM_CORES] = {
 	[BCLK_SW_SMARTCARD0 - BCLK_SW_OFFSET] = "sc0",
 	[BCLK_SW_SMARTCARD1 - BCLK_SW_OFFSET] = "sc1",
 	[BCLK_SW_VPU0 - BCLK_SW_OFFSET] = "vpu0",
+	[BCLK_SW_BNE0 - BCLK_SW_OFFSET] = "bne0",
+	[BCLK_SW_ASP0 - BCLK_SW_OFFSET] = "asp0",
 };
 
 static const struct scmi_handle *handle;

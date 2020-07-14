@@ -29,16 +29,31 @@ static int bcm54810_no_broad_reach(struct phy_device *phydev)
 
 static int __init brcmstb_phy_fixups(void)
 {
+	const char *mdio_bus[] = {
+		"9c0c614.mdio--1:07",
+		"9c0ce14.mdio--1:07",
+		UNIMAC_MDIO_DRV_NAME "-0:07",
+	};
+	int ret = 0, i;
+
 	if (!of_machine_is_compatible("brcm,bcm7211a0") &&
-	    !of_machine_is_compatible("brcm,bcm7211b0"))
-		return 0;
+	    !of_machine_is_compatible("brcm,bcm7211b0") &&
+	    !of_machine_is_compatible("brcm,bcm72165a0"))
+		return ret;
 
 	/* Register a PHY fixup to disable the auto-power down of CLK125
 	 * on BCM97211SV boards connected to the GENET_0 MDIO controller
-	 * at address 7.
+	 * at address 7 or one of the two ASP UniMAC MDIO controllers
+	 * on BCM972165SV boards.
 	 */
-	return phy_register_fixup(UNIMAC_MDIO_DRV_NAME "-0:07",
-				  PHY_ID_BCM54810, 0xfffffff0,
-				  bcm54810_no_broad_reach);
+	for (i = 0; i < ARRAY_SIZE(mdio_bus); i++) {
+		ret = phy_register_fixup(mdio_bus[i],
+					 PHY_ID_BCM54810, 0xfffffff0,
+					 bcm54810_no_broad_reach);
+		if (ret)
+			return ret;
+	}
+
+	return ret;
 }
 arch_initcall(brcmstb_phy_fixups);

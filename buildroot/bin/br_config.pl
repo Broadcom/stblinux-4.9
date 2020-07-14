@@ -28,13 +28,19 @@ use Socket;
 
 use constant AUTO_MK => qw(brcmstb.mk);
 use constant LOCAL_MK => qw(local.mk);
+use constant BR_FRAG_FILE => qw(br_fragments.cfg);
+use constant KERNEL_FRAG_FILE => qw(k_fragments.cfg);
+
 use constant BR_MIRROR_HOST => qw(stbgit.broadcom.com);
 use constant BR_MIRROR_PATH => qw(/mirror/buildroot);
 use constant FORBIDDEN_PATHS => ( qw(. /tools/bin) );
 use constant MERGED_FRAGMENT => qw(merged_fragment);
+use constant PRIVATE_CCACHE => qw($(HOME)/.buildroot-ccache);
 use constant RECOMMENDED_TOOLCHAINS => ( qw(misc/toolchain.master
 					misc/toolchain) );
+use constant SHARED_CCACHE => qw(/local/users/stbdev/buildroot-ccache);
 use constant SHARED_OSS_DIR => qw(/projects/stbdev/open-source);
+use constant STB_CMA_DRIVER => qw(include/linux/brcmstb/cma_driver.h);
 use constant TOOLCHAIN_DIR => qw(/opt/toolchains);
 use constant VERSION_FRAGMENT => qw(local_version.txt);
 use constant VERSION_H => qw(/usr/include/linux/version.h);
@@ -118,11 +124,11 @@ sub check_open_source_dir()
 }
 
 # Without this explicit function prototype, Perl will complain that the
-# recursive call inside fix_oss_permission() is happening too early to check the
-# prototype.
-sub fix_oss_permissions($);
+# recursive call inside fix_shared_permission() is happening too early
+# to check the prototype.
+sub fix_shared_permissions($);
 
-sub fix_oss_permissions($)
+sub fix_shared_permissions($)
 {
 	my ($dir) = @_;
 	my @st = stat($dir);
@@ -147,10 +153,63 @@ sub fix_oss_permissions($)
 		# Skip "." and ".."
 		next if ($entry =~ /^\.{1,2}$/);
 		if (-d "$dir/$entry") {
-			fix_oss_permissions("$dir/$entry");
+			fix_shared_permissions("$dir/$entry");
 		}
 	}
 	closedir($dh);
+}
+
+sub get_ccache_dir($)
+{
+	my ($shared_cache) = @_;
+	my $base_dir = dirname($shared_cache);
+	my $top_dir = dirname($base_dir);
+	my $ret = $shared_cache;
+	my $dh;
+
+	# Can't have a shared cache if:
+	#   * top dir doesn't exist or
+	#   * top dir isn't writable and base dir doesn't exist
+	if (! -d $top_dir || (! -w $top_dir && ! -d $base_dir)) {
+		return PRIVATE_CCACHE;
+	}
+
+	if (! -d $base_dir) {
+		mkdir($base_dir);
+		chmod(0777, $base_dir);
+	}
+
+	# Can't have a shared cache if:
+	#   * shared cache doesn't exist and base dir isn't writable
+	return PRIVATE_CCACHE if (! -d $shared_cache && ! -w $base_dir);
+
+	if (! -d $shared_cache) {
+		mkdir($shared_cache);
+		chmod(0777, $shared_cache);
+	}
+
+	# Lastly, the shared cache itself and its sub-directories must be
+	# writable.
+	if (! -w $shared_cache) {
+		return PRIVATE_CCACHE;
+	}
+
+	opendir($dh, $shared_cache);
+	while (my $entry = readdir($dh)) {
+		# We only care about directories named 0-9 and a-f, as well as
+		# tmp.
+		if ($entry =~ /^[0-9a-f]$/ || $entry eq 'tmp') {
+			if (! -w "$shared_cache/$entry") {
+				$ret = PRIVATE_CCACHE;
+				last;
+			}
+		}
+	}
+	closedir($dh);
+
+	fix_shared_permissions($shared_cache);
+
+	return $ret;
 }
 
 # Find downloaded Linux tar-balls
@@ -288,6 +347,13 @@ sub check_linux($)
 	return 1;
 }
 
+sub check_cma_driver($)
+{
+	my ($local_linux) = @_;
+
+	return (-r "$local_linux/".STB_CMA_DRIVER);
+}
+
 sub get_cores()
 {
 	my $num_cores;
@@ -401,6 +467,24 @@ sub trigger_toolchain_sync($$)
 	}
 }
 
+sub get_kconfig_var($$)
+{
+	my ($fname, $key) = @_;
+	my $val;
+
+	open(F, $fname) || return undef;
+	while (<F>) {
+		if (/^$key\s*=\s*(.*)/) {
+			$val = $1;
+			$val =~ s/["']//g;
+			last;
+		}
+	}
+	close(F);
+
+	return $val;
+}
+
 sub get_kernel_header_version($$)
 {
 	my ($toolchain, $arch) = @_;
@@ -452,9 +536,93 @@ sub get_linux_sha($$$)
 	open(F, ">$version_fragment");
 	print(F "CONFIG_LOCALVERSION=\"-g$git_sha\"\n");
 	close(F);
+
+	if (!defined($fragments)) {
+		return '';
+	}
+
 	$version_fragment .= "," if ($fragments ne '');
 
 	return $version_fragment.$fragments;
+}
+
+sub get_linux_sha_local($$$)
+{
+	my ($fragments, $fragment_dir, $linux_dir) = @_;
+	my $git_dir = "$linux_dir/.git";
+
+	# Let the caller know that there's no GIT SHA
+	if (!-e $git_dir) {
+		return undef;
+	}
+
+	# If the .git entry is a file rather than a directory, it means
+	# we are dealing with a submodule. We handle that case first.
+	if (-f $git_dir) {
+		open(F, $git_dir);
+		while (<F>) {
+			chomp;
+			if (m|^gitdir:\s+(.*/linux$)|) {
+				$git_dir = $1;
+				last;
+			}
+		}
+		close(F);
+	}
+	if (-d $git_dir) {
+		my $git_cmd = "git --git-dir=\"$git_dir\" rev-parse ".
+			"--short=".SHA_LEN." HEAD";
+		$fragments = get_linux_sha($fragments, $fragment_dir, $git_cmd);
+	}
+
+	return $fragments;
+}
+
+sub get_linux_sha_remote($$)
+{
+	my ($fragments, $fragment_dir) = @_;
+
+	my $git_remote =
+		$generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_URL'};
+	my $git_branch =
+		$generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION'};
+	my $git_cmd = "git ls-remote \"$git_remote\" | ".
+			"grep \"refs/heads/$git_branch\$\" | ".
+			"awk '{ print \$1 }' | ".
+			"cut -c1-".SHA_LEN;
+
+	return get_linux_sha($fragments, $fragment_dir, $git_cmd);
+}
+
+sub parse_cmdline_fragments($$)
+{
+	my ($out_file, $frag_str) = @_;
+	my @frags = split(/;/, $frag_str);
+
+	return '' if ($frag_str eq '');
+
+	printf("Generating temporary fragment file $out_file...\n");
+
+	# This function strips white space and quotes around fragments, as it is
+	# fairly easy to end up with extra quotes or spaces when passing config
+	# fragments on the command line. (They may have to be escaped from the
+	# shell, after all.)
+
+	open(F, ">$out_file");
+	foreach my $frag (@frags) {
+		# Strip leading and trailing whitespace.
+		$frag =~ s/^\s+//;
+		$frag =~ s/\s+$//;
+		if ($frag =~ /^["']/) {
+			# Strip quotes around the entire fragment. Make sure the
+			# quote at the end is the same as at the beginning.
+			$frag =~ s/^(["'])(.*)\1$/$2/;
+		}
+		print(F "$frag\n");
+	}
+	close(F);
+
+	return $out_file;
 }
 
 sub merge_br_fragments($$$)
@@ -615,8 +783,9 @@ sub print_usage($)
 		"          -c...........clean (remove output/\$platform)\n".
 		"          -D...........use platform's default kernel config\n".
 		"          -d <fname>...use <fname> as kernel defconfig\n".
-		"          -F <fname>...use <fname> as kernel fragment(s)\n".
+		"          -F <fname>...use <fname> as kernel fragment file\n".
 		"          -f <fname>...use <fname> as BR fragment file\n".
+		"          -H...........obtain Linux GIT SHA only\n".
 		"          -i...........like -b, but also build FS images\n".
 		"          -j <jobs>....run <jobs> parallel build jobs\n".
 		"          -L <path>....use local <path> as Linux kernel\n".
@@ -624,10 +793,13 @@ sub print_usage($)
 		"          -M <url>.....use <url> as BR mirror ('-' for none)\n".
 		"          -n...........do not use shared download cache\n".
 		"          -o <path>....use <path> as the BR output directory\n".
+		"          -R <str>.....use <str> as kernel fragment(s)\n".
+		"          -r <str>.....use <str> as BR fragments\n".
 		"          -S...........suppress using SHA in Linux version\n".
 		"          -T <verstr>..use this toolchain version\n".
 		"          -t <path>....use <path> as toolchain directory\n".
-		"          -v <tag>.....use <tag> as Linux version tag\n");
+		"          -v <tag>.....use <tag> as Linux version tag\n".
+		"          -X <path>....use <path> as CCACHE ('-' for none)\n");
 }
 
 ########################################
@@ -635,6 +807,7 @@ sub print_usage($)
 ########################################
 my $prg = basename($0);
 
+my @orig_cmdline = @ARGV;
 my $merged_config = 'brcmstb_merged_defconfig';
 my $br_output_default = 'output';
 my $temp_config = 'temp_config';
@@ -642,22 +815,28 @@ my $host_gcc_ver = `gcc -v 2>&1 | grep '^gcc'`;
 my $host_kernel_ver = `uname -r`;
 my $host_name = `hostname -f 2>/dev/null`;
 my $host_os_ver = `lsb_release -d 2>/dev/null`;
+my $host_perl_ver = `perl -v | grep '^This is'`;
+my $hash_mode = 0;
 my $ret = 0;
 my $is_64bit = 0;
 my $host_addr;
 my $relative_outputdir;
 my $br_outputdir;
 my $br_mirror;
-my $kernel_fragments;
+my $br_ccache;
+my $inline_kernel_frag_file;
+my $kernel_frag_files;
 my $local_linux;
 my $toolchain;
 my $toolchain_ver;
 my $recommended_toolchain;
 my $kernel_header_version;
 my $arch;
+my $opt_keys;
 my %opts;
 
-getopts('3:bcDd:F:f:ij:L:l:M:no:ST:t:v:', \%opts);
+getopts('3:bcDd:F:f:Hij:L:l:M:no:R:r:ST:t:v:X:', \%opts);
+$opt_keys = join('', keys(%opts));
 $arch = $ARGV[0];
 
 if ($#ARGV < 0) {
@@ -671,9 +850,18 @@ if (check_br() < 0) {
 	exit(1);
 }
 
+$hash_mode = 1 if ($opts{'H'});
+
+if ($hash_mode && $opt_keys =~ /[^H]/) {
+	print(STDERR
+		"$prg: option -H can't be combined with another option\n");
+	exit(1);
+}
+
 chomp($host_name);
 chomp($host_kernel_ver);
 $host_gcc_ver =~ s/(.*\S)\s*\n/$1/s;
+$host_perl_ver =~ s/.*\(([^)]+)\).*/$1/s;
 $host_os_ver =~ s/.*:\s+(.*)\n$/$1/s;
 $host_addr = inet_ntoa(inet_aton($host_name)) || '';
 
@@ -741,11 +929,56 @@ if (! -d $br_outputdir) {
 	make_path($br_outputdir);
 }
 
+# In hash mode, we only update the kernel hash and nothing else.
+if ($hash_mode) {
+	my $version_frag = VERSION_FRAGMENT;
+	my $auto_mk =  "$br_outputdir/".AUTO_MK;
+	my $k_frags = get_kconfig_var("$br_outputdir/.config",
+		'BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES');
+
+	print("Running in hash mode for $arch...\n");
+
+	# Sanity checks that updating the hash makes sense. We don't do it if
+	#     1. The version fragment file hasn't been configured.
+	#     2. A non-custom kernel is being used (e.g. a cloned default
+	#        kernel).
+	#     3. SHA versioning has been disabled.
+	# Setting the hash would have no effect in the first case, since the
+	# kernel fragment would never be included. In the case of a non-custom
+	# kernel, updating the hash would more likely be misleading than
+	# helpful. Such a kernel should also not be modified locally. And if SHA
+	# versioning has been turned off, it would make no sense to update it.
+	if ($k_frags !~ /$version_frag/) {
+		print(STDERR "$prg: $version_frag isn't being used; ".
+			"won't update hash\n");
+		exit(0);
+	}
+	if (!-e $auto_mk) {
+		print(STDERR
+			"$prg: $auto_mk doesn't exist; won't update hash\n");
+		exit(0);
+	}
+
+	$local_linux = get_kconfig_var($auto_mk, 'LINUX_OVERRIDE_SRCDIR');
+	get_linux_sha_local(undef, $relative_outputdir, $local_linux);
+	exit(0);
+}
+
 # This information may help troubleshoot build problems.
 print("Host is running $host_os_ver...\n");
 print("Host kernel is $host_kernel_ver...\n");
 print("Host name is $host_name ($host_addr)...\n");
 print("Host GCC is $host_gcc_ver...\n");
+print("Host perl is $host_perl_ver...\n");
+{
+	my @br_vars = grep { /^BR_/ } keys(%ENV);
+
+	print("Host environment:\n") if ($#br_vars >= 0);
+	foreach my $key (@br_vars) {
+		print("\t$key = ".$ENV{$key}."\n");
+	}
+}
+print("Command line is \"@orig_cmdline\"...\n");
 
 if (defined($opts{'o'})) {
 	print("Using ".$opts{'o'}." as output directory...\n");
@@ -763,7 +996,31 @@ if (defined($opts{'c'})) {
 	exit($status);
 }
 
-$kernel_fragments = $opts{'F'} || '';
+if (defined($ENV{'BR_CCACHE'})) {
+	$br_ccache = $ENV{'BR_CCACHE'};
+}
+if (defined($opts{'X'})) {
+	$br_ccache = $opts{'X'};
+}
+if (defined($br_ccache)) {
+	if ($br_ccache eq '-') {
+		print("Not using CCACHE to build...\n");
+		$generic_config{'BR2_CCACHE'} = '';
+	} else {
+		print("Using custom CCACHE cache $br_ccache...\n");
+		$generic_config{'BR2_CCACHE_DIR'} = $br_ccache;
+	}
+} else {
+	$br_ccache = get_ccache_dir(SHARED_CCACHE);
+	print("Using CCACHE with cache $br_ccache...\n");
+	$generic_config{'BR2_CCACHE_DIR'} = $br_ccache;
+	if ($br_ccache eq SHARED_CCACHE) {
+		$generic_config{'BR2_CCACHE_INITIAL_SETUP'} =
+			"-M 10G -o 'umask=0'";
+	}
+}
+
+$kernel_frag_files = $opts{'F'} || '';
 
 $toolchain_ver = $opts{'T'} || '';
 if ($toolchain_ver eq '' && !defined($opts{'t'})) {
@@ -806,7 +1063,7 @@ if (check_open_source_dir() && !defined($opts{'n'})) {
 	# This is a best-effort attempt to fix up directory permissions in the
 	# shared download cache. It will only work if the directories with the
 	# wrong permissions are owned by the user running br_config.pl
-	fix_oss_permissions($br_oss_cache) if (-d $br_oss_cache);
+	fix_shared_permissions($br_oss_cache) if (-d $br_oss_cache);
 
 	# Make sure the cache directory is writable. Don't use it if we can't
 	# write to it.
@@ -879,8 +1136,6 @@ if (defined($opts{'v'})) {
 }
 
 if (defined($local_linux)) {
-	my $git_dir = "$local_linux/.git";
-
 	print("Using $local_linux as Linux kernel directory...\n");
 	if (!-d $local_linux) {
 		print(STDERR "$prg: Linux directory $local_linux doesn't exist\n");
@@ -893,29 +1148,22 @@ if (defined($local_linux)) {
 			"with the build.\n");
 		exit(1);
 	}
+	if (!check_cma_driver($local_linux)) {
+		print("Disabling CMATOOL since kernel doesn't support it...\n");
+		$generic_config{'BR2_PACKAGE_CMATOOL'} = '';
+	}
 
 	write_brcmstbmk($prg, $relative_outputdir, $local_linux);
 	write_localmk($prg, $relative_outputdir);
 	# Get the kernel GIT SHA locally if it's a GIT tree.
 	if (!defined($opts{'S'})) {
-		# If the .git entry is a file rather than a directory, it means
-		# we are dealing with a submodule. We handle that case first.
-		if (-f $git_dir) {
-			open(F, $git_dir);
-			while (<F>) {
-				chomp;
-				if (m|^gitdir:\s+(.*/linux$)|) {
-					$git_dir = $1;
-					last;
-				}
-			}
-			close(F);
-		}
-		if (-d $git_dir) {
-			my $git_cmd = "git --git-dir=\"$git_dir\" rev-parse ".
-				"--short=".SHA_LEN." HEAD";
-			$kernel_fragments = get_linux_sha($kernel_fragments,
-				$relative_outputdir, $git_cmd);
+		my $kff = get_linux_sha_local($kernel_frag_files,
+				$relative_outputdir, $local_linux);
+		if (!defined($kff)) {
+			print("No GIT hash available for Linux kernel, ".
+				"not setting local version...\n");
+		} else {
+			$kernel_frag_files = $kff;
 		}
 	}
 } else {
@@ -926,17 +1174,23 @@ if (defined($local_linux)) {
 	# Determine the kernel GIT SHA remotely. The tree hasn't been cloned
 	# yet.
 	if (!defined($opts{'S'})) {
-		my $git_remote =
-			$generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_URL'};
-		my $git_branch =
-			$generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION'};
-		my $git_cmd = "git ls-remote \"$git_remote\" | ".
-			"grep \"refs/heads/$git_branch\$\" | ".
-			"awk '{ print \$1 }' | ".
-			"cut -c1-".SHA_LEN;
-		$kernel_fragments = get_linux_sha($kernel_fragments,
-			$relative_outputdir, $git_cmd);
+		$kernel_frag_files = get_linux_sha_remote($kernel_frag_files,
+			$relative_outputdir);
 	}
+}
+
+$inline_kernel_frag_file = $relative_outputdir."/".KERNEL_FRAG_FILE;
+if (defined($opts{'R'})) {
+	my $frag_file = parse_cmdline_fragments($inline_kernel_frag_file,
+		$opts{'R'});
+
+	if ($frag_file ne '') {
+		$kernel_frag_files .= ' ' if ($kernel_frag_files ne '');
+		$kernel_frag_files .= $frag_file;
+	}
+} else {
+	# Keep things clean. Remove the frag file if we don't need it.
+	unlink($inline_kernel_frag_file) if (-e $inline_kernel_frag_file);
 }
 
 # If requested, don't append GIT SHA to kernel version string. Primarily used
@@ -948,12 +1202,12 @@ if (defined($opts{'S'})) {
 	}
 }
 
-if ($kernel_fragments ne '') {
+if ($kernel_frag_files ne '') {
 	# BR wants fragment files to be separated by spaces
-	$kernel_fragments =~ s/,/ /g;
-	print("Linux config fragment(s): $kernel_fragments\n");
+	$kernel_frag_files =~ s/,/ /g;
+	print("Linux config fragment file(s): $kernel_frag_files\n");
 	$generic_config{'BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES'} =
-		$kernel_fragments;
+		$kernel_frag_files;
 }
 
 if (defined($opts{'t'})) {
@@ -1086,6 +1340,19 @@ if (defined($opts{'f'})) {
 	system("support/kconfig/merge_config.sh -m $temp_config ".
 		"\"$fragment_file\"");
 	unlink($fragment_file);
+}
+if (defined($opts{'r'})) {
+	my $f = $relative_outputdir."/".BR_FRAG_FILE;
+	my $fragment_file = parse_cmdline_fragments($f, $opts{'r'});
+
+	if ($fragment_file ne '') {
+		# Preserve the merged configuration from above and use it as the
+		# starting point.
+		rename('.config', $temp_config);
+		system("support/kconfig/merge_config.sh -m $temp_config ".
+			"\"$fragment_file\"");
+		unlink($fragment_file);
+	}
 }
 unlink($temp_config);
 move_merged_config($prg, $arch, ".config", "configs/$merged_config");

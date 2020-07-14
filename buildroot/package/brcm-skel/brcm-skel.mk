@@ -12,8 +12,15 @@ BRCM_SKEL_SOURCE = stbtools-$(BRCMROOT_VERSION).tar.gz
 BRCM_SKEL_DL_SUBDIR = brcm-pm
 BRCM_SKEL_LICENSE = GPL-2.0
 
+ifeq ($(BR2_INIT_BUSYBOX),y)
 # Ensure that packages initscripts & busybox don't overwrite any of our files
 BRCM_SKEL_DEPENDENCIES = initscripts busybox
+else
+# Don't install rcS if we have neither INIT_BUSYBOX nor INIT_SYSV
+ifeq ($(BR2_INIT_SYSV),)
+INSTALL_EXCLUDE = --exclude init.d
+endif
+endif
 
 # Extract only what we need to save space.
 define BRCM_SKEL_EXTRACT_CMDS
@@ -24,7 +31,9 @@ define BRCM_SKEL_EXTRACT_CMDS
 endef
 
 define BRCM_SKEL_INSTALL_TARGET_CMDS
-	rsync -a --exclude .gitignore $(@D)/skel/ $(TARGET_DIR)
+	rsync -a --exclude .gitignore \
+		$(INSTALL_EXCLUDE) \
+		$(@D)/skel/ $(TARGET_DIR)
 endef
 
 $(eval $(generic-package))

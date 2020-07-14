@@ -16,14 +16,17 @@
 #include <linux/brcmstb/memory_api.h>
 #include <linux/soc/brcmstb/brcmstb.h>
 #include <linux/brcmstb/brcmstb-smccc.h>
+#include <linux/reboot.h>
 
 #include <uapi/linux/psci.h>
 
 #include <asm/suspend.h>
+#include <asm/system_misc.h>
 
 #include "pm-common.h"
 
 static psci_fn *invoke_psci_fn;
+static bool brcmstb_psci_system_reset2_supported;
 
 static int brcmstb_psci_integ_region(unsigned long function_id,
 				     unsigned long base,
@@ -100,6 +103,27 @@ int brcmstb_psci_system_mem_finish(void)
 	}
 
 	return cpu_suspend(0, psci_system_suspend);
+}
+
+static void brcmstb_psci_sys_reset(enum reboot_mode reboot_mode,
+				   const char *cmd)
+{
+	/*
+	 * reset_type[31] = 0 (architectural)
+	 * reset_type[30:0] = 0 (SYSTEM_WARM_RESET)
+	 * cookie = 0 (ignored by the implementation)
+	 */
+	uint32_t reboot_type = 0;
+
+	if ((reboot_mode == REBOOT_COLD || reboot_mode == REBOOT_WARM ||
+	    reboot_mode == REBOOT_SOFT) &&
+	    brcmstb_psci_system_reset2_supported) {
+		if (cmd && !strcmp(cmd, "powercycle"))
+			reboot_type = BIT(31) | 1;
+		invoke_psci_fn(PSCI_FN_NATIVE(1_1, SYSTEM_RESET2), reboot_type, 0, 0);
+	} else {
+		invoke_psci_fn(PSCI_0_2_FN_SYSTEM_RESET, 0, 0, 0);
+	}
 }
 
 void brcmstb_psci_sys_poweroff(void)
@@ -217,6 +241,10 @@ int brcmstb_pm_psci_init(void)
 		}
 	}
 
+	ret = psci_features(PSCI_FN_NATIVE(1_1, SYSTEM_RESET2));
+	if (ret != PSCI_RET_NOT_SUPPORTED)
+		brcmstb_psci_system_reset2_supported = true;
+
 	ret = brcmstb_psci_integ_region_reset_all();
 	if (ret != PSCI_RET_SUCCESS) {
 		pr_err("Error resetting all integrity checking regions\n");
@@ -246,6 +274,7 @@ int brcmstb_pm_psci_init(void)
 
 	brcmstb_pm_method = BRCMSTB_PM_PSCI_FULL;
 	pm_power_off = brcmstb_psci_sys_poweroff;
+	arm_pm_restart = brcmstb_psci_sys_reset;
 	suspend_set_ops(&brcmstb_psci_ops);
 	atomic_notifier_chain_register(&panic_notifier_list,
 				       &brcmstb_psci_nb);

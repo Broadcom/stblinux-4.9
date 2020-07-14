@@ -1,0 +1,43 @@
+From 6eccd233efeb994b91a1c7fa6581e65189796a06 Mon Sep 17 00:00:00 2001
+From: Markus Mayer <mmayer@broadcom.com>
+Date: Mon, 9 Mar 2020 16:05:45 -0700
+Subject: [PATCH] Apply umask value to config file itself.
+
+If the "umask=<value>" setting is passed in via "-o ...", apply the
+umask value to the config file itself.
+
+This way, any file permissions that will be applied to the cache
+directory are also applied to the config file. This makes it possible
+to create group or world-writeable config files by default.
+
+Signed-off-by: Markus Mayer <mmayer@broadcom.com>
+---
+ src/conf.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/src/conf.c b/src/conf.c
+index 92fe34bd630e..14ba26ce4582 100644
+--- a/src/conf.c
++++ b/src/conf.c
+@@ -341,6 +341,18 @@ conf_set_value_in_file(const char *path, const char *key, const char *value,
+ 		fprintf(outfile, "%s = %s\n", key, value);
+ 	}
+ 
++	int mask = -1;
++	if (strcmp(key, "umask") == 0) {
++		char *errp;
++		mask = strtol(value, &errp, 0);
++		if (errp[0] != '\0') {
++			mask = -1;
++		}
++	}
++	if (mask >= 0) {
++		fchmod(fileno(outfile), 0666 &~ mask);
++	}
++
+ 	fclose(infile);
+ 	fclose(outfile);
+ 	if (x_rename(outpath, path) != 0) {
+-- 
+2.17.1
+

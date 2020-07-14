@@ -84,7 +84,7 @@ int __init test_dvfs_api_init(void)
 	}
 
 	w = total_power;
-	mw = do_div(w, 1000000);
+	mw = w / 1000000;
 
 	pr_info(" Total power calculated: %d.%04d W(dc) (%d uW)\n",
 		w, mw, total_power);

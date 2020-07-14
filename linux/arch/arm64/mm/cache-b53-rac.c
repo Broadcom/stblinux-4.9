@@ -25,11 +25,17 @@
 #define  RACENDATA_SHIFT		(6)
 #define  RAC_CPU_SHIFT			(8)
 #define  RACCFG_MASK			(0xff)
+#define A72_RAC_CONFIG1_REG		(0x0c)
+#define B53_RAC_CONFIG1_REG		(0x7c)
+#define  DPREF_LINE_2_SHIFT		24
+#define  DPREF_LINE_2_MASK		0xff
 #define A72_RAC_FLUSH_REG		(0x14)
 #define B53_RAC_FLUSH_REG		(0x84)
 #define  FLUSH_RAC			(1 << 0)
 
-/* Bitmask to enable instruction and data prefetching with a 256-bytes stride */
+/* Bitmask to enable instruction and data prefetching with a 256-bytes stride,
+ * prefetch next 256-byte line after 4 consecutive lines used
+ */
 #define RAC_DATA_INST_EN_MASK		(1 << RACPREFINST_SHIFT | \
 					 RACENPREF_MASK << RACENINST_SHIFT | \
 					 1 << RACPREFDATA_SHIFT | \
@@ -39,16 +45,19 @@ static void __iomem *b53_rac_base;
 
 enum b53_rac_reg_offset {
 	RAC_CONFIG0_REG,
+	RAC_CONFIG1_REG,
 	RAC_FLUSH_REG
 };
 
 static u8 b53_rac_offsets[] = {
 	[RAC_CONFIG0_REG] = B53_RAC_CONFIG0_REG,
+	[RAC_CONFIG1_REG] = B53_RAC_CONFIG1_REG,
 	[RAC_FLUSH_REG]	= B53_RAC_FLUSH_REG,
 };
 
 static u8 a72_rac_offsets[] = {
 	[RAC_CONFIG0_REG] = A72_RAC_CONFIG0_REG,
+	[RAC_CONFIG1_REG] = A72_RAC_CONFIG1_REG,
 	[RAC_FLUSH_REG]	= A72_RAC_FLUSH_REG,
 };
 
@@ -91,13 +100,20 @@ void b53_rac_flush_all(void)
 static void b53_rac_enable_all(void)
 {
 	unsigned int cpu;
-	u32 enable = 0;
+	u32 enable = 0, pref_dist, shift;
 
+	pref_dist = __raw_readl(b53_rac_base + rac_offsets[RAC_CONFIG1_REG]);
 	for_each_possible_cpu(cpu) {
-
+		shift = cpu * RAC_CPU_SHIFT + RACPREFDATA_SHIFT;
 		enable |= RAC_DATA_INST_EN_MASK << (cpu * RAC_CPU_SHIFT);
+		if (rac_offsets == a72_rac_offsets) {
+			enable &= ~(RACENPREF_MASK << shift);
+			enable |= 3 << shift;
+			pref_dist |= 1 << (cpu + DPREF_LINE_2_SHIFT);
+		}
 	}
 	__raw_writel(enable, b53_rac_base + rac_offsets[RAC_CONFIG0_REG]);
+	__raw_writel(pref_dist, b53_rac_base + rac_offsets[RAC_CONFIG1_REG]);
 }
 
 static void b53_rac_resume(void)

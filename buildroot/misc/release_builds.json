@@ -1,4 +1,5 @@
 {
 	"stb-4.1": [ "arm", "arm64", "bmips" ],
-	"stb-4.9": [ "arm", "arm64" ]
+	"stb-4.9": [ "arm", "arm64" ],
+	"stb-5.4": [ "arm", "arm64" ]
 }

@@ -16,12 +16,14 @@ Tested by running through my loading scripts and verifying ubiformat returned
 
 Signed-off-by: Barry Grussling <barry@grussling.com>
 Signed-off-by: David Oberhollenzer <david.oberhollenzer@sigma-star.at>
+Backported-from: 95633c4dfe943a701d4fcd809e6cabf4bf8710b8
+Signed-off-by: Thomas De Schampheleire <thomas.de_schampheleire@nokia.com>
 ---
  ubi-utils/ubiformat.c | 7 +++++--
  1 file changed, 5 insertions(+), 2 deletions(-)
 
 diff --git a/ubi-utils/ubiformat.c b/ubi-utils/ubiformat.c
-index 64afad24ec32..be40e526e837 100644
+index 64afad2..be40e52 100644
 --- a/ubi-utils/ubiformat.c
 +++ b/ubi-utils/ubiformat.c
 @@ -550,6 +550,7 @@ static int format(libmtd_t libmtd, const struct mtd_dev_info *mtd,
@@ -54,5 +56,5 @@ index 64afad24ec32..be40e526e837 100644
  
  int main(int argc, char * const argv[])
 -- 
-2.17.1
+2.24.1
 

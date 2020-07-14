@@ -142,7 +142,7 @@ if which mksquashfs >/dev/null; then
 	rm -f "${OUTPUT_DIR}/images/squashfs-${TARGET}.img"
 	mksquashfs "${OUTPUT_DIR}/target" \
 		"${OUTPUT_DIR}/images/squashfs-${TARGET}.img" \
-		-processors 1 -root-owned -p "/dev/console c 0600 0 0 5 1"
+		-root-owned -p "/dev/console c 0600 0 0 5 1"
 	chmod 0644 "${OUTPUT_DIR}/images/squashfs-${TARGET}.img"
 	echo "  -> ${OUTPUT_DIR}/images/squashfs-${TARGET}.img"
 	echo ""

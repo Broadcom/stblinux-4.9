@@ -24,6 +24,9 @@ build_dir="${arch_dir}/build"
 linux_tools="${build_dir}/linux-tools"
 lib64="${TARGET_DIR}/lib64"
 
+# Nothing to do if the target directory doesn't exist.
+test -d "${TARGET_DIR}" || exit 0
+
 # "test -d" implicitly dereferences symlinks, so it is not sufficient to
 # test whether lib64 is a directory. We also have to ensure it's not a
 # symlink.

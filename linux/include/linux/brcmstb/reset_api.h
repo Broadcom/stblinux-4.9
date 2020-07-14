@@ -23,9 +23,10 @@
 #define BRST_SW_SMARTCARD0	(BRST_SW_OFFSET + 0xf)
 #define BRST_SW_SMARTCARD1	(BRST_SW_OFFSET + 0x10)
 #define BRST_SW_VPU0		(BRST_SW_OFFSET + 0x11)
-
+#define BRST_SW_BNE0		(BCLK_SW_OFFSET + 0x12)
+#define BRST_SW_ASP0		(BCLK_SW_OFFSET + 0x13)
 /* If you add a reset core, please update below */
-#define BRST_SW_NUM_CORES	(BRST_SW_OFFSET + BRST_SW_VPU0 + 1)
+#define BRST_SW_NUM_CORES	(BRST_SW_ASP0 + 1)
 
 
 

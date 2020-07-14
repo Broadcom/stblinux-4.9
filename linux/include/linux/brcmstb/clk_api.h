@@ -33,9 +33,10 @@
 #define BCLK_SW_SMARTCARD0	(BCLK_SW_OFFSET + 0xf)
 #define BCLK_SW_SMARTCARD1	(BCLK_SW_OFFSET + 0x10)
 #define BCLK_SW_VPU0		(BCLK_SW_OFFSET + 0x11)
-
-/* If you add a clk/core, please update below */
-#define BCLK_SW_NUM_CORES    (BCLK_SW_OFFSET + BCLK_SW_VPU0 + 1)
+#define BCLK_SW_BNE0		(BCLK_SW_OFFSET + 0x12)
+#define BCLK_SW_ASP0		(BCLK_SW_OFFSET + 0x13)
+/* If you add a clk/core above, please update below */
+#define BCLK_SW_NUM_CORES	(BCLK_SW_ASP0 + 1)
 
 /* Keep some space reserved for future cores.  */
 
