@@ -135,6 +135,7 @@ static int __init cma_rsv_setup(char *str)
 {
 	phys_addr_t addr = 0;
 	phys_addr_t size = 0;
+	char *orig_str = str;
 	int ret;
 
 	size = (phys_addr_t) memparse(str, &str);
@@ -144,6 +145,12 @@ static int __init cma_rsv_setup(char *str)
 	if (size == 0) {
 		pr_info("disabling reserved memory\n");
 		cma_disabled = true;
+		return 0;
+	}
+
+	if (addr < memblock_start_of_DRAM()) {
+		pr_warn("ignoring invalid range '%s' below addressable DRAM\n",
+			orig_str);
 		return 0;
 	}
 

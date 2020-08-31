@@ -112,6 +112,12 @@ static int __init bmem_setup(char *str)
 		return 0;
 	}
 
+	if (addr < memblock_start_of_DRAM()) {
+		pr_warn("ignoring invalid range '%s' below addressable DRAM\n",
+			orig_str);
+		return 0;
+	}
+
 	ret = __bmem_setup(addr, size);
 	if (!ret)
 		brcmstb_memory_override_defaults = true;

@@ -11,25 +11,18 @@
 #include <linux/string.h>
 #include <linux/types.h>
 
-struct brcm_clk_cfg_data {
-	const char * const	*hw_names;
-	const char * const	*sw_names;
-	unsigned int		num_sw_clks;
-	unsigned int		num_hw_clks;
-};
-
 struct brcm_clk_iface {
-	/* clks -- contiguous array of Hw and SW clocks, in that order */
+	/* clks -- contiguous array of SW clocks */
 	struct clk			**clks;
 	unsigned int			num_clks;
 	struct mutex			lock;
-	const struct brcm_clk_cfg_data	*cfg;
+	const char * const		*clk_names;
 };
 
 static struct brcm_clk_iface *iface;
 
 /* These strings' positions must align with the defs in clk_api.h */
-static const char * const sw_names_stb[] = {
+static const char * const clk_names_stb[] = {
 	/* Software Clocks and/or Cores */
 	/* [00..0f] */
 	"sw_cpu_core", "sw_v3d", "sw_sysif", "sw_scb",
@@ -39,7 +32,7 @@ static const char * const sw_names_stb[] = {
 
 	/* [10..1f] */
 	"sw_smartcard1", "reserved", "sw_bne", "sw_asp",
-	"reserved", "reserved", "reserved", "reserved",
+	"sw_hvd_cabac0", "sw_axi0", "reserved", "reserved",
 	"reserved", "reserved", "reserved", "reserved",
 	"reserved", "reserved", "reserved", "reserved",
 
@@ -75,23 +68,10 @@ static const char * const sw_names_stb[] = {
 	"sw_xpt_sram",
 };
 
-static const struct brcm_clk_cfg_data brcmstb_cfg = {
-	.hw_names = NULL,
-	.num_hw_clks = 0,
-	.sw_names = sw_names_stb,
-	.num_sw_clks = ARRAY_SIZE(sw_names_stb),
-};
-
 static inline bool brcm_is_sw_clk(unsigned int clk_id)
 {
 	return (clk_id >= BCLK_SW_OFFSET) &&
-		(clk_id < BCLK_SW_OFFSET + iface->cfg->num_sw_clks);
-}
-
-static inline bool brcm_is_hw_clk(unsigned int clk_id)
-{
-	return (clk_id >= BCLK_HW_OFFSET) &&
-		(clk_id < BCLK_HW_OFFSET + iface->cfg->num_hw_clks);
+		(clk_id < BCLK_SW_OFFSET + iface->num_clks);
 }
 
 static inline int brcm_get_clk_idx(unsigned int clk_id)
@@ -99,9 +79,7 @@ static inline int brcm_get_clk_idx(unsigned int clk_id)
 	int idx = -1;
 
 	if (brcm_is_sw_clk(clk_id))
-		idx = (clk_id - BCLK_SW_OFFSET) + iface->cfg->num_hw_clks;
-	else if (brcm_is_hw_clk(clk_id))
-		idx = clk_id - BCLK_HW_OFFSET;
+		idx = clk_id - BCLK_SW_OFFSET;
 	else
 		pr_debug("brcmstb-clk: bad clk_id: 0x%x\n", clk_id);
 
@@ -127,12 +105,7 @@ int brcm_clk_prepare_enable(unsigned int clk_id)
 	mutex_lock(&iface->lock);
 	clk = iface->clks[idx];
 	if (!clk) {
-		const char *name;
-
-		if (idx < iface->cfg->num_hw_clks)
-			name = iface->cfg->hw_names[clk_id - BCLK_HW_OFFSET];
-		else
-			name = iface->cfg->sw_names[clk_id - BCLK_SW_OFFSET];
+		const char *name = iface->clk_names[clk_id - BCLK_SW_OFFSET];
 
 		clk = clk_get(NULL, name);
 		if (IS_ERR(clk)) {
@@ -168,16 +141,12 @@ EXPORT_SYMBOL(brcm_clk_disable_unprepare);
 
 static int  __init brcm_clk_init(void)
 {
-	const struct brcm_clk_cfg_data *cfg;
-
-	cfg = &brcmstb_cfg;
-
 	iface = kzalloc(sizeof(struct brcm_clk_iface), GFP_KERNEL);
 	if (!iface)
 		return -ENOMEM;
 
-	iface->cfg = cfg;
-	iface->num_clks = iface->cfg->num_hw_clks + iface->cfg->num_sw_clks;
+	iface->clk_names = clk_names_stb;
+	iface->num_clks = ARRAY_SIZE(clk_names_stb);
 	iface->clks = kcalloc(iface->num_clks, sizeof(struct clk *),
 			      GFP_KERNEL);
 	if (!iface->clks) {
@@ -186,8 +155,6 @@ static int  __init brcm_clk_init(void)
 		return -ENOMEM;
 	}
 	mutex_init(&iface->lock);
-	pr_info("brcmstb-clk: %u SW, %u HW\n", iface->cfg->num_sw_clks,
-		iface->cfg->num_hw_clks);
 
 	return 0;
 }

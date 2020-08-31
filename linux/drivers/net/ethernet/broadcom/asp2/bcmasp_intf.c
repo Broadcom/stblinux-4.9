@@ -1,3 +1,4 @@
+#include <asm/byteorder.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/etherdevice.h>
@@ -6,6 +7,7 @@
 #include <linux/of_mdio.h>
 #include <linux/phy.h>
 #include <linux/phy_fixed.h>
+#include <linux/ptp_classify.h>
 #include <linux/platform_device.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
@@ -127,16 +129,116 @@ set_promisc:
 	spin_unlock_bh(&intf->parent->mda_lock);
 }
 
-static int tx_spb_ring_full(struct bcmasp_intf *intf)
+static void bcmasp_clean_txcb_desc(struct bcmasp_intf *intf, int index)
 {
-	int next_index;
+	struct bcmasp_tx_cb *txcb = &intf->tx_cbs[index];
+	struct bcmasp_desc *desc = &intf->tx_spb_cpu[index];
 
-	/* Grab next index, if it is the clean index, ring is full */
-	next_index = incr_ring(intf->tx_spb_index, DESC_RING_COUNT);
-	if (next_index == intf->tx_spb_clean_index)
-		return 1;
+	txcb->skb = NULL;
+	dma_unmap_addr_set(txcb, dma_addr, 0);
+	dma_unmap_len_set(txcb, dma_len, 0);
+	txcb->last = false;
+
+	desc->buf = 0x0;
+	desc->size = 0x0;
+	desc->flags = 0x0;
+}
+
+static int tx_spb_ring_full(struct bcmasp_intf *intf, int cnt)
+{
+	int next_index, i;
+
+	/* Check if we have enough room for cnt descriptors */
+	for (i = 0; i < cnt; i++) {
+		next_index = incr_ring(intf->tx_spb_index, DESC_RING_COUNT);
+		if (next_index == intf->tx_spb_clean_index)
+			return 1;
+	}
 
 	return 0;
+}
+
+static struct sk_buff *bcmasp_csum_offload(struct net_device *dev,
+					   struct sk_buff *skb,
+					   bool *csum_hw)
+{
+	struct bcmasp_intf *intf = netdev_priv(dev);
+	struct bcmasp_pkt_offload *offload;
+	struct sk_buff *new_skb;
+	unsigned int header_cnt = 0;
+	u32 header, header2, epkt;
+	u16 ip_ver;
+	u8 ip_proto;
+
+	if (skb->ip_summed != CHECKSUM_PARTIAL)
+		return skb;
+
+	if (unlikely(skb_headroom(skb) < sizeof(*offload))) {
+		new_skb = skb_realloc_headroom(skb, sizeof(*offload));
+		if (!new_skb) {
+			intf->mib.tx_realloc_offload_failed++;
+			goto help;
+		}
+
+		dev_consume_skb_any(skb);
+		skb = new_skb;
+		intf->mib.tx_realloc_offload++;
+	}
+
+	ip_ver = htons(skb->protocol);
+	switch (ip_ver) {
+	case ETH_P_IP:
+		header |= PKT_OFFLOAD_HDR_SIZE_2(IPV4_HLEN(skb->data) >> 8);
+		header2 |= PKT_OFFLOAD_HDR2_SIZE_2(IPV4_HLEN(skb->data) & 0xff);
+		epkt |= PKT_OFFLOAD_EPKT_IP(0) | PKT_OFFLOAD_EPKT_CSUM_L2;
+		ip_proto = ip_hdr(skb)->protocol;
+		header_cnt += 2;
+		break;
+	case ETH_P_IPV6:
+		header |= PKT_OFFLOAD_HDR_SIZE_2(IP6_HLEN >> 8);
+		header2 |= PKT_OFFLOAD_HDR2_SIZE_2(IP6_HLEN & 0xff);
+		epkt |= PKT_OFFLOAD_EPKT_IP(1) | PKT_OFFLOAD_EPKT_CSUM_L2;
+		ip_proto = ipv6_hdr(skb)->nexthdr;
+		header_cnt += 2;
+		break;
+	default:
+		goto help;
+	}
+
+	switch(ip_proto) {
+	case IPPROTO_TCP:
+		header2 |= PKT_OFFLOAD_HDR2_SIZE_3(tcp_hdrlen(skb));
+		epkt |= PKT_OFFLOAD_EPKT_TP(0) | PKT_OFFLOAD_EPKT_CSUM_L3;
+		header_cnt++;
+		break;
+	case IPPROTO_UDP:
+		header2 |= PKT_OFFLOAD_HDR2_SIZE_3(UDP_HLEN);
+		epkt |= PKT_OFFLOAD_EPKT_TP(1) | PKT_OFFLOAD_EPKT_CSUM_L3;
+		header_cnt++;
+		break;
+	default:
+		goto help;
+	}
+
+	offload = (struct bcmasp_pkt_offload *)skb_push(skb, sizeof(*offload));
+
+	header |= PKT_OFFLOAD_HDR_OP | PKT_OFFLOAD_HDR_COUNT(header_cnt) |
+			  PKT_OFFLOAD_HDR_SIZE_1(ETH_HLEN);
+	epkt |= PKT_OFFLOAD_EPKT_OP;
+
+	offload->nop = htonl(PKT_OFFLOAD_NOP);
+	offload->header = htonl(header);
+	offload->header2 = htonl(header2);
+	offload->epkt = htonl(epkt);
+	offload->end = htonl(PKT_OFFLOAD_END_OP);
+	*csum_hw = true;
+
+	return skb;
+
+help:
+	skb_checksum_help(skb);
+
+	return skb;
 }
 
 static netdev_tx_t bcmasp_xmit(struct sk_buff *skb,
@@ -146,55 +248,103 @@ static netdev_tx_t bcmasp_xmit(struct sk_buff *skb,
 	struct device *kdev = &intf->parent->pdev->dev;
 	struct bcmasp_desc *desc;
 	struct bcmasp_tx_cb *txcb;
-	dma_addr_t mapping;
-	int ret;
+	dma_addr_t mapping, valid;
+	bool csum_hw = false;
+	unsigned int total_bytes, size;
+	int spb_index, nr_frags, ret, i, j;
+	skb_frag_t *frag;
 
 	spin_lock(&intf->tx_lock);
 
-	if (tx_spb_ring_full(intf)) {
+	nr_frags = skb_shinfo(skb)->nr_frags;
+
+	if (tx_spb_ring_full(intf, nr_frags + 1)) {
 		netif_stop_queue(dev);
 		netdev_err(dev, "Tx Ring Full!\n");
 		ret = NETDEV_TX_BUSY;
 		goto out;
 	}
 
-	mapping = dma_map_single(kdev, skb->data, skb->len, DMA_TO_DEVICE);
-	if (dma_mapping_error(kdev, mapping)) {
-		netif_err(intf, tx_err, dev,"DMA map failed at %p (len=%d\n",
-			skb->data, skb->len);
+	/* Save skb len before adding csum offload header */
+	total_bytes = skb->len;
+	skb = bcmasp_csum_offload(dev, skb, &csum_hw);
+	if (!skb) {
 		ret = NETDEV_TX_OK;
-		intf->mib.tx_dma_failed++;
 		goto out;
 	}
 
-	txcb = &intf->tx_cbs[intf->tx_spb_index];
-	txcb->skb = skb;
-	dma_unmap_addr_set(txcb, dma_addr, mapping);
-	dma_unmap_len_set(txcb, dma_len, skb->len);
+	spb_index = intf->tx_spb_index;
+	valid = intf->tx_spb_dma_valid;
+	for (i = 0; i <= nr_frags; i++) {
+		if (!i) {
+			size = skb_headlen(skb);
+			mapping = dma_map_single(kdev, skb->data, size,
+						 DMA_TO_DEVICE);
+		} else {
+			frag = &skb_shinfo(skb)->frags[i - 1];
+			size = skb_frag_size(frag);
+			mapping = skb_frag_dma_map(kdev, frag, 0, size,
+						   DMA_TO_DEVICE);
+		}
 
-	desc = &intf->tx_spb_cpu[intf->tx_spb_index];
-	desc->buf = mapping;
-	desc->size = skb->len;
-	desc->flags = DESC_INT_EN | DESC_SOF | DESC_EOF;
+		if (dma_mapping_error(kdev, mapping)) {
+			netif_err(intf, tx_err, dev,
+				  "DMA map failed at %p (len=%d\n",
+				  skb->data, skb->len);
+			ret = NETDEV_TX_OK;
+			intf->mib.tx_dma_failed++;
+			goto out_unmap_frags;
+		}
+
+		txcb = &intf->tx_cbs[spb_index];
+		desc = &intf->tx_spb_cpu[spb_index];
+		txcb->skb = skb;
+		txcb->bytes_sent = total_bytes;
+		dma_unmap_addr_set(txcb, dma_addr, mapping);
+		dma_unmap_len_set(txcb, dma_len, size);
+		if (!i) {
+			desc->flags |= DESC_SOF;
+			if (csum_hw)
+				desc->flags |= DESC_EPKT_CMD;
+		}
+
+		if (i == nr_frags) {
+			desc->flags |= DESC_EOF;
+			txcb->last = true;
+		}
+
+		desc->buf = mapping;
+		desc->size = size;
+		desc->flags |= DESC_INT_EN;
+
+		netif_dbg(intf, tx_queued, dev,
+			  "%s dma_buf=%pad dma_len=0x%x flags=0x%x index=0x%x\n",
+			  __func__, &mapping, desc->size, desc->flags,
+			  spb_index);
+
+		spb_index = incr_ring(spb_index, DESC_RING_COUNT);
+		valid = incr_last_byte(valid, intf->tx_spb_dma,
+				       DESC_RING_COUNT);
+	}
 
 	wmb();
 
-	netif_dbg(intf, tx_queued, dev,
-		  "%s dma_buf=%pad dma_len=0x%x flags=0x%x index=0x%x\n",
-		  __func__, &mapping, desc->size, desc->flags,
-		  intf->tx_spb_index);
-
-	intf->tx_spb_index = incr_ring(intf->tx_spb_index, DESC_RING_COUNT);
-	intf->tx_spb_dma_valid = incr_last_byte(intf->tx_spb_dma_valid,
-						intf->tx_spb_dma,
-						DESC_RING_COUNT);
-
+	intf->tx_spb_index = spb_index;
+	intf->tx_spb_dma_valid = valid;
 	tx_spb_dma_wq(intf, intf->tx_spb_dma_valid, TX_SPB_DMA_VALID);
 
-	if (tx_spb_ring_full(intf))
+	if (tx_spb_ring_full(intf, MAX_SKB_FRAGS + 1))
 		netif_stop_queue(dev);
 
-	ret = NETDEV_TX_OK;
+	spin_unlock(&intf->tx_lock);
+	return NETDEV_TX_OK;
+
+out_unmap_frags:
+	spb_index = intf->tx_spb_index;
+	for (j = 0; j < i; j++) {
+		bcmasp_clean_txcb_desc(intf, spb_index);
+		spb_index = incr_ring(spb_index, DESC_RING_COUNT);
+	}
 out:
 	spin_unlock(&intf->tx_lock);
 	return ret;
@@ -275,29 +425,25 @@ static int bcmasp_tx_poll(struct napi_struct *napi, int budget)
 	read = tx_spb_dma_rq(intf, TX_SPB_DMA_READ);
 	while (intf->tx_spb_dma_read != read) {
 		txcb = &intf->tx_cbs[intf->tx_spb_clean_index];
-		desc = &intf->tx_spb_cpu[intf->tx_spb_clean_index];
 		mapping = dma_unmap_addr(txcb, dma_addr);
 
 		dma_unmap_single(kdev, mapping,
 				 dma_unmap_len(txcb, dma_len),
 				 DMA_TO_DEVICE);
 
-		intf->ndev->stats.tx_packets++;
-		intf->ndev->stats.tx_bytes += txcb->skb->len;
-
-		dev_consume_skb_any(txcb->skb);
-		txcb->skb = NULL;
-		dma_unmap_addr_set(txcb, dma_addr, 0);
-		released++;
+		if (txcb->last) {
+			dev_consume_skb_any(txcb->skb);
+			intf->ndev->stats.tx_packets++;
+			intf->ndev->stats.tx_bytes += txcb->bytes_sent;
+		}
 
 		netif_dbg(intf, tx_done, intf->ndev,
 			  "%s dma_buf=%pad dma_len=0x%x flags=0x%x c_index=0x%x\n",
 			  __func__, &mapping, desc->size, desc->flags,
 			  intf->tx_spb_clean_index);
 
-		desc->buf = 0x0;
-		desc->size = 0x0;
-		desc->flags = 0x0;
+		bcmasp_clean_txcb_desc(intf, intf->tx_spb_clean_index);
+		released++;
 
 		intf->tx_spb_clean_index = incr_ring(intf->tx_spb_clean_index,
 						     DESC_RING_COUNT);
@@ -379,6 +525,10 @@ static int bcmasp_rx_poll(struct napi_struct *napi, int budget)
 			skb_trim(skb, len - ETH_FCS_LEN);
 			len -= ETH_FCS_LEN;
 		}
+
+		if ((intf->ndev->features & NETIF_F_RXCSUM) &&
+		    (desc->buf & DESC_CHKSUM))
+			skb->ip_summed = CHECKSUM_UNNECESSARY;
 
 		skb->protocol = eth_type_trans(skb, intf->ndev);
 
@@ -700,6 +850,9 @@ static int bcmasp_stop(struct net_device *dev)
 
 	phy_disconnect(dev->phydev);
 
+	/* Disable the interface clocks */
+	bcmasp_core_clock_set_intf(intf, false);
+
 	clk_disable_unprepare(intf->parent->clk);
 
 	return 0;
@@ -745,6 +898,9 @@ static int bcmasp_netif_init(struct net_device *dev, bool phy_connect)
 	struct bcmasp_intf *intf = netdev_priv(dev);
 	struct phy_device *phydev = NULL;
 	int ret;
+
+	/* Always enable interface clocks */
+	bcmasp_core_clock_set_intf(intf, true);
 
 	bcmasp_configure_port(intf);
 
@@ -982,6 +1138,9 @@ struct bcmasp_intf *bcmasp_interface_create(struct bcmasp_priv *priv,
 	intf->msg_enable = netif_msg_init(-1, NETIF_MSG_DRV |
 					  NETIF_MSG_PROBE |
 					  NETIF_MSG_LINK);
+	ndev->features |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM | NETIF_F_SG |
+			  NETIF_F_RXCSUM;
+	ndev->hw_features |= ndev->features;
 
 	return intf;
 
@@ -1047,10 +1206,15 @@ int bcmasp_interface_suspend(struct bcmasp_intf *intf)
 	if (ret)
 		return ret;
 
-	if (!device_may_wakeup(kdev)) {
+	if (!intf->wolopts) {
 		ret = phy_suspend(dev->phydev);
 		if (ret)
 			goto out;
+
+		/* If Wake-on-LAN is disabled, we can safely
+		 * disable the network interface clocks.
+		 */
+		bcmasp_core_clock_set_intf(intf, false);
 	}
 
 	if (device_may_wakeup(kdev) && intf->wolopts)
@@ -1076,7 +1240,6 @@ static void bcmasp_resume_from_wol(struct bcmasp_intf *intf)
 
 int bcmasp_interface_resume(struct bcmasp_intf *intf)
 {
-	struct device *kdev = &intf->parent->pdev->dev;
 	struct net_device *dev = intf->ndev;
 	int ret;
 
@@ -1087,13 +1250,13 @@ int bcmasp_interface_resume(struct bcmasp_intf *intf)
 	if (ret)
 		return ret;
 
-	bcmasp_resume_from_wol(intf);
-
 	ret = bcmasp_netif_init(dev, false);
 	if (ret)
 		goto out;
 
-	if (!device_may_wakeup(kdev)) {
+	bcmasp_resume_from_wol(intf);
+
+	if (!intf->wolopts) {
 		ret = phy_resume(dev->phydev);
 		if (ret)
 			goto out_phy_resume;

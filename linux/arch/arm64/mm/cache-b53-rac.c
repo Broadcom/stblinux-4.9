@@ -152,8 +152,7 @@ static int __init b53_rac_init(void)
 
 	if (of_device_is_compatible(cpu_dn, "brcm,brahma-b53"))
 		rac_offsets = b53_rac_offsets;
-	else if (of_device_is_compatible(cpu_dn, "arm,cortex-a72") &&
-		 of_machine_is_compatible("brcm,bcm7211c0"))
+	else if (of_device_is_compatible(cpu_dn, "arm,cortex-a72"))
 		rac_offsets = a72_rac_offsets;
 	else {
 		pr_err("Unsupported CPU\n");

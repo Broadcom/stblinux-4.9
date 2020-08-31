@@ -101,13 +101,17 @@
 #define  ASP_CTRL_CLOCK_CTRL			0x04
 #define   ASP_CTRL_CLOCK_CTRL_ASP_TX_DISABLE	BIT(0)
 #define   ASP_CTRL_CLOCK_CTRL_ASP_RX_DISABLE	BIT(1)
-#define   ASP_CTRL_CLOCK_CTRL_ASP_RGMII0_DIS	BIT(2)
-#define   ASP_CTRL_CLOCK_CTRL_ASP_RGMII1_DIS	BIT(3)
+#define   ASP_CTRL_CLOCK_CTRL_ASP_RGMII_SHIFT	2
+#define   ASP_CTRL_CLOCK_CTRL_ASP_RGMII_MASK	(0x3 << ASP_CTRL_CLOCK_CTRL_ASP_RGMII_SHIFT)
+#define   ASP_CTRL_CLOCK_CTRL_ASP_RGMII_DIS(x)	BIT(ASP_CTRL_CLOCK_CTRL_ASP_RGMII_SHIFT + (x))
+#define   ASP_CTRL_CLOCK_CTRL_ASP_ALL_DISABLE	GENMASK(3, 0)
 #define  ASP_CTRL_CORE_CLOCK_SELECT		0x08
 #define   ASP_CTRL_CORE_CLOCK_SELECT_MAIN	BIT(0)
 
 struct bcmasp_tx_cb {
 	struct sk_buff		*skb;
+	unsigned int		bytes_sent;
+	bool			last;
 
 	DEFINE_DMA_UNMAP_ADDR(dma_addr);
 	DEFINE_DMA_UNMAP_LEN(dma_len);
@@ -269,6 +273,8 @@ struct bcmasp_mib_counters {
 	u32	uc_filters_full_cnt;
 	u32	filters_combine_cnt;
 	u32	promisc_filters_cnt;
+	u32	tx_realloc_offload_failed;
+	u32	tx_realloc_offload;
 };
 
 struct bcmasp_intf {
@@ -386,6 +392,38 @@ struct bcmasp_priv {
 	struct bcmasp_mda_filter	mda_filters[ASP_RX_FILTER_MAX];
 	unsigned int			filters_count;
 	spinlock_t			mda_lock;
+
+	/* Protects accesses to ASP_CTRL_CLOCK_CTRL */
+	spinlock_t			clk_lock;
+};
+
+#define PKT_OFFLOAD_NOP			(0 << 28)
+#define PKT_OFFLOAD_HDR_OP		(1 << 28)
+#define  PKT_OFFLOAD_HDR_WRBACK		BIT(19)
+#define  PKT_OFFLOAD_HDR_COUNT(x)	((x) << 16)
+#define  PKT_OFFLOAD_HDR_SIZE_1(x)	(x << 4)
+#define  PKT_OFFLOAD_HDR_SIZE_2(x)	(x)
+#define  PKT_OFFLOAD_HDR2_SIZE_2(x)	((x) << 24)
+#define  PKT_OFFLOAD_HDR2_SIZE_3(x)	((x) << 12)
+#define  PKT_OFFLOAD_HDR2_SIZE_4(x)	(x)
+#define PKT_OFFLOAD_EPKT_OP		(2 << 28)
+#define  PKT_OFFLOAD_EPKT_WRBACK	BIT(23)
+#define  PKT_OFFLOAD_EPKT_IP(x)		((x) << 21)
+#define  PKT_OFFLOAD_EPKT_TP(x)		((x) << 19)
+#define  PKT_OFFLOAD_EPKT_LEN(x)	((x) << 16)
+#define  PKT_OFFLOAD_EPKT_CSUM_L3	BIT(15)
+#define  PKT_OFFLOAD_EPKT_CSUM_L2	BIT(14)
+#define  PKT_OFFLOAD_EPKT_ID(x)		((x) << 12)
+#define  PKT_OFFLOAD_EPKT_SEQ(x)	((x) << 10)
+#define  PKT_OFFLOAD_EPKT_TS(x)		((x) << 8)
+#define  PKT_OFFLOAD_EPKT_BLOC(x)	(x)
+#define PKT_OFFLOAD_END_OP		(7 << 28)
+struct bcmasp_pkt_offload {
+	u32		nop;
+	u32		header;
+	u32		header2;
+	u32		epkt;
+	u32		end;
 };
 
 #define BCMASP_CORE_IO_MACRO(name, offset)				\
@@ -439,4 +477,7 @@ int bcmasp_set_en_mda_filter(struct bcmasp_intf *intf, unsigned char *addr,
 			      unsigned char *mask);
 
 void bcmasp_disable_all_filters(struct bcmasp_intf *intf);
+
+void bcmasp_core_clock_set_intf(struct bcmasp_intf *intf, bool en);
+
 #endif

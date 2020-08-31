@@ -36,7 +36,7 @@ static int __init brcmstb_phy_fixups(void)
 	};
 	int ret = 0, i;
 
-	if (!of_machine_is_compatible("brcm,bcm7211a0") &&
+	if (!of_machine_is_compatible("brcm,bcm72113a0") &&
 	    !of_machine_is_compatible("brcm,bcm7211b0") &&
 	    !of_machine_is_compatible("brcm,bcm72165a0"))
 		return ret;

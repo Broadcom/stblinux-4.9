@@ -404,6 +404,54 @@ static void bcmasp_core_clock_select(struct bcmasp_priv *priv, bool slow)
 	ctrl_core_wl(priv, reg, ASP_CTRL_CORE_CLOCK_SELECT);
 }
 
+static void bcmasp_core_clock_set_ll(struct bcmasp_priv *priv, u32 clr, u32 set)
+{
+	u32 reg;
+
+	reg = ctrl_core_rl(priv, ASP_CTRL_CLOCK_CTRL);
+	reg &= ~clr;
+	reg |= set;
+	ctrl_core_wl(priv, reg, ASP_CTRL_CLOCK_CTRL);
+}
+
+static void bcmasp_core_clock_set(struct bcmasp_priv *priv, u32 clr, u32 set)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&priv->clk_lock, flags);
+	bcmasp_core_clock_set_ll(priv, clr, set);
+	spin_unlock_irqrestore(&priv->clk_lock, flags);
+}
+
+void bcmasp_core_clock_set_intf(struct bcmasp_intf *intf, bool en)
+{
+	u32 intf_mask = ASP_CTRL_CLOCK_CTRL_ASP_RGMII_DIS(intf->channel);
+	struct bcmasp_priv *priv = intf->parent;
+	unsigned long flags;
+	u32 reg;
+
+	/* When enabling an interface, if the RX or TX clocks were not enabled,
+	 * enable them. Conversely, while disabling an interface, if this is
+	 * the last one enabled, we can turn off the shared RX and TX clocks as
+	 * well. We control enable bits which is why we test for equality on
+	 * the RGMII clock bit mask.
+	 */
+	spin_lock_irqsave(&priv->clk_lock, flags);
+	if (en) {
+		intf_mask |= ASP_CTRL_CLOCK_CTRL_ASP_TX_DISABLE |
+			     ASP_CTRL_CLOCK_CTRL_ASP_RX_DISABLE;
+		bcmasp_core_clock_set_ll(priv, intf_mask, 0);
+	} else {
+		reg = ctrl_core_rl(priv, ASP_CTRL_CLOCK_CTRL) | intf_mask;
+		if ((reg & ASP_CTRL_CLOCK_CTRL_ASP_RGMII_MASK) ==
+		    ASP_CTRL_CLOCK_CTRL_ASP_RGMII_MASK)
+			intf_mask |= ASP_CTRL_CLOCK_CTRL_ASP_TX_DISABLE |
+				     ASP_CTRL_CLOCK_CTRL_ASP_RX_DISABLE;
+		bcmasp_core_clock_set_ll(priv, 0, intf_mask);
+	}
+	spin_unlock_irqrestore(&priv->clk_lock, flags);
+}
+
 static int bcmasp_probe(struct platform_device *pdev)
 {
 	struct bcmasp_priv *priv;
@@ -452,6 +500,7 @@ static int bcmasp_probe(struct platform_device *pdev)
 	dev_set_drvdata(&pdev->dev, priv);
 	priv->pdev = pdev;
 	spin_lock_init(&priv->mda_lock);
+	spin_lock_init(&priv->clk_lock);
 
 	ret = clk_prepare_enable(priv->clk);
 	if (ret)
@@ -505,9 +554,11 @@ static int bcmasp_probe(struct platform_device *pdev)
 							   wol_irq);
 	}
 
-	/* Drop the clock reference clock now and let ndo_open()/ndo_close()
-	 * manage it for us now.
+	/* Drop the clock reference count now and let ndo_open()/ndo_close()
+	 * manage it for us from now on.
 	 */
+	bcmasp_core_clock_set(priv, 0, ASP_CTRL_CLOCK_CTRL_ASP_ALL_DISABLE);
+
 	clk_disable_unprepare(priv->clk);
 
 	/* Now do the registration of the network ports which will take care of
@@ -569,6 +620,10 @@ static int __maybe_unused bcmasp_suspend(struct device *d)
 	if (ret)
 		return ret;
 
+	/* Whether Wake-on-LAN is enabled or not, we can always disable
+	 * the shared TX clock */
+	bcmasp_core_clock_set(priv, 0, ASP_CTRL_CLOCK_CTRL_ASP_TX_DISABLE);
+
 	/* Switch to the slow clock */
 	bcmasp_core_clock_select(priv, true);
 
@@ -590,8 +645,14 @@ static int __maybe_unused bcmasp_resume(struct device *d)
 	/* Switch to the main clock domain */
 	bcmasp_core_clock_select(priv, false);
 
+	/* Re-enable all clocks for re-initialization */
+	bcmasp_core_clock_set(priv, ASP_CTRL_CLOCK_CTRL_ASP_ALL_DISABLE, 0);
+
 	bcmasp_core_init(priv);
 	bcmasp_core_init_filters(priv);
+
+	/* And disable them to let the network devices take care of them */
+	bcmasp_core_clock_set(priv, 0, ASP_CTRL_CLOCK_CTRL_ASP_ALL_DISABLE);
 
 	clk_disable_unprepare(priv->clk);
 

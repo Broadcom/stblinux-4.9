@@ -282,11 +282,6 @@ static void usb_init_common_7211b0(struct brcm_usb_init_params *params)
 
 	usb2_eye_fix_7211b0(params);
 
-	/* Fix the incorrect default */
-	reg = brcm_usb_readl(ctrl + USB_CTRL_SETUP);
-	reg &= ~USB_CTRL_SETUP_tca_drv_sel_MASK;
-	brcm_usb_writel(reg, ctrl + USB_CTRL_SETUP);
-
 	usb_init_common(params);
 
 	/*

@@ -174,6 +174,8 @@ static const struct bcmasp_stats bcmasp_gstrings_stats[] = {
 	STAT_BCMASP_SOFT_MIB(uc_filters_full_cnt),
 	STAT_BCMASP_SOFT_MIB(filters_combine_cnt),
 	STAT_BCMASP_SOFT_MIB(promisc_filters_cnt),
+	STAT_BCMASP_SOFT_MIB(tx_realloc_offload_failed),
+	STAT_BCMASP_SOFT_MIB(tx_realloc_offload),
 
 };
 

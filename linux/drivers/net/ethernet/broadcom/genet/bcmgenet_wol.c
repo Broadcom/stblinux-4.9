@@ -229,22 +229,6 @@ void bcmgenet_wol_power_up_cfg(struct bcmgenet_priv *priv,
 
 	priv->wol_active = 0;
 
-	reg = bcmgenet_umac_readl(priv, UMAC_MPD_CTRL);
-	if (reg & MPD_EN) {
-		reg &= ~(MPD_EN | MPD_PW_EN);
-		bcmgenet_umac_writel(priv, reg, UMAC_MPD_CTRL);
-
-		reg = bcmgenet_hfb_reg_readl(priv, HFB_CTRL);
-		reg &= ~(RBUF_HFB_EN | RBUF_ACPI_EN);
-		bcmgenet_hfb_reg_writel(priv, reg, HFB_CTRL);
-
-		/* Disable CRC Forward */
-		reg = bcmgenet_umac_readl(priv, UMAC_CMD);
-		reg &= ~CMD_CRC_FWD;
-		bcmgenet_umac_writel(priv, reg, UMAC_CMD);
-	}
-	priv->crc_fwd_en = 0;
-
 	/* Switch enet_clock_sel */
 	if (priv->clk_mux) {
 		if (priv->clk_fast)
@@ -254,4 +238,28 @@ void bcmgenet_wol_power_up_cfg(struct bcmgenet_priv *priv,
 	}
 
 	clk_disable_unprepare(priv->clk_wol);
+	priv->crc_fwd_en = 0;
+
+	/* Disable Magic Packet Detection */
+	if (priv->wolopts & (WAKE_MAGIC | WAKE_MAGICSECURE)) {
+		reg = bcmgenet_umac_readl(priv, UMAC_MPD_CTRL);
+		if (!(reg & MPD_EN))
+			return;	/* already reset so skip the rest */
+		reg &= ~(MPD_EN | MPD_PW_EN);
+		bcmgenet_umac_writel(priv, reg, UMAC_MPD_CTRL);
+	}
+
+	/* Disable WAKE_FILTER Detection */
+	reg = bcmgenet_hfb_reg_readl(priv, HFB_CTRL);
+	if (priv->wolopts & WAKE_FILTER) {
+		if (!(reg & RBUF_ACPI_EN))
+			return;	/* already reset so skip the rest */
+	}
+	reg &= ~(RBUF_HFB_EN | RBUF_ACPI_EN);
+	bcmgenet_hfb_reg_writel(priv, reg, HFB_CTRL);
+
+	/* Disable CRC Forward */
+	reg = bcmgenet_umac_readl(priv, UMAC_CMD);
+	reg &= ~CMD_CRC_FWD;
+	bcmgenet_umac_writel(priv, reg, UMAC_CMD);
 }

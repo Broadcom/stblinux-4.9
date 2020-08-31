@@ -708,7 +708,6 @@ struct bcmgenet_priv {
 	struct clk *clk_wol;
 	u32 wolopts;
 	u8 sopass[SOPASS_MAX];
-	u32 hfb_en[3];
 	bool wol_active;
 
 	struct bcmgenet_mib_counters mib;

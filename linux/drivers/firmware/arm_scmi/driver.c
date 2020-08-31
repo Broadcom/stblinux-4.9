@@ -217,13 +217,6 @@ static void scmi_fetch_response(struct scmi_xfer *xfer,
 	memcpy_fromio(xfer->rx.buf, mem->msg_payload + 4, xfer->rx.len);
 }
 
-static void scmi_work_func(struct work_struct *work)
-{
-	struct scmi_xfer *xfer = container_of(work, struct scmi_xfer, work);
-
-	(void)xfer->async_agent_callback(xfer);
-}
-
 /**
  * scmi_a2p_rx_callback() - mailbox client callback for receive messages
  *
@@ -271,22 +264,6 @@ static void scmi_a2p_rx_callback(struct mbox_client *cl, void *m)
 
 	scmi_fetch_response(xfer, mem);
 	complete(&xfer->done);
-
-	if (msg_type == MSG_TYPE_DELAYED && xfer->async_agent_callback) {
-		/*
-		 * We typically expect the platform to come back with
-		 * MSG_TYPE_DELAYED when the user specifies an async
-		 * message.  If the platform decides to do it immediately
-		 * and respond on the a2p channel we still need to invoke
-		 * the callback.
-		 */
-		if (xfer->defer_async_callback) {
-			INIT_WORK(&xfer->work, scmi_work_func);
-			schedule_work(&xfer->work);
-		} else {
-			xfer->async_agent_callback(xfer);
-		}
-	}
 }
 
 /**
@@ -352,8 +329,6 @@ static void scmi_p2a_tx_prepare(struct mbox_client *cl, void *m)
  * Processes one received message to appropriate transfer information and
  * signals completion of the transfer.
  *
- * NOTE: This function will be invoked in IRQ context unless the caller
- * has explicitly requested to defer the callback to a workqueue.
  */
 static void scmi_p2a_rx_callback(struct mbox_client *cl, void *m)
 {
@@ -361,10 +336,8 @@ static void scmi_p2a_rx_callback(struct mbox_client *cl, void *m)
 	struct scmi_chan_info *cinfo = client_to_scmi_chan_info(cl);
 	struct device *dev = cinfo->dev;
 	struct scmi_info *info = handle_to_scmi_info(cinfo->handle);
-	struct scmi_xfers_info *minfo = &info->minfo;
 	struct scmi_shared_mem __iomem *mem = cinfo->payload;
 	u32 hdr = ioread32(&mem->msg_header);
-	u16 xfer_id;
 	u8 msg_type, prot_id, msg_id;
 	scmi_cback_fn_t prot_callback;
 
@@ -396,30 +369,9 @@ static void scmi_p2a_rx_callback(struct mbox_client *cl, void *m)
 			/* Callback is expected to call xfer put */
 			prot_callback(xfer);
 		}
-
-	} else if (msg_type == MSG_TYPE_DELAYED) {
-		/*
-		 * Are we even expecting this?
-		 */
-		xfer_id = MSG_XTRACT_TOKEN(hdr);
-		if (!test_bit(xfer_id, minfo->xfer_alloc_table)) {
-			dev_err(dev, "P2A delayed response is not expected! prot=%x, msg=%x\n",
+	} else {
+		dev_err(dev, "Unexpected P2A message, prot=%x, msg=%x.  Discarding...\n",
 				prot_id, msg_id);
-			return;
-		}
-
-		xfer = &minfo->xfer_block[xfer_id];
-		scmi_dump_header_dbg(dev, &xfer->hdr);
-		scmi_fetch_response(xfer, mem);
-
-		if (xfer->async_agent_callback) {
-			if (xfer->defer_async_callback) {
-				INIT_WORK(&xfer->work, scmi_work_func);
-				schedule_work(&xfer->work);
-			} else {
-				xfer->async_agent_callback(xfer);
-			}
-		}
 	}
 
 	/* Acknowlege the message */
@@ -490,9 +442,6 @@ void scmi_one_xfer_put(const struct scmi_handle *handle, struct scmi_xfer *xfer)
 	spin_lock_irqsave(&minfo->xfer_lock, flags);
 	clear_bit(xfer->hdr.seq, minfo->xfer_alloc_table);
 	spin_unlock_irqrestore(&minfo->xfer_lock, flags);
-	/* Reset vars that help do an async callback */
-	xfer->async_agent_callback = NULL;
-	xfer->defer_async_callback = false;
 }
 
 static bool

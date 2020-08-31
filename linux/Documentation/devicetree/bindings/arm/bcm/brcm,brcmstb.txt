@@ -190,6 +190,7 @@ Required properties:
 	"brcm,brcmstb-memc-ddr-rev-b.2.2"
 	"brcm,brcmstb-memc-ddr-rev-b.2.3"
 	"brcm,brcmstb-memc-ddr-rev-b.2.5"
+	"brcm,brcmstb-memc-ddr-rev-b.2.6"
 	"brcm,brcmstb-memc-ddr-rev-b.3.0"
 	"brcm,brcmstb-memc-ddr-rev-b.3.1"
 	"brcm,brcmstb-memc-ddr-rev-c.1.0"

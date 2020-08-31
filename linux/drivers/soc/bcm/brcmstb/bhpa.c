@@ -156,6 +156,12 @@ static int __init bhpa_setup(char *str)
 	end = ALIGN_DOWN(end, BHPA_ALIGN);
 	size = end - addr;
 
+	if (addr < memblock_start_of_DRAM()) {
+		pr_warn("ignoring invalid range '%s' below addressable DRAM\n",
+			orig_str);
+		return 0;
+	}
+
 	if (addr > end || size < pageblock_nr_pages << PAGE_SHIFT) {
 		pr_warn("ignoring invalid range '%s' (too small)\n",
 				orig_str);

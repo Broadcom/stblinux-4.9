@@ -2573,6 +2573,13 @@ static const struct mmc_fixup blk_fixups[] =
 	MMC_FIXUP("V10016", CID_MANFID_KINGSTON, CID_OEMID_ANY, add_quirk_mmc,
 		  MMC_QUIRK_TRIM_BROKEN),
 
+	/*
+	 * Some Micron eMMC devices will not go into boot mode on
+	 * CMD0 arg: 0XF0F0F0F0 after going into SLEEP state.
+	 * This will hang a reboot.
+	 */
+	MMC_FIXUP(CID_NAME_ANY, 0xfe, 0x014e, add_quirk_mmc,
+		  MMC_QUIRK_BROKEN_SLEEP),
 	END_FIXUP
 };
 

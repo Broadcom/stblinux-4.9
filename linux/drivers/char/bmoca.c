@@ -671,7 +671,8 @@ static u32 moca_irq_status(struct moca_priv_data *priv, int flush)
 	if (moca_is_20(priv))
 		dma_mask |= M2H_NEXTCHUNK_CPU0;
 
-	spin_lock_irqsave(&priv->irq_status_lock, flags);
+	if (priv->moca_ops->dma)
+		spin_lock_irqsave(&priv->irq_status_lock, flags);
 
 	stat = MOCA_RD(priv->base + priv->regs->l2_status_offset);
 
@@ -696,7 +697,8 @@ static u32 moca_irq_status(struct moca_priv_data *priv, int flush)
 		MOCA_RD(priv->base + r->l2_clear_offset);
 	}
 
-	spin_unlock_irqrestore(&priv->irq_status_lock, flags);
+	if (priv->moca_ops->dma)
+		spin_unlock_irqrestore(&priv->irq_status_lock, flags);
 
 	return stat;
 }

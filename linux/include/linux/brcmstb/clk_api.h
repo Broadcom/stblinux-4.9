@@ -4,16 +4,29 @@
 #define _ASM_BRCMSTB_CLK_API_H
 
 #define BCLK_NULL		0xffffffff
-#define BCLK_HW_OFFSET		0x0
 #define BCLK_SW_OFFSET		0x5000
 
 /*
- * o The following may be considered clocks, Pmap cores, or both.
+ * IF YOU ARE ADDING A PMAP CORE THEN READ THE FOLLOWING:
+ *
+ * o These constants must be kept in sync with the clk_names_stb[]
+ *   array names found in drivers/soc/bcm/brcmstb/nexus/clk.c.
+ * o Thse constants must be kept in sync with the constants
+ *   in include/linux/brcmstb/reset_api.h.
+ * o These constants must be kept in sync with the pmap_cores[]
+ *   array names found in drivers/soc/bcm/brcmstb/nexus/dvfs.c.
+ * o These constants must be kept in sync with the @a_linux_core_regexps
+ *   array in Pmap.pm (from the stbgit-scripts clkgen.pl code).
+ * o The following list are Pmap cores.  They may additionally have
+ *   the role of SW clock as well.
  * o The following constants are permanent and cannot be changed,
  *   or moved to the 2nd and 3rd lists.
- * o New constants may be added to the end of the following list.
- * o Constants from the second list may be "promoted" to the following list.
- * o The following list is stored internally by AMS/mon64.
+ * o New cores may be added to the end of the following list.
+ *   If so, be sure to update the definition of BCLK_SW_NUM_CORES.
+ * o Constants from the second list may be "promoted" to the first
+ *   list, at the end of course, and Nexus must be recompiled.
+ * o The following list is stored internally by AMS (without
+ *   the BCLK_SW_OFFSET.
  */
 #define BCLK_SW_CPU_CORE	(BCLK_SW_OFFSET + 0x0)
 #define BCLK_SW_V3D		(BCLK_SW_OFFSET + 0x1)
@@ -35,15 +48,19 @@
 #define BCLK_SW_VPU0		(BCLK_SW_OFFSET + 0x11)
 #define BCLK_SW_BNE0		(BCLK_SW_OFFSET + 0x12)
 #define BCLK_SW_ASP0		(BCLK_SW_OFFSET + 0x13)
-/* If you add a clk/core above, please update below */
-#define BCLK_SW_NUM_CORES	(BCLK_SW_ASP0 + 1)
+#define BCLK_SW_HVD_CABAC0	(BCLK_SW_OFFSET + 0x14)
+#define BCLK_SW_AXI0		(BCLK_SW_OFFSET + 0x15)
+/*
+ * IF YOU ADD A CLK/CORE ABOVE, PLEASE UPDATE BELOW AND
+ * FOLLOW THE BULLET LIST ABOVE.
+ */
+#define BCLK_SW_NUM_CORES	(BCLK_SW_AXI0 - BCLK_SW_OFFSET + 1)
 
 /* Keep some space reserved for future cores.  */
 
 /*
- * o The following lists can be rearranged if desired.
  * o Entries from the following lists may be promoted
- *   to the top/core list if needed.
+ *   to the core list above if they also become a core.
  */
 #define BCLK_SW_AIO		(BCLK_SW_OFFSET + 0x30)
 #define BCLK_SW_BVN		(BCLK_SW_OFFSET + 0x31)
@@ -67,6 +84,7 @@
 #define BCLK_SW_XPT_WAKEUP	(BCLK_SW_OFFSET + 0x43)
 #define BCLK_SW_TSIO		(BCLK_SW_OFFSET + 0x44)
 
+/* Let's keep the SRAM clocks in their own group */
 #define BCLK_SW_AIO_SRAM	(BCLK_SW_OFFSET + 0x60)
 #define BCLK_SW_BVN_SRAM	(BCLK_SW_OFFSET + 0x61)
 #define BCLK_SW_DVPHR_SRAM	(BCLK_SW_OFFSET + 0x62)

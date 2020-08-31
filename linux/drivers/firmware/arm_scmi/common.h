@@ -98,9 +98,6 @@ struct scmi_xfer {
 	struct scmi_msg tx;
 	struct scmi_msg rx;
 	struct completion done;
-	scmi_cback_fn_t async_agent_callback;
-	bool defer_async_callback;
-	struct work_struct work;
 };
 
 void scmi_one_xfer_put(const struct scmi_handle *h, struct scmi_xfer *xfer);
