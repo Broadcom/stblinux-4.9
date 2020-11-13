@@ -16,7 +16,7 @@ endif
 
 PERF_MAKE_FLAGS = \
 	$(LINUX_MAKE_FLAGS) \
-	JOBS=$(PARALLEL_JOBS) \
+	JOBS=1 \
 	ARCH=$(PERF_ARCH) \
 	DESTDIR=$(TARGET_DIR) \
 	prefix=/usr \
@@ -157,4 +157,8 @@ define PERF_INSTALL_TARGET_CMDS
 		-C $(LINUX_DIR)/tools/perf O=$(LINUX_DIR)/tools/perf/ install
 	$(RM) -rf $(TARGET_DIR)/usr/libexec/perf-core/scripts/
 	$(RM) -rf $(TARGET_DIR)/usr/libexec/perf-core/tests/
+endef
+
+define PERF_LINUX_CONFIG_FIXUPS
+	$(call KCONFIG_ENABLE_OPT,CONFIG_PERF_EVENTS)
 endef

@@ -31,7 +31,7 @@ use constant LOCAL_MK => qw(local.mk);
 use constant BR_FRAG_FILE => qw(br_fragments.cfg);
 use constant KERNEL_FRAG_FILE => qw(k_fragments.cfg);
 
-use constant BR_MIRROR_HOST => qw(stbgit.broadcom.com);
+use constant BR_MIRROR_HOST => qw(stbgit.stb.broadcom.net);
 use constant BR_MIRROR_PATH => qw(/mirror/buildroot);
 use constant FORBIDDEN_PATHS => ( qw(. /tools/bin) );
 use constant MERGED_FRAGMENT => qw(merged_fragment);
@@ -96,7 +96,7 @@ my %toolchain_config = (
 
 my %generic_config = (
 	'BR2_LINUX_KERNEL_CUSTOM_REPO_URL' =>
-				'git://stbgit.broadcom.com/queue/linux.git',
+				'git://stbgit.stb.broadcom.net/queue/linux.git',
 	'BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION' => 'stb-4.9',
 );
 
@@ -376,6 +376,75 @@ sub get_cores()
 	return $num_cores;
 }
 
+sub get_stbrelease($)
+{
+	my ($linux_dir) = @_;
+	my ($version, $patch_level, $extra_version);
+
+	if (!defined($linux_dir)) {
+		return undef;
+	}
+	if (!open(F, "$linux_dir/Makefile")) {
+		return undef;
+	}
+
+	while (my $line = <F>) {
+		chomp($line);
+		if ($line =~ /^VERSION\s+=\s+(.*)/) {
+			$version = $1;
+		}
+		if ($line =~ /^PATCHLEVEL\s*=\s*(.*)/) {
+			$patch_level = $1;
+		}
+		if ($line =~ /^EXTRAVERSION\s*=\s*(.*)/) {
+			$extra_version = $1;
+			# No need to keep parsing the Makefile.
+			last;
+		}
+	}
+	close(F);
+
+	return ($version, $patch_level, $extra_version);
+}
+
+sub get_stbrelease_string($)
+{
+	my ($linux_dir) = @_;
+	my $ret;
+	my ($version, $patch_level, $extra_version) =
+		get_stbrelease($linux_dir);
+
+	if (!defined($version)) {
+		return '<unknown>';
+	}
+
+	$ret = $version;
+	if (defined($patch_level)) {
+		$ret .= ".$patch_level";
+	}
+	if (defined($extra_version)) {
+		$ret .= $extra_version;
+	}
+
+	return $ret;
+}
+
+sub get_libc($$)
+{
+	my ($toolchain, $arch) = @_;
+	my $full_path = "$toolchain/bin/".$compiler_map{$arch};
+	my $compiler = readlink($full_path);
+
+	if (!defined($compiler)) {
+		return undef;
+	}
+	if ($compiler =~ /(musl|uclibc)/) {
+		return $1;
+	}
+
+	return 'glibc';
+}
+
 sub find_toolchain($)
 {
 	my ($toolchain_ver) = @_;
@@ -398,9 +467,13 @@ sub find_toolchain($)
 	# location.
 	return undef unless (opendir($dh, TOOLCHAIN_DIR));
 
-	# Sort in reverse order, so newer toolchains appear first.
+	# Sort in reverse order, so newer toolchains appear first. Also, make
+	# sure we only match stbgcc version 6 and newer. Lastly, the toolchain
+	# directory must end with a digit (e.g. stbgcc-6.3-1.7). This excludes
+	# development toolchains that may have a suffix after the version number
+	# from being searched automatically.
 	@toolchains = sort { $b cmp $a }
-		grep { /stbgcc-[6-9]/ } readdir($dh);
+		grep { /stbgcc-[6-9].*\d$/ } readdir($dh);
 	closedir($dh);
 
 	foreach my $dir (@toolchains) {
@@ -422,19 +495,56 @@ sub set_target_toolchain($$)
 	my ($toolchain, $arch) = @_;
 	my $stbgcc = $toolchain."/bin/".$compiler_map{$arch};
 	my $version = `$stbgcc -v 2>&1 | grep 'gcc version'`;
+	my $libc = get_libc($toolchain, $arch) || '';
+	my $libc_sel = 'BR2_TOOLCHAIN_EXTERNAL_CUSTOM_'.uc($libc);
+
+	if (!-e $stbgcc) {
+		return -1;
+	}
+	if ($libc eq '') {
+		return -2;
+	}
 
 	if ($version =~ /\s+(\d+)\.(\d+)\.(\d+)/) {
 		my ($major, $minor, $patch) = ($1, $2, $3);
 		my $config_str = "BR2_TOOLCHAIN_EXTERNAL_GCC_$major";
 
 		print("Detected GCC $major ($major.$minor)...\n");
+		print("C library is $libc...\n");
 		$toolchain_config{$arch}{$config_str} = 'y';
 	} else {
 		print("WARNING! Couldn't determine GCC version number. ".
 			"Build may fail.\n");
 		print("Toolchain: $toolchain\n");
 	}
+
+	$toolchain_config{$arch}{$libc_sel} = 'y';
 	$toolchain_config{$arch}{'BR2_TOOLCHAIN_EXTERNAL_PATH'} = $toolchain;
+
+	return 0;
+}
+
+sub get_linux_remote()
+{
+	return $generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_URL'};
+}
+
+sub resolve_remote($)
+{
+	my ($remote) = @_;
+
+	# If it's a URL, extract the host portion.
+	if ($remote =~ /^\w+:\/\/([^\/:]+)/) {
+		return defined(gethostbyname($1));
+	}
+
+	# Not a URL. Try to resolve it as-is.
+	return defined(gethostbyname($remote));
+}
+
+sub resolve_linux_remote()
+{
+	return resolve_remote(get_linux_remote());
 }
 
 sub trigger_toolchain_sync($$)
@@ -582,8 +692,7 @@ sub get_linux_sha_remote($$)
 {
 	my ($fragments, $fragment_dir) = @_;
 
-	my $git_remote =
-		$generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_URL'};
+	my $git_remote = get_linux_remote();
 	my $git_branch =
 		$generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION'};
 	my $git_cmd = "git ls-remote \"$git_remote\" | ".
@@ -691,8 +800,8 @@ sub write_localmk($$)
 
 		@buf = <F>;
 		close(F);
-		# Check if we are already including out auto-generated makefile
-		# snipped. Bail if we do.
+		# Check if we are already including our auto-generated makefile
+		# snippet. Bail if we do.
 		foreach my $line (@buf) {
 			return if ($line =~ /include .*$auto_mk/);
 		}
@@ -772,6 +881,167 @@ sub write_config($$$)
 	close(F);
 }
 
+sub print_host_info($$)
+{
+	my ($orig_cmdline, $local_linux) = @_;
+	my $host_gcc_ver = `gcc -v 2>&1 | grep '^gcc'`;
+	my $host_kernel_ver = `uname -r`;
+	my $host_name = `hostname -f 2>/dev/null`;
+	my $host_os_ver = `lsb_release -d 2>/dev/null`;
+	my $host_perl_ver = `perl -v | grep '^This is'`;
+	my $stb_release = get_stbrelease_string($local_linux);
+	my @br_vars = grep { /^BR_/ } keys(%ENV);
+	my $host_addr;
+
+	chomp($host_name);
+	chomp($host_kernel_ver);
+	$host_gcc_ver =~ s/(.*\S)\s*\n/$1/s;
+	$host_perl_ver =~ s/.*\(([^)]+)\).*/$1/s;
+	$host_os_ver =~ s/.*:\s+(.*)\n$/$1/s;
+	$host_addr = inet_ntoa(inet_aton($host_name)) || '';
+
+	print("Host is running $host_os_ver...\n");
+	print("Host kernel is $host_kernel_ver...\n");
+	print("Host name is $host_name ($host_addr)...\n");
+	print("Host GCC is $host_gcc_ver...\n");
+	print("Host perl is $host_perl_ver...\n");
+
+	print("Host environment:\n") if ($#br_vars >= 0);
+	foreach my $key (@br_vars) {
+		print("\t$key = ".$ENV{$key}."\n");
+	}
+
+	print("Command line is \"@$orig_cmdline\"...\n");
+	if (defined($stb_release) && defined($local_linux)) {
+		print("STB version is $stb_release ($local_linux)...\n");
+	}
+}
+
+sub get_32bit_runtime($$$)
+{
+	my ($arch, $runtime_base, $rt_path) = @_;
+
+	if (defined($rt_path)) {
+		if (! -d $rt_path && $rt_path ne '-') {
+			print(STDERR "WARNING: 32-bit directory $rt_path does ".
+				"not exist!\n");
+			$rt_path = '';
+		}
+	} else {
+		my $arch32 = $arch;
+
+		$arch32 =~ s|64||;
+		# "sysroot" and "sys-root" are being used as directory names
+		$rt_path = `ls -d "$runtime_base/$arch32"*/sys*root 2>/dev/null`;
+		chomp($rt_path);
+	}
+
+	if ($rt_path eq '') {
+		print("32-bit libraries not found, disabling 32-bit ".
+			"support...\n".
+			"Use command line option -3 <path> to specify your ".
+			"32-bit sysroot.\n");
+	} elsif ($rt_path eq '-') {
+		printf("Disabling 32-bit support by user request\n");
+	} else {
+		my $arch64 = $arch_config{$arch}{'arch_name'};
+		my $rt64_path =
+			`ls -d "$runtime_base/$arch64"*/sys*root 2>/dev/null`;
+		chomp($rt64_path);
+
+		print("Using $rt_path for 32-bit environment\n");
+		$arch_config{$arch}{'BR2_ROOTFS_RUNTIME32'} = 'y';
+		$arch_config{$arch}{'BR2_ROOTFS_RUNTIME32_PATH'} = $rt_path;
+
+		# Additional KConfig variables are derived from the value of
+		# BR2_ROOTFS_LIB_DIR in system/Config.in.
+		if (-l "$rt64_path/lib64") {
+			print("Found new toolchain using /lib and /lib32...\n");
+
+		} else {
+			print("Found traditional toolchain using /lib64 and ".
+				"/lib...\n");
+			$arch_config{$arch}{'BR2_NEED_LD_SO_CONF'} = 'y';
+		}
+		print("Root file system will use /lib and /lib32...\n");
+	}
+}
+
+sub run_clean_mode($$)
+{
+	my ($prg, $br_outputdir) = @_;
+	my $err;
+
+	print("Cleaning $br_outputdir...\n");
+	remove_tree($br_outputdir, { error => \$err });
+
+	# No error, let's exit.
+	exit(0) if ($#$err < 0);
+
+	# See https://perldoc.perl.org/File/Path.html#ERROR-HANDLING
+	for my $diag (@$err) {
+		my ($file, $message) = %$diag;
+		my $errmsg;
+
+		if ($file eq '') {
+			$errmsg = $message;
+		} else {
+			$errmsg = "error deleting $file -- $message";
+		}
+		print(STDERR "$prg: $errmsg\n");
+	}
+
+	exit(1);
+}
+
+sub run_hash_mode($$$)
+{
+	my ($prg, $arch, $br_outputdir) = @_;
+	my $version_frag = VERSION_FRAGMENT;
+	my $auto_mk =  "$br_outputdir/".AUTO_MK;
+	my $k_frags = get_kconfig_var("$br_outputdir/.config",
+		'BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES');
+	my $local_linux;
+
+	print("Running in hash mode for $arch...\n");
+
+	# Sanity checks that updating the hash makes sense. We don't do it if
+	#     1. The version fragment file hasn't been configured.
+	#     2. A non-custom kernel is being used (e.g. a cloned default
+	#        kernel).
+	#     3. SHA versioning has been disabled.
+	# Setting the hash would have no effect in the first case, since the
+	# kernel fragment would never be included. In the case of a non-custom
+	# kernel, updating the hash would more likely be misleading than
+	# helpful. Such a kernel should also not be modified locally. And if SHA
+	# versioning has been turned off, it would make no sense to update it.
+	if ($k_frags !~ /$version_frag/) {
+		print(STDERR "$prg: $version_frag isn't being used; ".
+			"won't update hash\n");
+		exit(0);
+	}
+	if (!-e $auto_mk) {
+		print(STDERR
+			"$prg: $auto_mk doesn't exist; won't update hash\n");
+		exit(0);
+	}
+
+	$local_linux = get_kconfig_var($auto_mk, 'LINUX_OVERRIDE_SRCDIR');
+	get_linux_sha_local(undef, $br_outputdir, $local_linux);
+	exit(0);
+}
+
+sub option_cannot_be_combined($$$$)
+{
+	my ($prg, $flag, $option, $options) = @_;
+
+	if ($flag && $options =~ /[^$option]/) {
+		print(STDERR "$prg: option -$option can't be combined with ".
+			"another option\n");
+		exit(1);
+	}
+}
+
 sub print_usage($)
 {
 	my ($prg) = @_;
@@ -786,6 +1056,7 @@ sub print_usage($)
 		"          -F <fname>...use <fname> as kernel fragment file\n".
 		"          -f <fname>...use <fname> as BR fragment file\n".
 		"          -H...........obtain Linux GIT SHA only\n".
+		"          -h...........show this help text\n".
 		"          -i...........like -b, but also build FS images\n".
 		"          -j <jobs>....run <jobs> parallel build jobs\n".
 		"          -L <path>....use local <path> as Linux kernel\n".
@@ -811,15 +1082,10 @@ my @orig_cmdline = @ARGV;
 my $merged_config = 'brcmstb_merged_defconfig';
 my $br_output_default = 'output';
 my $temp_config = 'temp_config';
-my $host_gcc_ver = `gcc -v 2>&1 | grep '^gcc'`;
-my $host_kernel_ver = `uname -r`;
-my $host_name = `hostname -f 2>/dev/null`;
-my $host_os_ver = `lsb_release -d 2>/dev/null`;
-my $host_perl_ver = `perl -v | grep '^This is'`;
+my $clean_mode = 0;
 my $hash_mode = 0;
 my $ret = 0;
 my $is_64bit = 0;
-my $host_addr;
 my $relative_outputdir;
 my $br_outputdir;
 my $br_mirror;
@@ -835,11 +1101,11 @@ my $arch;
 my $opt_keys;
 my %opts;
 
-getopts('3:bcDd:F:f:Hij:L:l:M:no:R:r:ST:t:v:X:', \%opts);
+getopts('3:bcDd:F:f:Hhij:L:l:M:no:R:r:ST:t:v:X:', \%opts);
 $opt_keys = join('', keys(%opts));
 $arch = $ARGV[0];
 
-if ($#ARGV < 0) {
+if ($#ARGV < 0 || $opts{'h'}) {
 	print_usage($prg);
 	exit(1);
 }
@@ -850,20 +1116,11 @@ if (check_br() < 0) {
 	exit(1);
 }
 
+$clean_mode = 1 if ($opts{'c'});
 $hash_mode = 1 if ($opts{'H'});
 
-if ($hash_mode && $opt_keys =~ /[^H]/) {
-	print(STDERR
-		"$prg: option -H can't be combined with another option\n");
-	exit(1);
-}
-
-chomp($host_name);
-chomp($host_kernel_ver);
-$host_gcc_ver =~ s/(.*\S)\s*\n/$1/s;
-$host_perl_ver =~ s/.*\(([^)]+)\).*/$1/s;
-$host_os_ver =~ s/.*:\s+(.*)\n$/$1/s;
-$host_addr = inet_ntoa(inet_aton($host_name)) || '';
+option_cannot_be_combined($prg, $clean_mode, 'c', $opt_keys);
+option_cannot_be_combined($prg, $hash_mode, 'H', $opt_keys);
 
 # Treat mips as an alias for bmips.
 $arch = 'bmips' if ($arch eq 'mips');
@@ -929,56 +1186,14 @@ if (! -d $br_outputdir) {
 	make_path($br_outputdir);
 }
 
+# Clean up output directory
+run_clean_mode($prg, $br_outputdir) if ($clean_mode);
+
 # In hash mode, we only update the kernel hash and nothing else.
-if ($hash_mode) {
-	my $version_frag = VERSION_FRAGMENT;
-	my $auto_mk =  "$br_outputdir/".AUTO_MK;
-	my $k_frags = get_kconfig_var("$br_outputdir/.config",
-		'BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES');
-
-	print("Running in hash mode for $arch...\n");
-
-	# Sanity checks that updating the hash makes sense. We don't do it if
-	#     1. The version fragment file hasn't been configured.
-	#     2. A non-custom kernel is being used (e.g. a cloned default
-	#        kernel).
-	#     3. SHA versioning has been disabled.
-	# Setting the hash would have no effect in the first case, since the
-	# kernel fragment would never be included. In the case of a non-custom
-	# kernel, updating the hash would more likely be misleading than
-	# helpful. Such a kernel should also not be modified locally. And if SHA
-	# versioning has been turned off, it would make no sense to update it.
-	if ($k_frags !~ /$version_frag/) {
-		print(STDERR "$prg: $version_frag isn't being used; ".
-			"won't update hash\n");
-		exit(0);
-	}
-	if (!-e $auto_mk) {
-		print(STDERR
-			"$prg: $auto_mk doesn't exist; won't update hash\n");
-		exit(0);
-	}
-
-	$local_linux = get_kconfig_var($auto_mk, 'LINUX_OVERRIDE_SRCDIR');
-	get_linux_sha_local(undef, $relative_outputdir, $local_linux);
-	exit(0);
-}
+run_hash_mode($prg, $arch, $br_outputdir) if ($hash_mode);
 
 # This information may help troubleshoot build problems.
-print("Host is running $host_os_ver...\n");
-print("Host kernel is $host_kernel_ver...\n");
-print("Host name is $host_name ($host_addr)...\n");
-print("Host GCC is $host_gcc_ver...\n");
-print("Host perl is $host_perl_ver...\n");
-{
-	my @br_vars = grep { /^BR_/ } keys(%ENV);
-
-	print("Host environment:\n") if ($#br_vars >= 0);
-	foreach my $key (@br_vars) {
-		print("\t$key = ".$ENV{$key}."\n");
-	}
-}
-print("Command line is \"@orig_cmdline\"...\n");
+print_host_info(\@orig_cmdline, $local_linux);
 
 if (defined($opts{'o'})) {
 	print("Using ".$opts{'o'}." as output directory...\n");
@@ -986,15 +1201,6 @@ if (defined($opts{'o'})) {
 
 # Our temporary defconfig goes in the output directory.
 $temp_config = "$br_outputdir/$temp_config";
-
-if (defined($opts{'c'})) {
-	my $status;
-
-	print("Cleaning $br_outputdir...\n");
-	$status = system("rm -rf \"$br_outputdir\"");
-	$status = ($status >> 8) & 0xff;
-	exit($status);
-}
 
 if (defined($ENV{'BR_CCACHE'})) {
 	$br_ccache = $ENV{'BR_CCACHE'};
@@ -1167,13 +1373,22 @@ if (defined($local_linux)) {
 		}
 	}
 } else {
+	my $linux_remote_resolves = resolve_linux_remote();
+
 	# Delete our custom makefile, so we don't override the Linux directory.
 	if (-e "$br_outputdir/".AUTO_MK) {
 		unlink("$br_outputdir/".AUTO_MK);
 	}
+
+	if (!$linux_remote_resolves) {
+		my $linux_remote = get_linux_remote();
+		print("WARNING! Couldn't resolve $linux_remote!\n".
+			"Build may fail.\n");
+	}
+
 	# Determine the kernel GIT SHA remotely. The tree hasn't been cloned
-	# yet.
-	if (!defined($opts{'S'})) {
+	# yet. We can't do anything if we can't resolve the remote host.
+	if ($linux_remote_resolves && !defined($opts{'S'})) {
 		$kernel_frag_files = get_linux_sha_remote($kernel_frag_files,
 			$relative_outputdir);
 	}
@@ -1226,8 +1441,19 @@ if ($recommended_toolchain ne '') {
 	print(STDERR "Hit Ctrl-C now or wait ".SLEEP_TIME." seconds...\n");
 	sleep(SLEEP_TIME);
 }
-print("Using $toolchain as toolchain...\n");
-set_target_toolchain($toolchain, $arch);
+$ret = set_target_toolchain($toolchain, $arch);
+if ($ret == 0) {
+	print("Using $toolchain as toolchain...\n");
+} else {
+	if ($ret == -1) {
+		print(STDERR "$prg: $toolchain doesn't exist for $arch\n");
+	} elsif ($ret == -2) {
+		print(STDERR "$prg: couldn't determine libc for $toolchain\n");
+	} else {
+		print(STDERR "$prg: unknown toolchain error\n");
+	}
+	exit(1);
+}
 
 # The toolchain may have changed since we last configured Buildroot. We need to
 # force it to create the symlinks again, so we are sure to use the toolchain
@@ -1272,56 +1498,7 @@ if (defined($br_mirror) && $br_mirror ne '-') {
 	print("Not using a Buildroot mirror...\n");
 }
 
-if ($is_64bit) {
-	my $rt_path;
-	my $runtime_base = $toolchain;
-
-	if (defined($opts{'3'})) {
-		$rt_path = $opts{'3'};
-		if (! -d $rt_path && $rt_path ne '-') {
-			print(STDERR "WARNING: 32-bit directory $rt_path does ".
-				"not exist!\n");
-			$rt_path = '';
-		}
-	} else {
-		my $arch32 = $arch;
-
-		$arch32 =~ s|64||;
-		# "sysroot" and "sys-root" are being used as directory names
-		$rt_path = `ls -d "$runtime_base/$arch32"*/sys*root 2>/dev/null`;
-		chomp($rt_path);
-	}
-
-	if ($rt_path eq '') {
-		print("32-bit libraries not found, disabling 32-bit ".
-			"support...\n".
-			"Use command line option -3 <path> to specify your ".
-			"32-bit sysroot.\n");
-	} elsif ($rt_path eq '-') {
-		printf("Disabling 32-bit support by user request\n");
-	} else {
-		my $arch64 = $arch_config{$arch}{'arch_name'};
-		my $rt64_path =
-			`ls -d "$runtime_base/$arch64"*/sys*root 2>/dev/null`;
-		chomp($rt64_path);
-
-		print("Using $rt_path for 32-bit environment\n");
-		$arch_config{$arch}{'BR2_ROOTFS_RUNTIME32'} = 'y';
-		$arch_config{$arch}{'BR2_ROOTFS_RUNTIME32_PATH'} = $rt_path;
-
-		# Additional KConfig variables are derived from the value of
-		# BR2_ROOTFS_LIB_DIR in system/Config.in.
-		if (-l "$rt64_path/lib64") {
-			print("Found new toolchain using /lib and /lib32...\n");
-
-		} else {
-			print("Found traditional toolchain using /lib64 and ".
-				"/lib...\n");
-			$arch_config{$arch}{'BR2_NEED_LD_SO_CONF'} = 'y';
-		}
-		print("Root file system will use /lib and /lib32...\n");
-	}
-}
+get_32bit_runtime($arch, $toolchain, $opts{'3'}) if ($is_64bit);
 
 write_config(\%generic_config, $temp_config, 1);
 write_config($arch_config{$arch}, $temp_config, 0);

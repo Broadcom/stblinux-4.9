@@ -16,6 +16,8 @@ Optional properties:
 - clocks: When provided must be a single phandle to the clock controller
   followed by the unique number for the ASP clocks
 - clock-names: When provided the names of the function clock must be "sw_asp"
+- brcm,reserved-net-filters-mask: When provided the network filter correlated
+  with the bitmap will not be used by the driver.
 
 Required child nodes:
 
@@ -58,6 +60,7 @@ asp@9c00000 {
 	interrupts = <0 51 4>;
 	ranges;
 	clocks = <&scmi 14>;
+	brcm,reserved-net-filters-mask = <0xff>;
 
 	mdio@c614 {
 		compatible = "brcm,asp-v2.0-mdio";

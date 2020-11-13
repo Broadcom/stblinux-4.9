@@ -1,2 +1,2 @@
-obj-m := test-dvfs-api.o num_pstates.o set_pstate.o xable_clock.o scmi_flood.o temp_threshold.o
+obj-m := test-dvfs-api.o num_pstates.o set_pstate.o xable_clock.o scmi_flood.o temp_threshold.o clk_get_rate.o
 ccflags-y += -Werror

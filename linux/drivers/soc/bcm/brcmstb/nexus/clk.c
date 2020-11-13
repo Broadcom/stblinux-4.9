@@ -86,6 +86,7 @@ static inline int brcm_get_clk_idx(unsigned int clk_id)
 	return idx;
 }
 
+/* This is called if one is sure the clock has already been gotten */
 static struct clk *brcm_find_clk(unsigned int clk_id)
 {
 	int idx = brcm_get_clk_idx(clk_id);
@@ -93,33 +94,41 @@ static struct clk *brcm_find_clk(unsigned int clk_id)
 	return idx < 0 ? NULL : iface->clks[idx];
 }
 
-int brcm_clk_prepare_enable(unsigned int clk_id)
+static struct clk *brcm_get_clk(unsigned int clk_id)
 {
-	int idx, ret = 0;
+	int idx = brcm_get_clk_idx(clk_id);
 	struct clk *clk;
 
-	idx = brcm_get_clk_idx(clk_id);
 	if (idx < 0)
-		return -EINVAL;
+		return ERR_PTR(-EINVAL);
+
+	clk = iface->clks[idx];
+	if (clk)
+		return clk;
 
 	mutex_lock(&iface->lock);
 	clk = iface->clks[idx];
 	if (!clk) {
-		const char *name = iface->clk_names[clk_id - BCLK_SW_OFFSET];
+		const char *name = iface->clk_names[idx];
 
 		clk = clk_get(NULL, name);
-		if (IS_ERR(clk)) {
-			ret = PTR_ERR(clk);
+		if (IS_ERR(clk))
 			pr_debug("brcmstb-clk: clk_get fail; clk_id=0x%x(%s)\n",
 			       clk_id, name);
-		} else {
+		else
 			iface->clks[idx] = clk;
-		}
 	}
 	mutex_unlock(&iface->lock);
 
-	if (ret)
-		return ret;
+	return clk;
+}
+
+int brcm_clk_prepare_enable(unsigned int clk_id)
+{
+	struct clk *clk = brcm_get_clk(clk_id);
+
+	if (IS_ERR(clk))
+		return PTR_ERR(clk);
 	else
 		return clk_prepare_enable(clk);
 }
@@ -127,17 +136,26 @@ EXPORT_SYMBOL(brcm_clk_prepare_enable);
 
 void brcm_clk_disable_unprepare(unsigned int clk_id)
 {
-	struct clk *clk;
+	struct clk *clk = brcm_find_clk(clk_id);
 
-	if (!iface)
-		return;
-	if (clk_id == BCLK_NULL)
-		return;
-	clk = brcm_find_clk(clk_id);
 	if (clk)
 		clk_disable_unprepare(clk);
 }
 EXPORT_SYMBOL(brcm_clk_disable_unprepare);
+
+int brcm_clk_get_rate(unsigned int clk_id, u64 *rate)
+{
+	struct clk *clk = brcm_get_clk(clk_id);
+	int ret = 0;
+
+	if (IS_ERR(clk))
+		ret = PTR_ERR(clk);
+	else
+		*rate = (u64)clk_get_rate(clk);
+
+	return ret;
+}
+EXPORT_SYMBOL(brcm_clk_get_rate);
 
 static int  __init brcm_clk_init(void)
 {

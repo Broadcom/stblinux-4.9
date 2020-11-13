@@ -43,10 +43,10 @@
 
 #define MAX_BHPA_REGIONS	8
 
-#define B_LOG_WRN(args...) pr_warn(args)
-#define B_LOG_MSG(args...) pr_info(args)
-#define B_LOG_DBG(args...) pr_debug(args)
-#define B_LOG_TRACE(args...) do { if (0) pr_debug(args); } while (0)
+#define B_LOG_WRN(fmt, args...) pr_warn(fmt "\n", ## args)
+#define B_LOG_MSG(fmt, args...) pr_info(fmt "\n", ## args)
+#define B_LOG_DBG(fmt, args...) pr_debug(fmt "\n", ## args)
+#define B_LOG_TRACE(fmt, args...) do { if (0) pr_debug(fmt "\n", ## args); } while (0)
 
 struct bhpa_region {
 	phys_addr_t		addr;
@@ -97,6 +97,7 @@ struct bhpa_allocator {
 
 static struct bhpa_region bhpa_regions[MAX_BHPA_REGIONS];
 static unsigned int n_bhpa_regions;
+static bool bhpa_disabled;
 static DEFINE_MUTEX(bhpa_lock);
 struct bhpa_allocator bhpa_allocator;
 
@@ -139,7 +140,7 @@ static int __init __bhpa_setup(phys_addr_t addr, phys_addr_t size)
  */
 static int __init bhpa_setup(char *str)
 {
-	phys_addr_t addr = 0, end = 0, size;
+	phys_addr_t addr, end = 0, size;
 	char *orig_str = str;
 	int ret;
 
@@ -155,6 +156,12 @@ static int __init bhpa_setup(char *str)
 	addr = ALIGN(addr, BHPA_ALIGN);
 	end = ALIGN_DOWN(end, BHPA_ALIGN);
 	size = end - addr;
+
+	if (size == 0) {
+		pr_info("disabling reserved memory\n");
+		bhpa_disabled = true;
+		return 0;
+	}
 
 	if (addr < memblock_start_of_DRAM()) {
 		pr_warn("ignoring invalid range '%s' below addressable DRAM\n",
@@ -310,6 +317,17 @@ void __init brcmstb_bhpa_reserve(void)
 	struct bhpa_region *p, *tmp;
 	u64 loop;
 	int i;
+
+	if (bhpa_disabled) {
+		n_bhpa_regions = 0;
+		return;
+	}
+
+	if (brcmstb_default_reserve == BRCMSTB_RESERVE_BHPA &&
+			!n_bhpa_regions &&
+			!brcmstb_memory_override_defaults &&
+			!movable_start)
+		brcmstb_memory_default_reserve(__bhpa_setup);
 
 	if (!movable_start)
 		return;
@@ -710,21 +728,20 @@ static int bhpa_block_alloc_fast(struct bhpa_block *block,
 		B_LOG_DBG("block_alloc_fast:%p:%u allocated: %u:(%lu) %#llx (%lx..%lx)",
 			  block, order, count, free_bit,
 			  (unsigned long long)free_start, pfn_start, pfn_end);
-		if (!test_and_set_bit(free_bit, block->busy) &&
-		    !WARN_ON(!block->free)) {
-			unsigned int fast_page_size;
-
-			block->free--;
-			block->stats.allocated++;
-			block->stats.high_allocated =
-				max(block->stats.high_allocated,
-				    block->stats.allocated);
-			fast_page_size = get_order(BHPA_SIZE) - order;
-			WARN_ON(fast_page_size >=
-				sizeof(block->stats.allocations.fast) /
-				sizeof(block->stats.allocations.fast[0]));
-			block->stats.allocations.fast[fast_page_size]++;
+		if (test_and_set_bit(free_bit, block->busy)) {
+			block->stats.busy--;
+			block->free++;
 		}
+
+		if (!WARN_ON(!block->free))
+			block->free--;
+
+		block->stats.allocated++;
+		block->stats.high_allocated = max(block->stats.high_allocated,
+						  block->stats.allocated);
+		WARN_ON((BHPA_ORDER - order) >=
+			ARRAY_SIZE(block->stats.allocations.fast));
+		block->stats.allocations.fast[BHPA_ORDER - order]++;
 		set_bit(free_bit, block->allocated);
 		pages[*allocated] = free_start;
 		(*allocated)++;

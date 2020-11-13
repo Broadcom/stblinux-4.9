@@ -92,10 +92,16 @@ brcmstb-release: brcmstb-diffs linux-diffs linux-release
 	unset BR_SKIP_LEGAL_INFO; \
 	for arch in `bin/get_archs.pl $(STB_VERSION)`; do \
 		extra=""; \
-		a="$(BRCMSTB_LINUX_DIR)/arch/$${arch}"; \
+		if [ "$${arch}" == "bmips" ]; then \
+			linux_arch="mips"; \
+		else \
+			linux_arch="$${arch}"; \
+		fi; \
+		a="$(BRCMSTB_LINUX_DIR)/arch/$${linux_arch}"; \
 		i="$(BRCMSTB_LINUX_DIR)/include/linux"; \
 		if [ -d "$(BRCMSTB_LINUX_DIR)" ]; then \
-			if [ ! -e "$${a}/configs/brcmstb_defconfig" ]; then \
+			if [ ! -e "$${a}/configs/brcmstb_defconfig" -a \
+			     ! -e "$${a}/configs/bmips_stb_defconfig" ]; then \
 				echo "Using default defconfig for $${arch}."; \
 				extra="-D"; \
 			fi; \

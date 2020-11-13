@@ -37,6 +37,9 @@
 #include <linux/brcmstb/memory_api.h>
 #include <asm/tlbflush.h>
 #include <linux/pfn_t.h>
+
+extern unsigned long __initramfs_size;
+
 /* -------------------- Constants -------------------- */
 
 #define DEFAULT_LOWMEM_PCT	20  /* used if only one membank */
@@ -90,7 +93,7 @@ struct kva_map {
 static LIST_HEAD(kva_map_list);
 static DEFINE_MUTEX(kva_map_lock);
 
-const enum brcmstb_reserve_type brcmstb_default_reserve = BRCMSTB_RESERVE_BMEM;
+const enum brcmstb_reserve_type brcmstb_default_reserve = BRCMSTB_RESERVE_BHPA;
 bool brcmstb_memory_override_defaults = false;
 bool brcmstb_bmem_is_bhpa = false;
 
@@ -111,12 +114,16 @@ int __brcmstb_memory_phys_addr_to_memc(phys_addr_t pa, void __iomem *base,
 				       const char *compat)
 {
 	const char *bcm7211_biuctrl_match = "brcm,bcm7211-cpu-biu-ctrl";
+	const char *bcm72113_biuctrl_match = "brcm,bcm72113-cpu-biu-ctrl";
 	int memc = -1;
 	int i;
 
 	/* Single MEMC controller with unreadable ULIMIT values as of the A0 */
 	if (!strncmp(compat, bcm7211_biuctrl_match,
 		     strlen(bcm7211_biuctrl_match)))
+		return 0;
+	if (!strncmp(compat, bcm72113_biuctrl_match,
+		     strlen(bcm72113_biuctrl_match)))
 		return 0;
 
 	for (i = 0; i < NUM_BUS_RANGES; i++, base += 8) {
@@ -874,6 +881,16 @@ static __init int memc_reserve(int memc, u64 addr, u64 size, void *context)
 
 	if (!ctx->count++) {	/* First Bank */
 		limit = (u64)memblock_get_current_limit();
+
+#ifdef CONFIG_BLK_DEV_INITRD
+		/* Assume that a compressed initramfs will expand roughly to 5
+		 * times its compressed size. Determining its exact size early
+		 * on boot with no memory allocator available is not possible
+		 * since decompressors assume kmalloc() is available.
+		 */
+		addr += __initramfs_size * 5;
+		size = end - addr;
+#endif
 		/*
 		 *  On ARM64 systems, force the first memory controller
 		 * to be partitioned the same way it would on ARM
@@ -893,7 +910,8 @@ static __init int memc_reserve(int memc, u64 addr, u64 size, void *context)
 				return 0;
 			}
 
-			if (brcmstb_default_reserve == BRCMSTB_RESERVE_BMEM) {
+			if (brcmstb_default_reserve == BRCMSTB_RESERVE_BMEM ||
+			    brcmstb_default_reserve == BRCMSTB_RESERVE_BHPA) {
 				if (size <= SZ_128M)
 					return 0;
 

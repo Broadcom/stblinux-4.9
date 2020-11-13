@@ -1121,7 +1121,7 @@ static int moca_recvmsg(struct moca_priv_data *priv, uintptr_t offset,
 	struct moca_core_msg *m;
 	unsigned int w, rw, num_ies;
 	u32 data, size;
-	char *msg;
+	char *msg = NULL;
 	int err = -ENOMEM;
 	u32 *reply = priv->core_resp_buf;
 	int attach = 1;
@@ -1313,7 +1313,8 @@ static int moca_recvmsg(struct moca_priv_data *priv, uintptr_t offset,
 	return 0;
 
 bad:
-	dev_warn(priv->dev, "%s\n", msg);
+	if (msg)
+		dev_warn(priv->dev, "%s\n", msg);
 
 	if (ml)
 		moca_attach_tail(priv, ml, &priv->core_msg_free_list);

@@ -1,0 +1,89 @@
+From 9d74242f5eb3f202f12ffa116fea4ab178a9045c Mon Sep 17 00:00:00 2001
+From: Markus Mayer <mmayer@broadcom.com>
+Date: Fri, 17 Jul 2020 14:25:08 -0700
+Subject: [PATCH 2/3] gdb/nat/aarch64: fixes for musl-libc
+
+We swap where asm/sigcontext.h is included and where struct
+user_sve_header is defined.
+
+By doing both of these tasks in the respective other header file,
+building GDB against musl-libc for Aarch64 succeeds, whereas it was
+failing before. (Building against glibc is not affected by this
+change and continues to work.)
+
+When using musl-libc, including asm/sigcontext.h in
+aarch64-sve-linux-ptrace.h leads to multiple type re-definition clashes
+between it and bits/signal.h. Moving the include to
+aarch64-sve-linux-sigcontext.h resolves the issue.
+
+Conversly, declaring struct user_sve_header in
+aarch64-sve-linux-sigcontext.h leads to "incomplete data type" errors,
+because aarch64-sve-linux-sigcontext.h isn't always included due to the
+"#ifdef" in aarch64-sve-linux-ptrace.h.
+
+Signed-off-by: Markus Mayer <mmayer@broadcom.com>
+---
+ gdb/nat/aarch64-sve-linux-ptrace.h     | 10 +++++++++-
+ gdb/nat/aarch64-sve-linux-sigcontext.h | 11 ++---------
+ 2 files changed, 11 insertions(+), 10 deletions(-)
+
+diff --git a/gdb/nat/aarch64-sve-linux-ptrace.h b/gdb/nat/aarch64-sve-linux-ptrace.h
+index 029e753ffe89..44d833677c12 100644
+--- a/gdb/nat/aarch64-sve-linux-ptrace.h
++++ b/gdb/nat/aarch64-sve-linux-ptrace.h
+@@ -20,7 +20,6 @@
+ #ifndef AARCH64_SVE_LINUX_PTRACE_H
+ #define AARCH64_SVE_LINUX_PTRACE_H
+ 
+-#include <asm/sigcontext.h>
+ #include <sys/utsname.h>
+ #include <sys/ptrace.h>
+ #include <asm/ptrace.h>
+@@ -29,6 +28,15 @@
+ #include "aarch64-sve-linux-sigcontext.h"
+ #endif
+ 
++struct user_sve_header {
++	__u32 size; /* total meaningful regset content in bytes */
++	__u32 max_size; /* maxmium possible size for this thread */
++	__u16 vl; /* current vector length */
++	__u16 max_vl; /* maximum possible vector length */
++	__u16 flags;
++	__u16 __reserved;
++};
++
+ /* Indicates whether a SVE ptrace header is followed by SVE registers or a
+    fpsimd structure.  */
+ 
+diff --git a/gdb/nat/aarch64-sve-linux-sigcontext.h b/gdb/nat/aarch64-sve-linux-sigcontext.h
+index bdece8e17d8e..101fd874426f 100644
+--- a/gdb/nat/aarch64-sve-linux-sigcontext.h
++++ b/gdb/nat/aarch64-sve-linux-sigcontext.h
+@@ -21,6 +21,8 @@
+ 
+ #define SVE_MAGIC	0x53564501
+ 
++#include <asm/sigcontext.h>
++
+ struct sve_context {
+ 	struct _aarch64_ctx head;
+ 	__u16 vl;
+@@ -131,15 +133,6 @@ struct sve_context {
+ 
+ /* SVE/FP/SIMD state (NT_ARM_SVE) */
+ 
+-struct user_sve_header {
+-	__u32 size; /* total meaningful regset content in bytes */
+-	__u32 max_size; /* maxmium possible size for this thread */
+-	__u16 vl; /* current vector length */
+-	__u16 max_vl; /* maximum possible vector length */
+-	__u16 flags;
+-	__u16 __reserved;
+-};
+-
+ /* Definitions for user_sve_header.flags: */
+ #define SVE_PT_REGS_MASK		(1 << 0)
+ 
+-- 
+2.25.1
+

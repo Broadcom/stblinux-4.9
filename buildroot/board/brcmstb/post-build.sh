@@ -87,22 +87,32 @@ if [ -h "${resolvconf}" ]; then
 	touch "${resolvconf}"
 fi
 
-# Add ldd from the host's sysroot
-echo "Copying ldd..."
-cp -p ${HOST_DIR}/*gnu*/sysroot/usr/bin/ldd ${TARGET_DIR}/usr/bin
-if grep '^RTLDLIST=/lib/ld-linux-aarch64' "${TARGET_DIR}/usr/bin/ldd" >/dev/null; then
-	set +e
-	ld32=`ls "${TARGET_DIR}/lib/"ld-linux-arm* 2>/dev/null`
-	ld64=`ls "${TARGET_DIR}/lib/"ld-linux-aarch* 2>/dev/null`
-	set -e
-	if [ "${ld32}" = "" -o "${ld64}" = "" ]; then
-		echo "Couldn't find shared library loader(s), not updating ldd!"
-	else
-		echo "Adding Aarch32 capabilities to ldd..."
-		ld32="/lib/`basename ${ld32}`"
-		ld64="/lib/`basename ${ld64}`"
-		sed -i "s|^RTLDLIST=.*|RTLDLIST=\"${ld64} ${ld32}\"|" \
-			"${TARGET_DIR}/usr/bin/ldd"
+# Set up ldd in the root file system
+set +e
+musl_ldso=`ls ${TARGET_DIR}/lib/ld-musl-*.so* 2>/dev/null`
+set -e
+
+if [ "$musl_ldso" != "" ]; then
+	musl_ld_base=`basename "${musl_ldso}"`
+	echo "Creating ldd symlink for musl..."
+	ln -snf "../../lib/${musl_ld_base}" "${TARGET_DIR}/usr/bin/ldd"
+else
+	echo "Copying ldd..."
+	cp -p ${HOST_DIR}/*gnu*/sysroot/usr/bin/ldd ${TARGET_DIR}/usr/bin
+	if grep '^RTLDLIST=/lib/ld-linux-aarch64' "${TARGET_DIR}/usr/bin/ldd" >/dev/null; then
+		set +e
+		ld32=`ls "${TARGET_DIR}/lib/"ld-linux-arm* 2>/dev/null`
+		ld64=`ls "${TARGET_DIR}/lib/"ld-linux-aarch* 2>/dev/null`
+		set -e
+		if [ "${ld32}" = "" -o "${ld64}" = "" ]; then
+			echo "Couldn't find shared library loader(s), not updating ldd!"
+		else
+			echo "Adding Aarch32 capabilities to ldd..."
+			ld32="/lib/`basename ${ld32}`"
+			ld64="/lib/`basename ${ld64}`"
+			sed -i "s|^RTLDLIST=.*|RTLDLIST=\"${ld64} ${ld32}\"|" \
+				"${TARGET_DIR}/usr/bin/ldd"
+		fi
 	fi
 fi
 
@@ -121,12 +131,19 @@ VERSION=$linux_ver
 EOF
 
 if grep 'BR2_NEED_LD_SO_CONF=y' "${dot_config}" >/dev/null; then
-	echo "Copying ${board_dir}/ld.so.conf..."
-	cp -p "${board_dir}/ld.so.conf" ${TARGET_DIR}/etc
-	echo "Copying ldconfig..."
-	cp -p ${HOST_DIR}/*gnu*/sysroot/sbin/ldconfig ${TARGET_DIR}/sbin
-	echo "Running host-ldconfig..."
-	./bin/ldconfig -r ${TARGET_DIR}
+	if [ "$musl_ldso" != "" ]; then
+		musl_arch=`echo "$musl_ld_base" | sed -e 's/ld-musl-\(.*\)\.so.*/\1/'`
+		ld_musl_path="/etc/ld-musl-$musl_arch.path"
+		echo "Setting up ${ld_musl_path}..."
+		cp -p "${board_dir}/ld.so.conf" "${TARGET_DIR}${ld_musl_path}"
+	else
+		echo "Copying ${board_dir}/ld.so.conf..."
+		cp -p "${board_dir}/ld.so.conf" ${TARGET_DIR}/etc
+		echo "Copying ldconfig..."
+		cp -p ${HOST_DIR}/*gnu*/sysroot/sbin/ldconfig ${TARGET_DIR}/sbin
+		echo "Running host-ldconfig..."
+		./bin/ldconfig -r ${TARGET_DIR}
+	fi
 fi
 
 # BR_SKIP_LEGAL_INFO permits a developer to skip the "make legal-info" stage to
@@ -171,7 +188,7 @@ SKEL_VERSION=`grep default package/brcm-pm/Config.in | awk '{print $2}'`
 SKEL_PATH=`dirname ${TARGET_DIR}`/build/brcm-skel-${SKEL_VERSION}
 
 # Run this test only if no custom skeleton is configured.
-if ! grep '^BRCM_SKEL_OVERRIDE_SRCDIR=' ${local_config} >/dev/null; then
+if ! grep '^BRCM_SKEL_OVERRIDE_SRCDIR[[:space:]]*=' ${local_config} >/dev/null; then
 	echo "Performing consistency check..."
 	init_diff=`diff -u ${TARGET_DIR}/etc/inittab ${SKEL_PATH}/skel/etc/inittab`
 	if [ $? != 0 ]; then

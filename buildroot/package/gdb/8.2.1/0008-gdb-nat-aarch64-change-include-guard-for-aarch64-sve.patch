@@ -1,0 +1,83 @@
+From 45eda75247f352ed7b37c41aa898ee438a561697 Mon Sep 17 00:00:00 2001
+From: Markus Mayer <mmayer@broadcom.com>
+Date: Fri, 17 Jul 2020 15:49:23 -0700
+Subject: [PATCH 3/3] gdb/nat/aarch64: change include guard for
+ aarch64-sve-linux-sigcontext.h
+
+musl-libc defines a number of SVE* defines within its own headers,
+specifically bits/signal.h. GLIBC doesn't do this, so the problems
+described below don't happen there.
+
+When building gdbserver against musl-libc, bits/signal.h is implicitly
+included during the compilation, which subsequently leads to a
+combination of build issues.
+
+Firstly, SVE_SIG_ZREGS_SIZE will have been defined by bits/signal.h.
+This will prevent nat/aarch64-sve-linux-sigcontext.h from being
+included by nat/aarch64-sve-linux-ptrace.h. Subsequently, macros
+defined by aarch64-sve-linux-sigcontext.h will be unknown (e.g.
+SVE_PT_REGS_SVE), and the build will abort.
+
+Secondly, if one simply removes the include guard around
+aarch64-sve-linux-sigcontext.h, one will now run into the issue that
+data types and defines that have previously been declared in
+bits/signal.h (e.g. struct sigcontext) will now be flagged as being
+redeclared, and the build will abort.
+
+Since the original issue is caused by a handful of custom SVE defines
+that musl-libc doesn't declare itself (all of which reside at the end
+of aarch64-sve-linux-sigcontext.h), the best approach is to move the
+include guard that lived outside aarch64-sve-linux-sigcontext.h and was
+protecting the entire file. We move the include guard into
+aarch64-sve-linux-sigcontext.h and have it cover only the first portion
+of the file that leads to redeclaration problems without the guard.
+The last portion of the file, which declares the custom SVE macros, is
+now unguarded. This allows the custom macros to be declared even when
+the include guard excludes the main portion of
+aarch64-sve-linux-sigcontext.h.
+
+Signed-off-by: Markus Mayer <mmayer@broadcom.com>
+---
+ gdb/nat/aarch64-sve-linux-ptrace.h     | 2 --
+ gdb/nat/aarch64-sve-linux-sigcontext.h | 4 ++++
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/gdb/nat/aarch64-sve-linux-ptrace.h b/gdb/nat/aarch64-sve-linux-ptrace.h
+index 44d833677c12..62a61b7ced13 100644
+--- a/gdb/nat/aarch64-sve-linux-ptrace.h
++++ b/gdb/nat/aarch64-sve-linux-ptrace.h
+@@ -24,9 +24,7 @@
+ #include <sys/ptrace.h>
+ #include <asm/ptrace.h>
+ 
+-#ifndef SVE_SIG_ZREGS_SIZE
+ #include "aarch64-sve-linux-sigcontext.h"
+-#endif
+ 
+ struct user_sve_header {
+ 	__u32 size; /* total meaningful regset content in bytes */
+diff --git a/gdb/nat/aarch64-sve-linux-sigcontext.h b/gdb/nat/aarch64-sve-linux-sigcontext.h
+index 101fd874426f..3f6cab9bd09f 100644
+--- a/gdb/nat/aarch64-sve-linux-sigcontext.h
++++ b/gdb/nat/aarch64-sve-linux-sigcontext.h
+@@ -19,6 +19,8 @@
+ #ifndef AARCH64_SVE_LINUX_SIGCONTEXT_H
+ #define AARCH64_SVE_LINUX_SIGCONTEXT_H
+ 
++#ifndef SVE_SIG_ZREGS_SIZE
++
+ #define SVE_MAGIC	0x53564501
+ 
+ #include <asm/sigcontext.h>
+@@ -131,6 +133,8 @@ struct sve_context {
+ 
+ #define SVE_SIG_CONTEXT_SIZE(vq) (SVE_SIG_REGS_OFFSET + SVE_SIG_REGS_SIZE(vq))
+ 
++#endif /* SVE_SIG_ZREGS_SIZE */
++
+ /* SVE/FP/SIMD state (NT_ARM_SVE) */
+ 
+ /* Definitions for user_sve_header.flags: */
+-- 
+2.25.1
+

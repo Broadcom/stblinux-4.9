@@ -1,0 +1,60 @@
+From c4ee357d1357d0c30c3f267ebc5a9a59029deb98 Mon Sep 17 00:00:00 2001
+From: Markus Mayer <mmayer@broadcom.com>
+Date: Thu, 16 Jul 2020 15:02:11 -0700
+Subject: [PATCH 1/3] configure: assume musl-libc has proper strerror
+ implementation
+
+Account for musl-libc when we are "guessing" whether the target
+supports strerror() or not. We assume that musl's implementation works
+just as well as glibc's implementation. No need to use an alternate
+implementation.
+
+Signed-off-by: Markus Mayer <mmayer@broadcom.com>
+---
+ gdb/gnulib/configure             | 2 ++
+ gdb/gnulib/import/m4/strerror.m4 | 2 ++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/gdb/gnulib/configure b/gdb/gnulib/configure
+index a152abcb7626..11a6e32a2757 100644
+--- a/gdb/gnulib/configure
++++ b/gdb/gnulib/configure
+@@ -12798,6 +12798,7 @@ else
+   case "$host_os" in
+                  # Guess yes on glibc systems.
+          *-gnu*) gl_cv_func_strerror_0_works="guessing yes" ;;
++         *-musl*) gl_cv_func_strerror_0_works="guessing yes" ;;
+                  # If we don't know, assume the worst.
+          *)      gl_cv_func_strerror_0_works="guessing no" ;;
+        esac
+@@ -22282,6 +22283,7 @@ else
+   case "$host_os" in
+                    # Guess yes on glibc systems.
+            *-gnu*) gl_cv_func_working_strerror="guessing yes" ;;
++           *-musl*) gl_cv_func_working_strerror="guessing yes" ;;
+                    # If we don't know, assume the worst.
+            *)      gl_cv_func_working_strerror="guessing no" ;;
+          esac
+diff --git a/gdb/gnulib/import/m4/strerror.m4 b/gdb/gnulib/import/m4/strerror.m4
+index e286594b585a..5ebab22fc71d 100644
+--- a/gdb/gnulib/import/m4/strerror.m4
++++ b/gdb/gnulib/import/m4/strerror.m4
+@@ -26,6 +26,7 @@ AC_DEFUN([gl_FUNC_STRERROR],
+         [case "$host_os" in
+                    # Guess yes on glibc systems.
+            *-gnu*) gl_cv_func_working_strerror="guessing yes" ;;
++           *-musl*) gl_cv_func_working_strerror="guessing yes" ;;
+                    # If we don't know, assume the worst.
+            *)      gl_cv_func_working_strerror="guessing no" ;;
+          esac
+@@ -80,6 +81,7 @@ AC_DEFUN([gl_FUNC_STRERROR_0],
+       [case "$host_os" in
+                  # Guess yes on glibc systems.
+          *-gnu*) gl_cv_func_strerror_0_works="guessing yes" ;;
++         *-musl*) gl_cv_func_strerror_0_works="guessing yes" ;;
+                  # If we don't know, assume the worst.
+          *)      gl_cv_func_strerror_0_works="guessing no" ;;
+        esac
+-- 
+2.25.1
+

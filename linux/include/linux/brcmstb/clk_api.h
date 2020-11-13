@@ -102,6 +102,7 @@
 #ifdef CONFIG_BRCMSTB_NEXUS_CLK_API
 int brcm_clk_prepare_enable(unsigned int clk_id);
 void  brcm_clk_disable_unprepare(unsigned int clk_id);
+int brcm_clk_get_rate(unsigned int clk_id, u64 *rate);
 
 int brcm_pmap_show(void);
 int brcm_pmap_num_pstates(unsigned int core_id, unsigned int *num_pstates);

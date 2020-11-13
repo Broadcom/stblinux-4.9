@@ -52,7 +52,7 @@ enum brcm_protocol_cmd {
 	BRCM_SCMI_STATS_RESET_CMD = 0xb,
 };
 
-static const char *pmap_cores[BCLK_SW_NUM_CORES] = {
+static const char __maybe_unused *pmap_cores[BCLK_SW_NUM_CORES] = {
 	[BCLK_SW_CPU_CORE - BCLK_SW_OFFSET] = "cpu",
 	[BCLK_SW_V3D - BCLK_SW_OFFSET] = "v3d0",
 	[BCLK_SW_SYSIF - BCLK_SW_OFFSET] = "sysif0",
@@ -80,9 +80,6 @@ static const char *pmap_cores[BCLK_SW_NUM_CORES] = {
 static const struct scmi_handle *handle;
 static struct platform_device *cpufreq_dev;
 static DEFINE_MUTEX(clk_api_mutex);
-
-static int get_all_pmap_freq_info(int core_id, unsigned int *num_pstates,
-	unsigned int *cur_pstate, unsigned int *freqs);
 
 static void clk_api_lock(void)
 {
@@ -289,6 +286,54 @@ int brcm_pmap_num_pstates(unsigned int core_id, unsigned int *num_pstates)
 }
 EXPORT_SYMBOL(brcm_pmap_num_pstates);
 
+static int get_all_pmap_freq_info(int core_id, unsigned int *num_pstates,
+				  unsigned int *cur_pstate, unsigned int *freqs)
+{
+	struct scmi_perf_ops *perf_ops = handle->perf_ops;
+	unsigned int domain = core_id - BCLK_SW_OFFSET;
+	int ret, i;
+
+	if (domain >= BCLK_SW_NUM_CORES)
+		return -EINVAL;
+
+	memset(freqs, 0, sizeof(*freqs) * MAX_PSTATES);
+
+	ret = brcm_pmap_num_pstates(core_id, num_pstates);
+	if (ret < 0)
+		return ret;
+
+	clk_api_lock();
+	ret = perf_ops->level_get(handle, domain, cur_pstate, false);
+	clk_api_unlock();
+	if (ret < 0)
+		return ret;
+
+	ret = brcm_pmap_get_pstate_freqs(core_id, freqs);
+	if (ret < 0)
+		return ret;
+
+	/*
+	 * For the CPU domain only the ->level_get() call returns
+	 * the frequency and this has to be converted into
+	 * our idea of a pstate number.
+	 */
+	if (domain == 0) {
+		const unsigned int freq = *cur_pstate;
+
+		*cur_pstate = MAX_PSTATES + 1;
+		for (i = 0; i < *num_pstates; i++) {
+			if (freq == freqs[i]) {
+				*cur_pstate = i;
+				break;
+			}
+		}
+	}
+	if (*cur_pstate >= *num_pstates)
+		return -EIO;
+
+	return 0;
+}
+
 int brcm_pmap_get_pstate(unsigned int core_id, unsigned int *pstate)
 {
 	unsigned int num_pstates, freqs[MAX_PSTATES];
@@ -487,54 +532,6 @@ static int uint_from_buf(const char *ubuf, size_t len, unsigned int *result)
 		return -EFAULT;
 	buf[len] = '\0';
 	return kstrtouint(buf, 10, result);
-}
-
-static int get_all_pmap_freq_info(int core_id, unsigned int *num_pstates,
-				  unsigned int *cur_pstate, unsigned int *freqs)
-{
-	struct scmi_perf_ops *perf_ops = handle->perf_ops;
-	unsigned int domain = core_id - BCLK_SW_OFFSET;
-	int ret, i;
-
-	if (domain >= BCLK_SW_NUM_CORES)
-		return -EINVAL;
-
-	memset(freqs, 0, sizeof(*freqs) * MAX_PSTATES);
-
-	ret = brcm_pmap_num_pstates(core_id, num_pstates);
-	if (ret < 0)
-		return ret;
-
-	clk_api_lock();
-	ret = perf_ops->level_get(handle, domain, cur_pstate, false);
-	clk_api_unlock();
-	if (ret < 0)
-		return ret;
-
-	ret = brcm_pmap_get_pstate_freqs(core_id, freqs);
-	if (ret < 0)
-		return ret;
-
-	/*
-	 * For the CPU domain only the ->level_get() call returns
-	 * the frequency and this has to be converted into
-	 * our idea of a pstate number.
-	 */
-	if (domain == 0) {
-		const unsigned int freq = *cur_pstate;
-
-		*cur_pstate = MAX_PSTATES + 1;
-		for (i = 0; i < *num_pstates; i++) {
-			if (freq == freqs[i]) {
-				*cur_pstate = i;
-				break;
-			}
-		}
-	}
-	if (*cur_pstate >= *num_pstates)
-		return -EIO;
-
-	return 0;
 }
 
 static int brcm_scmi_stats_summary_open(struct inode *inode, struct file *file)

@@ -7,7 +7,7 @@
 BRCMROOT_VERSION = $(call qstrip,$(BR2_BRCM_STB_TOOLS_VERSION))
 
 BRCM_SKEL_VERSION = $(BRCMROOT_VERSION)
-BRCM_SKEL_SITE = git://stbgit.broadcom.com/queue/stbtools.git
+BRCM_SKEL_SITE = git://stbgit.stb.broadcom.net/queue/stbtools.git
 BRCM_SKEL_SOURCE = stbtools-$(BRCMROOT_VERSION).tar.gz
 BRCM_SKEL_DL_SUBDIR = brcm-pm
 BRCM_SKEL_LICENSE = GPL-2.0

@@ -114,6 +114,7 @@ static inline int brcmstb_memory_get(struct brcmstb_memory *mem)
 enum brcmstb_reserve_type {
 	BRCMSTB_RESERVE_BMEM,
 	BRCMSTB_RESERVE_CMA,
+	BRCMSTB_RESERVE_BHPA,
 };
 
 /* Determines what type of memory reservation will be used w/o CLI params */

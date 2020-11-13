@@ -295,7 +295,8 @@ struct page *alloc_migrate_target(struct page *page, unsigned long private,
 					    next_node_in(page_to_nid(page),
 							 node_online_map));
 
-	if (PageHighMem(page))
+	if (PageHighMem(page)
+	    || (zone_idx(page_zone(page)) == ZONE_MOVABLE))
 		gfp_mask |= __GFP_HIGHMEM;
 
 	return alloc_page(gfp_mask);

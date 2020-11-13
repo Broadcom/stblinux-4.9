@@ -7,7 +7,7 @@
 BRCMROOT_VERSION = $(call qstrip,$(BR2_BRCM_STB_TOOLS_VERSION))
 
 CMATOOL_VERSION = $(BRCMROOT_VERSION)
-CMATOOL_SITE = git://stbgit.broadcom.com/queue/stbtools.git
+CMATOOL_SITE = git://stbgit.stb.broadcom.net/queue/stbtools.git
 CMATOOL_SOURCE = stbtools-$(BRCMROOT_VERSION).tar.gz
 CMATOOL_DL_SUBDIR = brcm-pm
 CMATOOL_LICENSE = LGPL-2.1

@@ -1,7 +1,0 @@
-config BR2_PACKAGE_PORTMAP_STB
-	bool "portmap"
-	help
-	  Portmap is a server that converts RPC program numbers into DARPA
-	  protocol port numbers. It must be running in order to make RPC calls.
-
-	  https://fossies.org/linux/misc/old/portmap-6.0.tgz/

@@ -1,0 +1,58 @@
+From 6f826f80e833fdefe7e3498b235a3355ab077fc0 Mon Sep 17 00:00:00 2001
+From: Markus Mayer <mmayer@broadcom.com>
+Date: Tue, 30 Apr 2019 09:41:47 -0700
+Subject: [PATCH] tftp: introduce CONFIG_FEATURE_TFTP_UMASK
+
+We make the umask being used by TFTP configurable. This way it is easy
+to make files transferred by TFTP executable if that is desired by the
+user.
+
+Signed-off-by: Markus Mayer <mmayer@broadcom.com>
+---
+ networking/tftp.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/networking/tftp.c b/networking/tftp.c
+index 60fdff232239..ec8cb425fd76 100644
+--- a/networking/tftp.c
++++ b/networking/tftp.c
+@@ -75,6 +75,17 @@
+ //config:	Allow tftp to specify block size, and tftpd to understand
+ //config:	"blksize" and "tsize" options.
+ //config:
++//config:config FEATURE_TFTP_UMASK
++//config:	hex "UMASK for TFTP client and server to use"
++//config:	default 0x1b6
++//config:	depends on TFTP || TFTPD
++//config:	help
++//config:	Specify the UMASK to be used for new files being transferred
++//config:	via TFTP. Defaults to 0x1b6 (0666). Use 0x1ff (0777) if you
++//config:	want execute permissions on transferred files.
++//config:	(Must be specified in hex, since Kconfig doesn't support octal
++//config:	fields.)
++//config:
+ //config:config TFTP_DEBUG
+ //config:	bool "Enable debug"
+ //config:	default n
+@@ -395,7 +406,7 @@ static int tftp_protocol(
+ 				open_mode = O_WRONLY | O_TRUNC;
+ 			}
+ 		}
+-		local_fd = open(local_file, open_mode, 0666);
++		local_fd = open(local_file, open_mode, CONFIG_FEATURE_TFTP_UMASK);
+ 		if (local_fd < 0) {
+ 			/* sanitize name, it came from untrusted remote side */
+ 			unsigned char *p = (void *) local_file;
+@@ -692,7 +703,8 @@ static int tftp_protocol(
+ 				if (local_fd == -1) {
+ 					local_fd = STDOUT_FILENO;
+ 					if (local_file)
+-						local_fd = xopen(local_file, O_WRONLY | O_TRUNC | O_CREAT);
++						local_fd = xopen3(local_file, O_WRONLY | O_TRUNC | O_CREAT,
++							CONFIG_FEATURE_TFTP_UMASK);
+ 				}
+ 				sz = full_write(local_fd, &rbuf[4], len - 4);
+ 				if (sz != len - 4) {
+-- 
+2.25.1
+

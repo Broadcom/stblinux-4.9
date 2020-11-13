@@ -8,3 +8,9 @@ config BR2_PACKAGE_MMC_UTILS
 
 comment "mmc-utils needs a toolchain w/ headers >= 3.0"
 	depends on !BR2_TOOLCHAIN_HEADERS_AT_LEAST_3_0
+
+config BR2_PACKAGE_MMC_UTILS_ENABLE_DANGEROUS_COMMANDS
+	bool "Enable dangerous commands"
+	depends on BR2_PACKAGE_MMC_UTILS
+	help
+	   Enable support for dangerous commands in mmc-utils such as "perm".
