@@ -44,7 +44,33 @@ export PATH
 # Used by ubifs and jffs
 fs="${OUTPUT_DIR}/target"
 
-set -e
+# Get the maximum Logical Erase Block size for UBIFS
+function get_ubi_max_leb()
+{
+	pebk=$1
+	page=$2
+
+	peb=$(($1 * 1024))
+
+	if [ $page -lt 64 ]; then
+		leb=$(($peb - 64 * 2))
+	else
+		leb=$(($peb - $page * 2))
+	fi
+
+	# If it errors out, we use the LEB number mkfs.ubifs tells us. If
+	# there's no error or it doesn't complain about the LEB count, we can
+	# continue to use the default.
+	msg=`mkfs.ubifs -U -D "$DEVTABLE" -r "$fs" -o tmp/tmp.img \
+		-m $page -e $leb -c ${max_leb_cnt} 2>&1`
+	rm -f tmp/tmp.img
+	if echo "$msg" | grep 'max_leb_cnt too low' >/dev/null; then
+		max_leb_cnt=`echo "$msg" | sed -e 's/.*(\([0-9]\+\).*/\1/'`
+		# Add a little bit of a buffer
+		max_leb_cnt=$(($max_leb_cnt + 20))
+	fi
+	echo "${max_leb_cnt}"
+}
 
 function make_ubi_img()
 {
@@ -111,7 +137,6 @@ fi
 
 if [ ! -z $uflag ]; then
 	build_nand_ubifs=1
-	max_leb_cnt=2075
 fi
 
 rm -rf tmp
@@ -151,6 +176,8 @@ else
 	echo "[WARNING] Please consider installing the respective package."
 fi
 
+set -e
+
 if which mkfs.ubifs >/dev/null; then
 	# 64k erase / 1B unit size - NOR
 	make_ubi_img 64 1
@@ -162,6 +189,9 @@ if which mkfs.ubifs >/dev/null; then
 	make_ubi_img 256 1
 
 	if [ "$build_nand_ubifs" = "1" ]; then
+		echo "Calculating max. LEB count for UBI NAND..."
+		max_leb_cnt=`get_ubi_max_leb 16 512`
+		echo "  -> ${max_leb_cnt}"
 		echo "Building NAND UBI images..."
 		# 16k erase / 512B page - small NAND
 		make_ubi_img 16 512

@@ -4,8 +4,8 @@
 #
 ################################################################################
 
-SYSTEMD_VERSION = 246
-SYSTEMD_SITE = $(call github,systemd,systemd,v$(SYSTEMD_VERSION))
+SYSTEMD_VERSION = 246.5
+SYSTEMD_SITE = $(call github,systemd,systemd-stable,v$(SYSTEMD_VERSION))
 SYSTEMD_LICENSE = LGPL-2.1+, GPL-2.0+ (udev), Public Domain (few source files, see README), BSD-3-Clause (tools/chromiumos)
 SYSTEMD_LICENSE_FILES = LICENSE.GPL2 LICENSE.LGPL2.1 README tools/chromiumos/LICENSE
 SYSTEMD_INSTALL_STAGING = YES
@@ -15,8 +15,10 @@ SYSTEMD_DEPENDENCIES = \
 	host-gperf \
 	kmod \
 	libcap \
-	util-linux \
+	util-linux-libs \
 	$(TARGET_NLS_DEPENDENCIES)
+
+SYSTEMD_SELINUX_MODULES = systemd udev
 
 SYSTEMD_PROVIDES = udev
 
@@ -27,30 +29,34 @@ ROOTLIBDIR = /lib
 endif
 
 SYSTEMD_CONF_OPTS += \
-	-Drootlibdir='$(ROOTLIBDIR)' \
-	-Dsysvinit-path= \
-	-Dsysvrcnd-path= \
-	-Dutmp=false \
-	-Dman=false \
+	-Ddefault-hierarchy=hybrid \
+	-Didn=true \
 	-Dima=false \
 	-Dldconfig=false \
-	-Ddefault-hierarchy=hybrid \
-	-Dtests=false \
+	-Dloadkeys-path=/usr/bin/loadkeys \
+	-Dman=false \
+	-Dnss-systemd=true \
+	-Dportabled=false \
+	-Dquotacheck-path=/usr/sbin/quotacheck \
+	-Dquotaon-path=/usr/sbin/quotaon \
+	-Drootlibdir='$(ROOTLIBDIR)' \
+	-Dsetfont-path=/usr/bin/setfont \
 	-Dsplit-bin=true \
 	-Dsplit-usr=false \
-	-Dsystem-uid-max=999 \
 	-Dsystem-gid-max=999 \
-	-Dtelinit-path=$(TARGET_DIR)/sbin/telinit \
-	-Didn=true \
-	-Dnss-systemd=true \
-	-Dportabled=false
+	-Dsystem-uid-max=999 \
+	-Dsysvinit-path= \
+	-Dsysvrcnd-path= \
+	-Dtelinit-path= \
+	-Dtests=false \
+	-Dutmp=false
 
 ifeq ($(BR2_ROOTFS_MERGED_USR),y)
 SYSTEMD_CONF_OPTS += \
-	-Dkmod-path=/usr/bin/kmod \
 	-Dkexec-path=/usr/sbin/kexec \
-	-Dsulogin-path=/usr/sbin/sulogin \
+	-Dkmod-path=/usr/bin/kmod \
 	-Dmount-path=/usr/bin/mount \
+	-Dsulogin-path=/usr/sbin/sulogin \
 	-Dumount-path=/usr/bin/umount
 else
 SYSTEMD_CONF_OPTS += \
@@ -251,24 +257,20 @@ else
 SYSTEMD_CONF_OPTS += -Danalyze=false
 endif
 
-ifeq ($(BR2_PACKAGE_SYSTEMD_JOURNAL_GATEWAY),y)
-SYSTEMD_DEPENDENCIES += libmicrohttpd
-SYSTEMD_CONF_OPTS += -Dmicrohttpd=true
-ifeq ($(BR2_PACKAGE_LIBQRENCODE),y)
-SYSTEMD_CONF_OPTS += -Dqrencode=true
-SYSTEMD_DEPENDENCIES += libqrencode
-else
-SYSTEMD_CONF_OPTS += -Dqrencode=false
-endif
-else
-SYSTEMD_CONF_OPTS += -Dmicrohttpd=false -Dqrencode=false
-endif
-
 ifeq ($(BR2_PACKAGE_SYSTEMD_JOURNAL_REMOTE),y)
-SYSTEMD_CONF_OPTS += -Dremote=true
+# remote also depends on libcurl, this is already added above.
+SYSTEMD_DEPENDENCIES += libmicrohttpd
+SYSTEMD_CONF_OPTS += -Dremote=true -Dmicrohttpd=true
 SYSTEMD_REMOTE_USER = systemd-journal-remote -1 systemd-journal-remote -1 * - - - systemd Journal Remote
 else
-SYSTEMD_CONF_OPTS += -Dremote=false
+SYSTEMD_CONF_OPTS += -Dremote=false -Dmicrohttpd=false
+endif
+
+ifeq ($(BR2_PACKAGE_LIBQRENCODE),y)
+SYSTEMD_DEPENDENCIES += libqrencode
+SYSTEMD_CONF_OPTS += -Dqrencode=true
+else
+SYSTEMD_CONF_OPTS += -Dqrencode=false
 endif
 
 ifeq ($(BR2_PACKAGE_LIBSELINUX),y)
@@ -554,9 +556,6 @@ endef
 
 define SYSTEMD_USERS
 	# udev user groups
-	- - input -1 * - - - Input device group
-	- - render -1 * - - - DRI rendering nodes
-	- - kvm -1 * - - - kvm nodes
 	# systemd user groups
 	- - systemd-journal -1 * - - - Journal
 	$(SYSTEMD_REMOTE_USER)
@@ -732,7 +731,8 @@ HOST_SYSTEMD_CONF_OPTS = \
 	-Dkernel-install=false \
 	-Dsystemd-analyze=false \
 	-Dlibcryptsetup=false \
-	-Daudit=false
+	-Daudit=false \
+	-Dzstd=false
 
 HOST_SYSTEMD_DEPENDENCIES = \
 	$(BR2_COREUTILS_HOST_DEPENDENCY) \

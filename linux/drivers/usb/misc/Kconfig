@@ -282,3 +282,12 @@ config UCSI
 
 	  To compile the driver as a module, choose M here: the module will be
 	  called ucsi.
+
+config BRCM_USB_PINMAP
+	tristate "Broadcom pinmap driver support"
+	depends on (ARCH_BRCMSTB && BRCM_USB_PHY) || COMPILE_TEST
+	default ARCH_BRCMSTB && BRCM_USB_PHY
+	help
+	  This option enables support for remapping some USB external
+	  signals, which are typically on dedicated pins on the chip,
+	  to any gpio.

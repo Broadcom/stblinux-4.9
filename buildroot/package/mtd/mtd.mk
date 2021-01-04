@@ -58,7 +58,7 @@ endif
 # The host build doesn't support encryption. We must silence the assert() calls.
 HOST_CPPFLAGS += -DNDEBUG
 
-HOST_MTD_DEPENDENCIES = host-zlib host-lzo host-util-linux host-zstd
+HOST_MTD_DEPENDENCIES = host-acl host-zlib host-lzo host-util-linux host-zstd
 HOST_MTD_CONF_OPTS = \
 	--with-jffs \
 	--with-ubifs \

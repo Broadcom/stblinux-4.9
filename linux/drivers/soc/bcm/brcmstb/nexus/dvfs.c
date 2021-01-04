@@ -50,6 +50,7 @@ enum brcm_protocol_cmd {
 	BRCM_OVERTEMP_RESET_CMD = 0x9,
 	BRCM_SCMI_STATS_SHOW_CMD = 0xa,
 	BRCM_SCMI_STATS_RESET_CMD = 0xb,
+	BRCM_TRACE_LOG_ON_CMD = 0xc,
 };
 
 static const char __maybe_unused *pmap_cores[BCLK_SW_NUM_CORES] = {
@@ -467,7 +468,16 @@ EXPORT_SYMBOL(brcm_overtemp_reset);
 #ifdef CONFIG_DEBUG_FS
 #include <linux/debugfs.h>
 
+struct trace_log_dfs_info {
+	struct dentry *d_tlroot;
+	uint32_t active;
+	uint32_t flag;
+	uint64_t logbuf_paddr;
+	uint32_t logbuf_size;
+};
+
 static struct dentry *rootdir;
+static struct trace_log_dfs_info tldfs;
 
 static int brcm_scmi_stats_show(struct seq_file *s, void *data)
 {
@@ -522,7 +532,8 @@ static int filp_to_core_id(struct file *filp)
 	return BCLK_SW_OFFSET + (p - &pmap_cores[0]);
 }
 
-static int uint_from_buf(const char *ubuf, size_t len, unsigned int *result)
+static int uint_from_buf(const char __user *ubuf, size_t len,
+			 unsigned int *result)
 {
 	char buf[32];
 
@@ -691,6 +702,72 @@ static ssize_t brcm_scmi_pmap_num_pstates(struct file *filp, char __user *ubuf,
 	return simple_read_from_buffer(ubuf, count, offp, buf, size);
 }
 
+static int brcm_send_trace_log_cmd_via_scmi(const struct scmi_handle *handle,
+					    unsigned int cmd)
+{
+	int ret;
+	u32 params[5];
+	int i = 0;
+
+	params[i++] = tldfs.active;
+	params[i++] = tldfs.flag;
+	params[i++] = lower_32_bits(tldfs.logbuf_paddr);
+	params[i++] = upper_32_bits(tldfs.logbuf_paddr);
+	params[i++] = tldfs.logbuf_size;
+
+	ret = brcm_send_cmd_via_scmi(handle, cmd, 0,
+				     SCMI_PROTOCOL_BRCM,
+				     ARRAY_SIZE(params),
+				     0,
+				     params);
+	return ret;
+}
+
+static ssize_t brcm_trace_log_on_rd(struct file *filp,
+				    char __user *ubuf,
+				    size_t count, loff_t *offp)
+{
+	char buf[4];
+	unsigned int size;
+	int ret;
+
+	size = snprintf(buf, sizeof(buf), "%u\n", tldfs.active);
+	ret = simple_read_from_buffer(ubuf, count, offp, buf, size);
+
+	return ret;
+}
+
+static ssize_t brcm_trace_log_on_wt(struct file *filp,
+				    const char __user *ubuf,
+				    size_t len, loff_t *offp)
+{
+	int sts = len, ret;
+	unsigned int on;
+
+	clk_api_lock();
+	ret = uint_from_buf(ubuf, len, &on);
+	if (ret < 0) {
+		sts = ret;
+		goto trace_out;
+	}
+
+	if (tldfs.active == on)
+		goto trace_out;
+
+	tldfs.active = on;
+	ret = simple_write_to_buffer(&on, 4, offp, ubuf, len);
+	if (ret < 0) {
+		sts = ret;
+		goto trace_out;
+	}
+
+	ret = brcm_send_trace_log_cmd_via_scmi(handle, BRCM_TRACE_LOG_ON_CMD);
+	if (ret < 0)
+		sts = ret;
+trace_out:
+	clk_api_unlock();
+	return sts;
+}
 
 static const struct file_operations brcm_scmi_stats_reset_fops = {
 	.write		= brcm_scmi_stats_reset_write,
@@ -735,9 +812,60 @@ static const struct file_operations brcm_scmi_pmap_cur_pstate_fops = {
 	.write		= brcm_scmi_pmap_cur_pstate_wt,
 };
 
+static const struct file_operations brcm_trace_log_on_fops = {
+	.read		= brcm_trace_log_on_rd,
+	.write		= brcm_trace_log_on_wt,
+};
+
 static const struct file_operations brcm_scmi_pmap_num_pstates_fops = {
 	.read		= brcm_scmi_pmap_num_pstates,
 };
+
+/**
+ * brcm_trace_log_debug_init - lazily populate the debugfs brcm_trace_log
+ * directory
+ *
+ * This function populates the debugfs brcm_trace directory once at boot-time
+ * when we know that debugfs is setup. It should only be called once at
+ * boot-time.
+ */
+static int brcm_trace_log_debug_init(void)
+{
+	struct dentry *d;
+
+	memset(&tldfs, 0, sizeof(struct trace_log_dfs_info));
+
+	tldfs.d_tlroot = debugfs_create_dir("brcm-trace", NULL);
+
+	if (!tldfs.d_tlroot)
+		return -ENOMEM;
+
+	d = debugfs_create_file("tracing_on", 0644, tldfs.d_tlroot,
+				&tldfs.active, &brcm_trace_log_on_fops);
+
+	if (!d)
+		return -ENOMEM;
+
+	d = debugfs_create_x32("flag", 0644, tldfs.d_tlroot, &tldfs.flag);
+
+	if (!d)
+		return -ENOMEM;
+
+	d = debugfs_create_x64("phys_addr64", 0644, tldfs.d_tlroot,
+			       &tldfs.logbuf_paddr);
+
+	if (!d)
+		return -ENOMEM;
+
+	d = debugfs_create_u32("buf_size", 0644, tldfs.d_tlroot,
+			       &tldfs.logbuf_size);
+
+	if (!d)
+		return -ENOMEM;
+
+
+	return 0;
+}
 
 /**
  * brcm_scmi_debug_init - lazily populate the debugfs brcm_scmi directory
@@ -830,6 +958,7 @@ static int brcm_scmi_debug_init(void)
 
 	return 0;
 }
+
 #endif
 
 /**
@@ -1154,6 +1283,7 @@ static int brcm_scmi_dvfs_probe(struct scmi_device *sdev)
 
 #ifdef CONFIG_DEBUG_FS
 	brcm_scmi_debug_init();
+	brcm_trace_log_debug_init();
 #endif
 
 	/* This tells AVS we are using the new API */

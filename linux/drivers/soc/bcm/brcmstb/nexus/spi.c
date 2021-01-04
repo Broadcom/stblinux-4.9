@@ -19,6 +19,7 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/of.h>
+#include <linux/of_gpio.h>
 #include <linux/spi/spi.h>
 
 struct brcmstb_spi_controller {
@@ -88,13 +89,26 @@ static int __init brcmstb_register_spi_devices(void)
 	struct device_node *dn = NULL;
 	unsigned int i;
 	int ret = 0;
+	int num_cs;
 
 	for (i = 0; i < ARRAY_SIZE(spi_ctls); i++) {
 		for_each_compatible_node(dn, NULL, spi_ctls[i].compat) {
 			if (!of_device_is_available(dn))
 				continue;
 
-			ret = brcmstb_register_spi_one(dn, spi_ctls[i].max_cs);
+			/*
+			 * for bcm2835 spi controller we register based on
+			 * number of cs-gpios in the device node
+			 */
+			num_cs = of_gpio_named_count(dn, "cs-gpios");
+			if (num_cs == -ENOENT)
+				/* fallback to max_cs when no entry found */
+				num_cs = spi_ctls[i].max_cs;
+			else if (num_cs == -EINVAL)
+				/* malformed cs-gpios property */
+				continue;
+
+			ret = brcmstb_register_spi_one(dn, num_cs);
 			if (ret) {
 				of_node_put(dn);
 				return ret;

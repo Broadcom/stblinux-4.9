@@ -7,9 +7,6 @@ FRAG_FILE		:= output/release_frag.cfg
 VERSION			:= $(shell bin/linuxver.sh -q $(BRCMSTB_LINUX_DIR))
 DOTVERSION		:= $(shell bin/linuxver.sh -dq $(BRCMSTB_LINUX_DIR))
 
-TOOLCHAIN		:= $(shell cat misc/toolchain.master 2>/dev/null || \
-				cat misc/toolchain)
-
 STB_VERSION		:= stb-$(shell echo $(DOTVERSION) | cut -d- -f1)
 
 STBTOOLS_SRC_PATH 	:= dl/brcm-pm
@@ -113,7 +110,6 @@ brcmstb-release: brcmstb-diffs linux-diffs linux-release
 			fi; \
 		fi; \
 		bin/br_config.pl \
-			-T $(TOOLCHAIN) \
 			-o $(BRCMSTB_OUTPUT_DIR) -i -n \
 			$(BR_CONFIG_RELEASE_FLAGS) $${extra} \
 			-L $(BRCMSTB_LINUX_DIR) $${arch}; \
@@ -146,4 +142,4 @@ brcmstb-release: brcmstb-diffs linux-diffs linux-release
 	fi
 
 brcmstb-%:
-	bin/br_config.pl -T $(TOOLCHAIN) -b $*
+	bin/br_config.pl -b $*

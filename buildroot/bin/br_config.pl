@@ -23,6 +23,8 @@ use Fcntl ':mode';
 use File::Basename;
 use File::Path qw(make_path remove_tree);
 use Getopt::Std;
+use JSON;
+use LWP::UserAgent;
 use POSIX;
 use Socket;
 
@@ -31,17 +33,21 @@ use constant LOCAL_MK => qw(local.mk);
 use constant BR_FRAG_FILE => qw(br_fragments.cfg);
 use constant KERNEL_FRAG_FILE => qw(k_fragments.cfg);
 
+use constant BR_MIRROR_PROTOCOL => qw(https://);
 use constant BR_MIRROR_HOST => qw(stbgit.stb.broadcom.net);
 use constant BR_MIRROR_PATH => qw(/mirror/buildroot);
 use constant FORBIDDEN_PATHS => ( qw(. /tools/bin) );
+# Trailing space after the user agent tells Perl to append "libwww-perl/x.y.z".
+use constant HTTP_USER_AGENT => q(BRCMSTB/br_config.pl );
 use constant MERGED_FRAGMENT => qw(merged_fragment);
 use constant PRIVATE_CCACHE => qw($(HOME)/.buildroot-ccache);
-use constant RECOMMENDED_TOOLCHAINS => ( qw(misc/toolchain.master
-					misc/toolchain) );
 use constant SHARED_CCACHE => qw(/local/users/stbdev/buildroot-ccache);
 use constant SHARED_OSS_DIR => qw(/projects/stbdev/open-source);
 use constant STB_CMA_DRIVER => qw(include/linux/brcmstb/cma_driver.h);
 use constant TOOLCHAIN_DIR => qw(/opt/toolchains);
+use constant TOOLCHAIN_FILE_CLASSIC => qw(misc/toolchain);
+use constant TOOLCHAIN_FILE_JSON => qw(misc/toolchain.json);
+use constant TOOLCHAIN_FILE_MASTER => qw(misc/toolchain.master);
 use constant VERSION_FRAGMENT => qw(local_version.txt);
 use constant VERSION_H => qw(/usr/include/linux/version.h);
 
@@ -269,20 +275,80 @@ sub check_oss_stale_sources($$)
 	}
 }
 
-sub get_recommended_toolchain()
+sub find_stb_toolchain_match($$)
 {
-	my $recommended;
-	my $found = 0;
+	my ($tc_data, $ver) = @_;
 
-	foreach my $tc (RECOMMENDED_TOOLCHAINS) {
-		if (open(F, $tc)) {
-			$found = 1;
-			last;
+	foreach my $entry (@$tc_data) {
+		my ($cur_ver, $cur_tc) = @$entry;
+
+		# Ensure it's a regex before we attempt any matching. If we
+		# we tried matching against all version entries, it would
+		# lead to unexpected results.
+		# E.g. using stb-4.1 as regex would match stb-4.16.
+		if ($cur_ver !~ /^stb-\d+\.\d+$/ && $ver =~ /$cur_ver/) {
+			return $cur_tc;
 		}
 	}
-	if (!$found) {
-		return '';
+
+	return undef;
+}
+
+sub find_stb_toolchain_entry($$)
+{
+	my ($tc_data, $ver) = @_;
+
+	foreach my $entry (@$tc_data) {
+		if ($entry->[0] eq $ver) {
+			return $entry->[1];
+		}
 	}
+
+	return undef;
+}
+
+sub get_json_toolchain($$)
+{
+	my ($file, $local_linux) = @_;
+	my ($version, $patch, $extra) = get_stbrelease($local_linux);
+	my @json;
+	my $json;
+	my $kernel_version;
+	my $tc_data;
+	my $tc;
+
+	return undef if (!open(F, $file));
+
+	@json = <F>;
+	$json = join('', @json);
+	close(F);
+
+	# Escape backslashes. decode_json() expects it.
+	$json =~ s/\\/\\\\/g;
+	$tc_data = decode_json($json);
+
+	if (defined($version)) {
+		$kernel_version = "stb-$version.$patch";
+	} else {
+		$kernel_version =
+			$generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION'};
+	}
+
+	# There's an exact match. Return it.
+	$tc = find_stb_toolchain_entry($tc_data, $kernel_version);
+	return $tc if (defined($tc));
+
+	# Try pattern matching to determine the recommended toolchain.
+	return find_stb_toolchain_match($tc_data, $kernel_version);
+}
+
+sub get_plaintext_toolchain($)
+{
+	my ($file) = @_;
+	my $recommended;
+
+	return undef if (!open(F, $file));
+
 	$recommended = <F>;
 	chomp($recommended);
 	close(F);
@@ -290,14 +356,37 @@ sub get_recommended_toolchain()
 	return $recommended;
 }
 
-# Check if the specified toolchain is the recommended one.
-sub check_toolchain($)
+sub get_recommended_toolchain($)
 {
-	my ($toolchain) = @_;
+	my ($local_linux) = @_;
+	my $recommended;
+
+	# Try it the master repo first.
+	$recommended = get_plaintext_toolchain(TOOLCHAIN_FILE_MASTER);
+	if (defined($recommended)) {
+		return $recommended;
+	}
+
+	# Next, let's look for the JSON file with toolchain information.
+	$recommended = get_json_toolchain(TOOLCHAIN_FILE_JSON, $local_linux);
+	if (defined($recommended)) {
+		return $recommended;
+	}
+
+	# Lastly, let's try the classic plain-text file.
+	$recommended = get_plaintext_toolchain(TOOLCHAIN_FILE_CLASSIC) || '';
+
+	return $recommended;
+}
+
+# Check if the specified toolchain is the recommended one.
+sub check_toolchain($$)
+{
+	my ($toolchain, $local_linux) = @_;
 	my $recommended;
 
 	$toolchain =~ s|.*/||;
-	$recommended = get_recommended_toolchain();
+	$recommended = get_recommended_toolchain($local_linux);
 
 	# If we don't know what the recommended toolchain is, we accept the
 	# one that was specified.
@@ -529,6 +618,53 @@ sub get_linux_remote()
 	return $generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_URL'};
 }
 
+sub verify_mirror_host()
+{
+	my $addr = gethostbyname(BR_MIRROR_HOST);
+	my ($a, $b, $c, $d);
+
+	# If we can't resolve it, we can't use it.
+	if (!defined($addr)) {
+		return 0;
+	}
+
+	($a, $b, $c, $d) = unpack('W4', $addr);
+
+	# If it's a private IP on the 10.x.x.x, 172.14.x.x-172.31.x.x or
+	# 192.168.x.x networks, we are good to go.
+	if ($a == 10 ||
+	    ($a == 172 && $b >= 14 && $b <= 31) ||
+	    ($a == 192 && $b == 168)) {
+		return 1;
+	}
+
+	# If it's a public IP, it won't be the server we are looking for.
+	return 0;
+}
+
+sub get_br_mirror_host()
+{
+	my $br_mirror = BR_MIRROR_PROTOCOL.BR_MIRROR_HOST.BR_MIRROR_PATH;
+	my $ua = LWP::UserAgent->new('agent' => HTTP_USER_AGENT);
+	my $res;
+
+	# Only use the Broadcom mirror if we can resolve the name *AND* it is
+	# a private IP address. Otherwise, we'll either run into a DNS timeout
+	# for every package we need to download or we'll try to download the
+	# packages from a server that isn't actually BR_MIRROR_HOST.
+	if (!verify_mirror_host()) {
+		return undef;
+	}
+
+	# Check if BR_MIRROR_PATH exists on BR_MIRROR_HOST
+	$res = $ua->head($br_mirror);
+	if (!$res->is_success) {
+		return undef;
+	}
+
+	return $br_mirror;
+}
+
 sub resolve_remote($)
 {
 	my ($remote) = @_;
@@ -706,7 +842,7 @@ sub get_linux_sha_remote($$)
 sub parse_cmdline_fragments($$)
 {
 	my ($out_file, $frag_str) = @_;
-	my @frags = split(/;/, $frag_str);
+	my @frags = split(/[;,]/, $frag_str);
 
 	return '' if ($frag_str eq '');
 
@@ -1031,6 +1167,14 @@ sub run_hash_mode($$$)
 	exit(0);
 }
 
+sub run_tc_info_mode($)
+{
+	my ($local_linux) = @_;
+
+	print(get_recommended_toolchain($local_linux), "\n");
+	exit(0);
+}
+
 sub option_cannot_be_combined($$$$)
 {
 	my ($prg, $flag, $option, $options) = @_;
@@ -1050,6 +1194,7 @@ sub print_usage($)
 		"          -3 <path>....path to 32-bit run-time ('-' to ".
 			"disable)\n".
 		"          -b...........launch build after configuring\n".
+		"          -C...........display compiler information\n".
 		"          -c...........clean (remove output/\$platform)\n".
 		"          -D...........use platform's default kernel config\n".
 		"          -d <fname>...use <fname> as kernel defconfig\n".
@@ -1084,6 +1229,7 @@ my $br_output_default = 'output';
 my $temp_config = 'temp_config';
 my $clean_mode = 0;
 my $hash_mode = 0;
+my $tc_info_mode = 0;
 my $ret = 0;
 my $is_64bit = 0;
 my $relative_outputdir;
@@ -1101,7 +1247,7 @@ my $arch;
 my $opt_keys;
 my %opts;
 
-getopts('3:bcDd:F:f:Hhij:L:l:M:no:R:r:ST:t:v:X:', \%opts);
+getopts('3:bCcDd:F:f:Hhij:L:l:M:no:R:r:ST:t:v:X:', \%opts);
 $opt_keys = join('', keys(%opts));
 $arch = $ARGV[0];
 
@@ -1118,6 +1264,7 @@ if (check_br() < 0) {
 
 $clean_mode = 1 if ($opts{'c'});
 $hash_mode = 1 if ($opts{'H'});
+$tc_info_mode = 1 if ($opts{'C'});
 
 option_cannot_be_combined($prg, $clean_mode, 'c', $opt_keys);
 option_cannot_be_combined($prg, $hash_mode, 'H', $opt_keys);
@@ -1167,6 +1314,18 @@ if (defined($opts{'L'})) {
 		$local_linux = $opts{'L'};
 	}
 }
+
+if (defined($local_linux) && $local_linux eq '') {
+	print(STDERR "$prg: The path to the Linux directory can't be empty.\n");
+	exit(1);
+}
+
+if (defined($opts{'v'})) {
+	$generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION'} = $opts{'v'};
+}
+
+# Display information about the toolchain
+run_tc_info_mode($local_linux) if ($tc_info_mode);
 
 if (defined($opts{'o'})) {
 	$br_outputdir = $opts{'o'};
@@ -1230,7 +1389,7 @@ $kernel_frag_files = $opts{'F'} || '';
 
 $toolchain_ver = $opts{'T'} || '';
 if ($toolchain_ver eq '' && !defined($opts{'t'})) {
-	my $tc_ver = get_recommended_toolchain();
+	my $tc_ver = get_recommended_toolchain($local_linux);
 	if ($tc_ver ne '') {
 		print("Trying to find recommended toolchain $tc_ver...\n");
 		$toolchain = find_toolchain($tc_ver);
@@ -1338,7 +1497,6 @@ if (defined($opts{'l'})) {
 
 if (defined($opts{'v'})) {
 	print("Using ".$opts{'v'}." as Linux kernel version...\n");
-	$generic_config{'BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION'} = $opts{'v'};
 }
 
 if (defined($local_linux)) {
@@ -1431,7 +1589,7 @@ if (defined($opts{'t'})) {
 	$toolchain =~ s|/+$||;
 }
 
-$recommended_toolchain = check_toolchain($toolchain);
+$recommended_toolchain = check_toolchain($toolchain, $local_linux);
 if ($recommended_toolchain ne '') {
 	my $t = $toolchain;
 
@@ -1484,11 +1642,7 @@ if (defined($opts{'M'})) {
 }
 
 if (!defined($br_mirror)) {
-	# Only use the Broadcom mirror if we can resolve the name, otherwise
-	# we'll run into a DNS timeout for every package we need to download.
-	if (gethostbyname(BR_MIRROR_HOST)) {
-		$br_mirror = "http://".BR_MIRROR_HOST.BR_MIRROR_PATH;
-	}
+	$br_mirror = get_br_mirror_host();
 }
 if (defined($br_mirror) && $br_mirror ne '-') {
 	print("Using $br_mirror as Buildroot mirror...\n");
