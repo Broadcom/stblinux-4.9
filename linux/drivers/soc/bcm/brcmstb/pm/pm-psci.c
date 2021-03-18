@@ -17,6 +17,7 @@
 #include <linux/soc/brcmstb/brcmstb.h>
 #include <linux/brcmstb/brcmstb-smccc.h>
 #include <linux/reboot.h>
+#include <linux/kobject.h>
 
 #include <uapi/linux/psci.h>
 
@@ -200,6 +201,33 @@ static struct notifier_block brcmstb_psci_nb = {
 	.notifier_call = brcmstb_psci_panic_notify,
 };
 
+static ssize_t brcmstb_psci_version_show(struct kobject *kobj,
+					 struct kobj_attribute *attr,
+					 char *buf)
+{
+	struct arm_smccc_res res = { };
+	u32 version;
+
+	if (invoke_psci_fn == __invoke_psci_fn_hvc)
+		arm_smccc_hvc(SIP_FUNC_PSCI_BRCMSTB_VERSION,
+			      0, 0, 0, 0, 0, 0, 0, &res);
+	else
+		arm_smccc_smc(SIP_FUNC_PSCI_BRCMSTB_VERSION,
+			      0, 0, 0, 0, 0, 0, 0, &res);
+
+	if (res.a0 != PSCI_RET_SUCCESS)
+		return -EOPNOTSUPP;
+
+	version = res.a1;
+
+	return sprintf(buf, "%d.%d.%d.%d\n",
+		       (version >> 24) & 0xff, (version >> 16) & 0xff,
+		       (version >> 8) & 0xff, version & 0xff);
+}
+
+static struct kobj_attribute brcmstb_psci_version_attr =
+	__ATTR(brcmstb_mon_version, 0400, brcmstb_psci_version_show, NULL);
+
 int brcmstb_pm_psci_init(void)
 {
 	unsigned long funcs_id[] = {
@@ -269,6 +297,10 @@ int brcmstb_pm_psci_init(void)
 		return ret;
 
 	ret = brcmstb_regsave_init();
+	if (ret)
+		return ret;
+
+	ret = sysfs_create_file(firmware_kobj, &brcmstb_psci_version_attr.attr);
 	if (ret)
 		return ret;
 

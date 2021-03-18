@@ -1132,6 +1132,9 @@ static int bcmasp_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	/* Enable all clocks to ensure successful probing */
+	bcmasp_core_clock_set(priv, ASP_CTRL_CLOCK_CTRL_ASP_ALL_DISABLE, 0);
+
 	/* Switch to the main clock */
 	bcmasp_core_clock_select(priv, false);
 

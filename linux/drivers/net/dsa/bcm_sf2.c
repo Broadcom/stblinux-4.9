@@ -148,11 +148,15 @@ static void bcm_sf2_brcm_hdr_setup(struct bcm_sf2_priv *priv, int port)
 static void bcm_sf2_port_learn_setup(struct dsa_switch *ds, int port)
 {
 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
+	struct b53_device *dev = priv->dev;
 	u32 reg;
 
-	/* Enable learning */
+	/* Disable learning if port is not bridged or is the CPU port */
 	reg = core_readl(priv, CORE_DIS_LEARN);
-	reg &= ~BIT(port);
+	if (!dev->ports[port].bridge_dev)
+		reg |= BIT(port);
+	else
+		reg &= ~BIT(port);
 	core_writel(priv, reg, CORE_DIS_LEARN);
 
 	/* Software learning control disabled */
@@ -358,16 +362,8 @@ static int bcm_sf2_port_setup(struct dsa_switch *ds, int port,
 	bcm_sf2_port_learn_setup(ds, port);
 
 	/* Enable Broadcom tags for that port if requested */
-	if (priv->brcm_tag_mask & BIT(port)) {
+	if (priv->brcm_tag_mask & BIT(port))
 		bcm_sf2_brcm_hdr_setup(priv, port);
-
-		/* Disable learning on ASP port */
-		if (port == 7) {
-			reg = core_readl(priv, CORE_DIS_LEARN);
-			reg |= BIT(port);
-			core_writel(priv, reg, CORE_DIS_LEARN);
-		}
-	}
 
 	/* Configure Traffic Class to QoS mapping, allow each priority to map
 	 * to a different queue number

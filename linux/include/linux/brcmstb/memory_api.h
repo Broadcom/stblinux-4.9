@@ -118,7 +118,7 @@ enum brcmstb_reserve_type {
 };
 
 /* Determines what type of memory reservation will be used w/o CLI params */
-extern const enum brcmstb_reserve_type brcmstb_default_reserve;
+extern enum brcmstb_reserve_type brcmstb_default_reserve;
 /* Should be set to true by any CLI option that overrides default reserve */
 extern bool brcmstb_memory_override_defaults;
 /* May be set to true by any CLI option to convert bmem ranges to bhpa */

@@ -37,6 +37,7 @@
 #include <linux/brcmstb/memory_api.h>
 #include <asm/tlbflush.h>
 #include <linux/pfn_t.h>
+#include <asm/cputype.h>
 
 extern unsigned long __initramfs_size;
 
@@ -93,7 +94,7 @@ struct kva_map {
 static LIST_HEAD(kva_map_list);
 static DEFINE_MUTEX(kva_map_lock);
 
-const enum brcmstb_reserve_type brcmstb_default_reserve = BRCMSTB_RESERVE_BHPA;
+enum brcmstb_reserve_type brcmstb_default_reserve = BRCMSTB_RESERVE_BHPA;
 bool brcmstb_memory_override_defaults = false;
 bool brcmstb_bmem_is_bhpa = false;
 
@@ -855,9 +856,11 @@ struct default_res
 	int count;
 	int prev_memc;
 	int (*setup)(phys_addr_t start,	phys_addr_t size);
+	u64 total_size;
+	unsigned int num_memcs;
 };
 
-static __init int memc_reserve(int memc, u64 addr, u64 size, void *context)
+static __init int memc_reserve_bmem(int memc, u64 addr, u64 size, void *context)
 {
 	struct default_res *ctx = context;
 	u64 adj = 0, end = addr + size, limit, tmp;
@@ -961,6 +964,79 @@ static __init int memc_reserve(int memc, u64 addr, u64 size, void *context)
 	return 0;
 }
 
+static int __init memc_count_and_size(int memc, u64 addr, u64 size,
+				      void *context)
+{
+	struct default_res *ctx = context;
+
+	ctx->total_size += size;
+	ctx->num_memcs++;
+
+	return 0;
+}
+
+static __init int memc_reserve_bhpa(int memc, u64 addr, u64 size, void *context)
+{
+	struct default_res *ctx = context;
+	u32 ratio = 2;
+	u64 adj;
+
+	if ((phys_addr_t)addr != addr) {
+		pr_err("phys_addr_t too small for address 0x%llx!\n",
+		       addr);
+		return 0;
+	}
+
+	if ((phys_addr_t)size != size) {
+		pr_err("phys_addr_t too small for size 0x%llx!\n", size);
+		return 0;
+	}
+
+	/* First memory controller */
+	if (!ctx->count++) {
+		adj = ctx->total_size;
+		do_div(adj, ratio);
+
+#ifdef KASAN_SHADOW_SCALE_SHIFT
+		/* KASAN requires a fraction of the memory */
+		adj += ctx->total_size >> KASAN_SHADOW_SCALE_SHIFT;
+#endif
+#ifdef CONFIG_BLK_DEV_INITRD
+		/* Assume that a compressed initramfs will expand roughly to 5
+		 * times its compressed size. Determining its exact size early
+		 * on boot with no memory allocator available is not possible
+		 * since decompressors assume kmalloc() is available.
+		 */
+		adj += __initramfs_size * 5;
+#endif
+		if (adj >= size)
+			return 0;
+
+		addr += adj;
+		size  -= adj;
+	}
+
+	brcmstb_memory_set_range((phys_addr_t)addr, (phys_addr_t)(addr + size),
+				 ctx->setup);
+
+	return 0;
+}
+
+static bool __init soc_uses_v7_mmap(void)
+{
+	u64 base;
+
+#ifdef CONFIG_ARM
+	u32 tmp;
+	asm volatile("mrc p15, 1, %0, c15, c3, 0" : "=r" (tmp));
+	base = (u64)(tmp & 0xff) << 32 | (tmp & GENMASK(31, 18));
+#else
+	asm volatile("mrs %0, S3_1_C15_C3_0" : "=r"(base));
+	base &= GENMASK(39, 18);
+#endif
+	return base == SZ_2M;
+}
+
 void __init brcmstb_memory_default_reserve(int (*setup)(phys_addr_t start,
 							phys_addr_t size))
 {
@@ -969,7 +1045,22 @@ void __init brcmstb_memory_default_reserve(int (*setup)(phys_addr_t start,
 	ctx.count = 0;
 	ctx.prev_memc = 0;
 	ctx.setup = setup;
-	early_for_each_memc_range(memc_reserve, &ctx);
+	ctx.total_size = 0;
+	ctx.num_memcs = 0;
+
+	early_for_each_memc_range(memc_count_and_size, &ctx);
+	if (!ctx.total_size || !ctx.num_memcs) {
+		pr_err("Unable to determine total size or number of banks\n");
+		return;
+	}
+
+	if (brcmstb_default_reserve == BRCMSTB_RESERVE_BHPA &&
+	    soc_uses_v7_mmap() &&
+	    ctx.total_size > SZ_2G && ctx.num_memcs == 1) {
+		early_for_each_memc_range(memc_reserve_bhpa, &ctx);
+	} else {
+		early_for_each_memc_range(memc_reserve_bmem, &ctx);
+	}
 }
 
 /**
@@ -1009,6 +1100,13 @@ void __init brcmstb_memory_reserve(void)
  */
 void __init brcmstb_memory_init(void)
 {
+#ifdef CONFIG_ARM
+	/* Default B15-based CPUs to use BMEM to avoid speculative fetches
+	 * in reserved memory regions.
+	 */
+	if (read_cpuid_part() == ARM_CPU_PART_BRAHMA_B15)
+		brcmstb_default_reserve = BRCMSTB_RESERVE_BMEM;
+#endif
 	brcmstb_memory_reserve();
 #ifdef CONFIG_BRCMSTB_BMEM
 #ifdef CONFIG_BRCMSTB_HUGEPAGES

@@ -624,8 +624,11 @@ int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node)
 			void *p = NULL;
 
 			p = vmemmap_alloc_block_buf(PMD_SIZE, node);
-			if (!p)
-				return -ENOMEM;
+			if (!p) {
+				if (vmemmap_populate_basepages(addr, next, node))
+					return -ENOMEM;
+				continue;
+			}
 
 			pmd_set_huge(pmd, __pa(p), __pgprot(PROT_SECT_NORMAL));
 		} else

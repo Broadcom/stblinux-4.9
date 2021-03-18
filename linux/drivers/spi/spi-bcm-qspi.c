@@ -114,6 +114,7 @@
 #define MSPI_MASTER_BIT			BIT(7)
 
 #define MSPI_NUM_CDRAM				16
+#define MSPI_CDRAM_OUTP				BIT(8)
 #define MSPI_CDRAM_CONT_BIT			BIT(7)
 #define MSPI_CDRAM_BITSE_BIT			BIT(6)
 #define MSPI_CDRAM_DT_BIT			BIT(5)
@@ -128,6 +129,8 @@
 #define MSPI_SPCR3_DAM_8BYTE			0
 #define MSPI_SPCR3_DAM_16BYTE			(BIT(2) | BIT(4))
 #define MSPI_SPCR3_DAM_32BYTE			(BIT(3) | BIT(5))
+#define MSPI_SPCR3_HALFDUPLEX			BIT(6)
+#define MSPI_SPCR3_HDOUTTYPE			BIT(7)
 #define MSPI_SPCR3_DATA_REG_SZ			BIT(8)
 #define MSPI_SPCR3_CPHARX			BIT(9)
 #define MSPI_SPCR3_SYSCLKSEL_MASK		GENMASK(11, 10)
@@ -290,7 +293,7 @@ static inline bool bcm_qspi_has_sysclk_108(struct bcm_qspi *qspi)
 static inline int bcm_qspi_spbr_min(struct bcm_qspi *qspi)
 {
 	if (bcm_qspi_has_fastbr(qspi))
-		return 1;
+		return (bcm_qspi_has_sysclk_108(qspi) ? 4 : 1);
 	else
 		return 8;
 }
@@ -621,17 +624,22 @@ static void bcm_qspi_chip_select(struct bcm_qspi *qspi, int cs)
 	qspi->curr_cs = cs;
 }
 
+static bool bcmspi_parms_did_change(const struct bcm_qspi_parms * const cur,
+				    const struct bcm_qspi_parms * const prev)
+{
+	return (cur->speed_hz != prev->speed_hz) ||
+		(cur->mode != prev->mode) ||
+		(cur->bits_per_word != prev->bits_per_word);
+}
+
 /* MSPI helpers */
 static void bcm_qspi_hw_set_parms(struct bcm_qspi *qspi,
 				  const struct bcm_qspi_parms *xp)
 {
 	u32 spcr, spbr = 0;
 
-	if (xp->speed_hz)
-		spbr = qspi->base_clk / (2 * xp->speed_hz);
-
-	spcr = clamp_val(spbr, bcm_qspi_spbr_min(qspi), QSPI_SPBR_MAX);
-	bcm_qspi_write(qspi, MSPI, MSPI_SPCR0_LSB, spcr);
+	if (!bcmspi_parms_did_change(xp, &qspi->last_parms))
+		return;
 
 	if (!qspi->mspi_maj_rev)
 		/* legacy controller */
@@ -655,15 +663,16 @@ static void bcm_qspi_hw_set_parms(struct bcm_qspi *qspi,
 	if (bcm_qspi_has_fastbr(qspi)) {
 		spcr = 0;
 
-		/* enable fastdt, fastbr  */
-		spcr |=	MSPI_SPCR3_FASTBR | MSPI_SPCR3_FASTDT;
+		/* enable fastbr  */
+		spcr |=	MSPI_SPCR3_FASTBR;
+
+		if (xp->mode & SPI_3WIRE)
+			spcr |= MSPI_SPCR3_HALFDUPLEX |  MSPI_SPCR3_HDOUTTYPE;
 
 		if (bcm_qspi_has_sysclk_108(qspi)) {
 			/* SYSCLK_108 */
 			spcr |= MSPI_SPCR3_SYSCLKSEL_108;
 			qspi->base_clk = MSPI_BASE_FREQ * 4;
-			/* Change spbr as we changed sysclk */
-			bcm_qspi_write(qspi, MSPI, MSPI_SPCR0_LSB, 4);
 		}
 
 		if (xp->bits_per_word > 16) {
@@ -686,10 +695,16 @@ static void bcm_qspi_hw_set_parms(struct bcm_qspi *qspi,
 			 * TxRx RAM access mode 8B
 			 * and disable fastdt
 			 */
-			spcr &= ~(MSPI_SPCR3_FASTDT | MSPI_SPCR3_DAM_32BYTE);
+			spcr &= ~(MSPI_SPCR3_DAM_32BYTE);
 			bcm_qspi_write(qspi, MSPI, MSPI_SPCR3, spcr);
 		}
 	}
+
+	if (xp->speed_hz)
+		spbr = qspi->base_clk / (2 * xp->speed_hz);
+
+	spbr = clamp_val(spbr, bcm_qspi_spbr_min(qspi), QSPI_SPBR_MAX);
+	bcm_qspi_write(qspi, MSPI, MSPI_SPCR0_LSB, spbr);
 
 	qspi->last_parms = *xp;
 }
@@ -983,6 +998,10 @@ static int write_to_hw(struct bcm_qspi *qspi, struct spi_device *spi)
 		mspi_cdram |= ((tp.trans->bits_per_word <= 8) ? 0 :
 			       MSPI_CDRAM_BITSE_BIT);
 
+		/* set 3wrire halfduplex mode data from master to slave */
+		if ((spi->mode & SPI_3WIRE) && tp.trans->tx_buf)
+			mspi_cdram |= MSPI_CDRAM_OUTP;
+
 		if (has_bspi(qspi))
 			mspi_cdram &= ~1;
 		else
@@ -1200,6 +1219,11 @@ static int bcm_qspi_flash_read(struct spi_device *spi,
 	addr = msg->from;
 	len = msg->len;
 
+	if (!has_bspi(qspi)) {
+		mspi_read = true;
+		goto mspi_flash_read;
+	}
+
 	if (bcm_qspi_bspi_ver_three(qspi) == true) {
 		/*
 		 * The address coming into this function is a raw flash offset.
@@ -1219,6 +1243,7 @@ static int bcm_qspi_flash_read(struct spi_device *spi,
 	    len < 4)
 		mspi_read = true;
 
+mspi_flash_read:
 	if (mspi_read)
 		return bcm_qspi_mspi_flash_read(spi, msg);
 
@@ -1420,10 +1445,14 @@ static void bcm_qspi_hw_init(struct bcm_qspi *qspi)
 
 static void bcm_qspi_hw_uninit(struct bcm_qspi *qspi)
 {
+	u32 status = bcm_qspi_read(qspi, MSPI, MSPI_MSPI_STATUS);
+
 	bcm_qspi_write(qspi, MSPI, MSPI_SPCR2, 0);
 	if (has_bspi(qspi))
 		bcm_qspi_write(qspi, MSPI, MSPI_WRITE_LOCK, 0);
 
+	/* clear interrupt */
+	bcm_qspi_write(qspi, MSPI, MSPI_MSPI_STATUS, status & ~1);
 }
 
 struct bcm_qspi_data {
@@ -1572,6 +1601,47 @@ int bcm_qspi_probe(struct platform_device *pdev,
 	if (!qspi->dev_ids)
 		return -ENOMEM;
 
+	/*
+	 * Some SoCs integrate spi controller (e.g., its interrupt bits)
+	 * in specific ways
+	 */
+	if (soc_intc) {
+		qspi->soc_intc = soc_intc;
+		soc_intc->bcm_qspi_int_set(soc_intc, MSPI_DONE, true);
+	} else {
+		qspi->soc_intc = NULL;
+	}
+
+	if (qspi->clk) {
+		ret = clk_prepare_enable(qspi->clk);
+		if (ret) {
+			dev_err(dev, "failed to prepare clock\n");
+			goto qspi_probe_err;
+		}
+		qspi->base_clk = clk_get_rate(qspi->clk);
+	} else {
+		qspi->base_clk = MSPI_BASE_FREQ;
+	}
+
+	if (data->has_mspi_rev) {
+		rev = bcm_qspi_read(qspi, MSPI, MSPI_REV);
+		/* some older revs do not have a MSPI_REV register */
+		if ((rev & 0xff) == 0xff)
+			rev = 0;
+	}
+
+	qspi->mspi_maj_rev = (rev >> 4) & 0xf;
+	qspi->mspi_min_rev = rev & 0xf;
+	qspi->mspi_spcr3_sysclk = data->has_spcr3_sysclk;
+
+	qspi->max_speed_hz = qspi->base_clk / (bcm_qspi_spbr_min(qspi) * 2);
+
+	/*
+	 * On SW resets it is possible to have the mask still enabled
+	 * Need to disable the mask and clear the status while we init
+	 */
+	bcm_qspi_hw_uninit(qspi);
+
 	for (val = 0; val < num_irqs; val++) {
 		irq = -1;
 		name = qspi_irq_tab[val].irq_name;
@@ -1607,41 +1677,6 @@ int bcm_qspi_probe(struct platform_device *pdev,
 		ret = -EINVAL;
 		goto qspi_probe_err;
 	}
-
-	/*
-	 * Some SoCs integrate spi controller (e.g., its interrupt bits)
-	 * in specific ways
-	 */
-	if (soc_intc) {
-		qspi->soc_intc = soc_intc;
-		soc_intc->bcm_qspi_int_set(soc_intc, MSPI_DONE, true);
-	} else {
-		qspi->soc_intc = NULL;
-	}
-
-	if (qspi->clk) {
-		ret = clk_prepare_enable(qspi->clk);
-		if (ret) {
-			dev_err(dev, "failed to prepare clock\n");
-			goto qspi_probe_err;
-		}
-		qspi->base_clk = clk_get_rate(qspi->clk);
-	} else {
-		qspi->base_clk = MSPI_BASE_FREQ;
-	}
-
-	if (data->has_mspi_rev) {
-		rev = bcm_qspi_read(qspi, MSPI, MSPI_REV);
-		/* some older revs do not have a MSPI_REV register */
-		if ((rev & 0xff) == 0xff)
-			rev = 0;
-	}
-
-	qspi->mspi_maj_rev = (rev >> 4) & 0xf;
-	qspi->mspi_min_rev = rev & 0xf;
-	qspi->mspi_spcr3_sysclk = data->has_spcr3_sysclk;
-
-	qspi->max_speed_hz = qspi->base_clk / (bcm_qspi_spbr_min(qspi) * 2);
 
 	bcm_qspi_hw_init(qspi);
 	init_completion(&qspi->mspi_done);

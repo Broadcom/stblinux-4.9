@@ -1,5 +1,5 @@
 /*
- * Copyright © 2014-2019 Broadcom
+ * Copyright © 2014-2018 Broadcom
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -29,8 +29,6 @@
 #include <linux/pm_wakeup.h>
 #include <linux/reboot.h>
 #include <linux/rtc.h>
-#include <linux/psci.h>
-#include <linux/brcmstb/brcmstb-smccc.h>
 
 #ifdef CONFIG_ARM
 #include <asm/mach/time.h>
@@ -39,15 +37,6 @@
 #endif
 
 #define DRV_NAME	"brcm-waketimer"
-
-struct brcmstb_waketmr;
-
-struct brcmstb_waketmr_io_ops {
-	int (*init)(struct brcmstb_waketmr *priv);
-	u32 (*read)(struct brcmstb_waketmr *priv, u8 offset);
-	void (*write)(struct brcmstb_waketmr *priv, u32 val, u8 offset);
-	void *priv;
-};
 
 static struct brcmstb_waketmr {
 	struct rtc_device *rtc;
@@ -59,20 +48,7 @@ static struct brcmstb_waketmr {
 	int wake_timeout;
 	struct notifier_block reboot_notifier;
 	bool timer_irq_en;
-	struct brcmstb_waketmr_io_ops *ops;
 } wktimer;
-
-static inline u32 brcmstb_waketmr_read(struct brcmstb_waketmr *timer,
-				       u8 offset)
-{
-	return timer->ops->read(timer, offset);
-}
-
-static inline void brcmstb_waketmr_write(struct brcmstb_waketmr *timer,
-					 u32 val, u8 offset)
-{
-	timer->ops->write(timer, val, offset);
-}
 
 /* No timeout */
 #define BRCMSTB_WKTMR_DEFAULT_TIMEOUT	(-1)
@@ -89,105 +65,11 @@ static inline void brcmstb_waketmr_write(struct brcmstb_waketmr *timer,
  */
 #define WKTMR_FREQ		27000000
 
-static int brcmstb_waketmr_mmap_init(struct brcmstb_waketmr *timer)
-{
-	struct platform_device *pdev = to_platform_device(timer->dev);
-	struct resource *res;
-
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	timer->base = devm_ioremap_resource(timer->dev, res);
-	if (IS_ERR(timer->base))
-		return PTR_ERR(timer->base);
-
-	return 0;
-}
-
-static inline u32 brcmstb_waketmr_readl(struct brcmstb_waketmr *timer, u8 offset)
-{
-	return readl_relaxed(timer->base + offset);
-}
-
-static inline void brcmstb_waketmr_writel(struct brcmstb_waketmr *timer,
-					  u32 value, u8 offset)
-{
-	writel_relaxed(value, timer->base + offset);
-}
-
-static const struct brcmstb_waketmr_io_ops brcmstb_waketmr_mmap_ops = {
-	.init = brcmstb_waketmr_mmap_init,
-	.read = brcmstb_waketmr_readl,
-	.write = brcmstb_waketmr_writel,
-};
-
-struct brcmstb_waketmr_smccc_priv {
-	psci_fn *invoke_psci_fn;
-	unsigned long function_id;
-};
-
-static int brcmstb_waketmr_smccc_init(struct brcmstb_waketmr *timer)
-{
-	struct brcmstb_waketmr_smccc_priv *priv;
-	int ret;
-
-	priv = devm_kzalloc(timer->dev, sizeof(*priv), GFP_KERNEL);
-	if (!priv)
-		return -ENOMEM;
-
-	priv->function_id = SIP_FUNC_PSCI_VIRTUAL_WAKETIMER;
-	timer->ops->priv = priv;
-
-	switch (psci_ops.conduit) {
-	case PSCI_CONDUIT_HVC:
-		priv->invoke_psci_fn = __invoke_psci_fn_hvc;
-		break;
-	case PSCI_CONDUIT_SMC:
-		priv->invoke_psci_fn = __invoke_psci_fn_smc;
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	ret = priv->invoke_psci_fn(SIP_FUNC_PSCI_FEATURES, priv->function_id,
-				   0, 0);
-	if (ret == PSCI_RET_NOT_SUPPORTED) {
-		dev_err(timer->dev, "Firmware does not support virtual timer\n");
-		return -ENODEV;
-	}
-
-	return 0;
-}
-
-static inline u32 brcmstb_waketmr_smccc_read(struct brcmstb_waketmr *timer,
-					     u8 offset)
-{
-	struct brcmstb_waketmr_smccc_priv *priv = timer->ops->priv;
-
-	return priv->invoke_psci_fn(priv->function_id, 0, offset, 0);
-}
-
-static inline void brcmstb_waketmr_smccc_write(struct brcmstb_waketmr *timer,
-					       u32 value, u8 offset)
-{
-	struct brcmstb_waketmr_smccc_priv *priv = timer->ops->priv;
-	int ret;
-
-	ret = priv->invoke_psci_fn(priv->function_id, 1, offset, value);
-	if (ret != PSCI_RET_SUCCESS)
-		dev_err(timer->dev, "failed to write to 0x%02x (%d)\n",
-			offset, ret);
-}
-
-static const struct brcmstb_waketmr_io_ops brcmstb_waketmr_smccc_ops = {
-	.init = brcmstb_waketmr_smccc_init,
-	.read = brcmstb_waketmr_smccc_read,
-	.write = brcmstb_waketmr_smccc_write,
-};
-
 static inline bool brcmstb_waketmr_is_pending(struct brcmstb_waketmr *timer)
 {
 	u32 reg;
 
-	reg = brcmstb_waketmr_read(timer, BRCMSTB_WKTMR_EVENT);
+	reg = readl_relaxed(timer->base + BRCMSTB_WKTMR_EVENT);
 	return !!(reg & WKTMR_ALARM_EVENT);
 }
 
@@ -195,10 +77,10 @@ static inline void brcmstb_waketmr_clear_alarm(struct brcmstb_waketmr *timer)
 {
 	u32 reg;
 
-	reg = brcmstb_waketmr_read(timer, BRCMSTB_WKTMR_COUNTER);
-	brcmstb_waketmr_write(timer, reg - 1, BRCMSTB_WKTMR_ALARM);
-	brcmstb_waketmr_write(timer, WKTMR_ALARM_EVENT, BRCMSTB_WKTMR_EVENT);
-	(void)brcmstb_waketmr_read(timer, BRCMSTB_WKTMR_EVENT);
+	reg = readl_relaxed(timer->base + BRCMSTB_WKTMR_COUNTER);
+	writel_relaxed(reg - 1, timer->base + BRCMSTB_WKTMR_ALARM);
+	writel_relaxed(WKTMR_ALARM_EVENT, timer->base + BRCMSTB_WKTMR_EVENT);
+	(void)readl_relaxed(timer->base + BRCMSTB_WKTMR_EVENT);
 }
 
 static void brcmstb_waketmr_set_alarm(struct brcmstb_waketmr *timer,
@@ -214,17 +96,17 @@ static void brcmstb_waketmr_set_alarm(struct brcmstb_waketmr *timer,
  */
 #ifndef CONFIG_MIPS
 	/* Make sure we are actually counting in seconds */
-	brcmstb_waketmr_write(timer, WKTMR_FREQ, BRCMSTB_WKTMR_PRESCALER);
+	writel_relaxed(WKTMR_FREQ, timer->base + BRCMSTB_WKTMR_PRESCALER);
 #endif
 
-	brcmstb_waketmr_write(timer, secs, BRCMSTB_WKTMR_ALARM);
-	now = brcmstb_waketmr_read(timer, BRCMSTB_WKTMR_COUNTER);
+	writel_relaxed(secs, timer->base + BRCMSTB_WKTMR_ALARM);
+	now = readl_relaxed(timer->base + BRCMSTB_WKTMR_COUNTER);
 
 	while ((int)(secs - now) <= 0 &&
 		!brcmstb_waketmr_is_pending(timer)) {
 		secs = now + 1;
-		brcmstb_waketmr_write(timer, secs, BRCMSTB_WKTMR_ALARM);
-		now = brcmstb_waketmr_read(timer, BRCMSTB_WKTMR_COUNTER);
+		writel_relaxed(secs, timer->base + BRCMSTB_WKTMR_ALARM);
+		now = readl_relaxed(timer->base + BRCMSTB_WKTMR_COUNTER);
 	}
 }
 
@@ -245,7 +127,7 @@ static irqreturn_t brcmstb_timer_irq(int irq, void *data)
 	if(!brcmstb_waketmr_is_pending(timer))
 		return IRQ_HANDLED;
 
-	brcmstb_waketmr_write(timer, WKTMR_ALARM_EVENT, BRCMSTB_WKTMR_EVENT);
+	writel_relaxed(WKTMR_ALARM_EVENT, timer->base + BRCMSTB_WKTMR_EVENT);
 	disable_irq_nosync(irq);
 	timer->timer_irq_en = false;
 
@@ -264,8 +146,8 @@ static void wktmr_read(struct wktmr_time *t)
 	u32 tmp;
 
 	do {
-		t->sec = brcmstb_waketmr_read(&wktimer, BRCMSTB_WKTMR_COUNTER);
-		tmp = brcmstb_waketmr_read(&wktimer, BRCMSTB_WKTMR_PRESCALER_VAL);
+		t->sec = readl_relaxed(wktimer.base + BRCMSTB_WKTMR_COUNTER);
+		tmp = readl_relaxed(wktimer.base + BRCMSTB_WKTMR_PRESCALER_VAL);
 	} while (tmp >= WKTMR_FREQ);
 
 	t->pre = WKTMR_FREQ - tmp;
@@ -375,7 +257,7 @@ static int brcmstb_waketmr_prepare_suspend(struct brcmstb_waketmr *timer)
 		 * here, because brcmstb_waketmr_setalarm() isn't called.
 		 */
 		if (!timer->timer_irq_en) {
-			t = brcmstb_waketmr_read(timer, BRCMSTB_WKTMR_COUNTER);
+			t = readl_relaxed(timer->base + BRCMSTB_WKTMR_COUNTER);
 			t += timer->wake_timeout + 1;
 			brcmstb_waketmr_set_alarm(timer, t);
 		}
@@ -427,7 +309,7 @@ static int brcmstb_waketmr_settime(struct device *dev,
 	rtc_tm_to_time(tm, &sec);
 
 	dev_dbg(dev, "%s: sec=%ld\n", __FUNCTION__, sec);
-	brcmstb_waketmr_write(timer, sec, BRCMSTB_WKTMR_COUNTER);
+	writel_relaxed(sec, timer->base + BRCMSTB_WKTMR_COUNTER);
 
 	return 0;
 }
@@ -454,8 +336,8 @@ static int brcmstb_waketmr_alarm_enable(struct device *dev,
 		return 0;
 
 	if (enabled && !timer->timer_irq_en) {
-		if ((int)(brcmstb_waketmr_read(timer, BRCMSTB_WKTMR_COUNTER) -
-		    brcmstb_waketmr_read(timer, BRCMSTB_WKTMR_ALARM)) >= 0 &&
+		if ((int)(readl_relaxed(timer->base + BRCMSTB_WKTMR_COUNTER) -
+		    readl_relaxed(timer->base + BRCMSTB_WKTMR_ALARM)) >= 0 &&
 		    !brcmstb_waketmr_is_pending(timer))
 			return -1;
 		timer->timer_irq_en = true;
@@ -542,26 +424,12 @@ static inline void __init init_wktmr_clocksource(void)
 }
 #endif /* CONFIG_MIPS */
 
-static const struct of_device_id brcmstb_waketmr_of_match[] = {
-	{ .compatible = "brcm,brcmstb-waketimer",
-	  .data = &brcmstb_waketmr_mmap_ops },
-	{ .compatible = "brcm,brcmstb-virtual-waketimer",
-	  .data = &brcmstb_waketmr_smccc_ops },
-	{},
-};
-
 static int __init brcmstb_waketmr_probe(struct platform_device *pdev)
 {
-	const struct of_device_id *of_id = NULL;
 	struct device *dev = &pdev->dev;
 	struct brcmstb_waketmr *timer = &wktimer;
+	struct resource *res;
 	int ret;
-
-	of_id = of_match_node(brcmstb_waketmr_of_match, pdev->dev.of_node);
-	if (!of_id)
-		return -EINVAL;
-
-	timer->ops = (struct brcmstb_waketmr_io_ops *)of_id->data;
 
 	platform_set_drvdata(pdev, timer);
 
@@ -570,9 +438,10 @@ static int __init brcmstb_waketmr_probe(struct platform_device *pdev)
 
 	timer->dev = dev;
 
-	ret = timer->ops->init(timer);
-	if (ret)
-		return ret;
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	timer->base = devm_ioremap_resource(dev, res);
+	if (IS_ERR(timer->base))
+		return PTR_ERR(timer->base);
 
 	/*
 	 * Set wakeup capability before requesting wakeup interrupt, so we can
@@ -671,6 +540,11 @@ static int brcmstb_waketmr_resume(struct device *dev)
 
 static SIMPLE_DEV_PM_OPS(brcmstb_waketmr_pm_ops, brcmstb_waketmr_suspend,
 		brcmstb_waketmr_resume);
+
+static const struct of_device_id brcmstb_waketmr_of_match[] = {
+	{ .compatible = "brcm,brcmstb-waketimer" },
+	{},
+};
 
 static struct platform_driver brcmstb_waketmr_driver = {
 	.remove			= brcmstb_waketmr_remove,

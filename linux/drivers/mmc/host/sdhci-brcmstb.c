@@ -20,6 +20,8 @@
 #include <linux/of.h>
 #include <linux/bitops.h>
 #include <linux/delay.h>
+#include <linux/mfd/syscon.h>
+#include <linux/regmap.h>
 
 #include "sdhci-pltfm.h"
 
@@ -29,8 +31,15 @@
 #define BRCMSTB_PRIV_FLAGS_NO_64BIT		BIT(0)
 #define BRCMSTB_PRIV_FLAGS_BROKEN_TIMEOUT	BIT(1)
 
+#define DRIVER_STRENGTH_A 1	/* 1.5x */
+#define DRIVER_STRENGTH_B 0	/* 1.0x */
+#define DRIVER_STRENGTH_C 2	/* .75x */
+#define DRIVER_STRENGTH_D 3	/* .5x  */
+
 struct sdhci_brcmstb_priv {
 	void __iomem *cfg_regs;
+	int driver_strength;
+	struct regmap *rmap;
 };
 
 struct brcmstb_match_priv {
@@ -122,6 +131,75 @@ void brcmstb_set_uhs_signaling(struct sdhci_host *host, unsigned int timing)
 	}
 }
 
+/* definitions for the SYS_CTRL_SUN_TOP_CTRL_GENERAL_CTRL_NO_SCAN_2 register */
+#define EMMC_CTL_PAD_SEL_MASK 0x07000000
+#define EMMC_CTL_PAD_SEL_SHIFT 24
+#define EMMC_DATA_PAD_SEL_MASK 0x00000070
+#define EMMC_DATA_PAD_SEL_SHIFT 4
+#define EMMC_PAD_SEL_DRIVE_2MA 0
+#define EMMC_PAD_SEL_DRIVE_4MA 1
+#define EMMC_PAD_SEL_DRIVE_6MA 2
+#define EMMC_PAD_SEL_DRIVE_8MA 3
+#define EMMC_PAD_SEL_DRIVE_10MA 4
+#define EMMC_PAD_SEL_DRIVE_12MA 5
+#define EMMC_PAD_SEL_DRIVE_14MA 6
+#define EMMC_PAD_SEL_DRIVE_16MA 7
+
+static void set_syscon_strength(struct sdhci_host *host,
+				struct sdhci_brcmstb_priv *priv,
+				int strength)
+{
+	int val;
+	int err;
+
+	if (!priv->rmap)
+		return;
+	switch (strength) {
+	case DRIVER_STRENGTH_B:
+	default:
+		val = EMMC_PAD_SEL_DRIVE_8MA;
+		break;
+	case DRIVER_STRENGTH_A:
+		val = EMMC_PAD_SEL_DRIVE_12MA;
+		break;
+	case DRIVER_STRENGTH_C:
+		val = EMMC_PAD_SEL_DRIVE_6MA;
+		break;
+	case DRIVER_STRENGTH_D:
+		val = EMMC_PAD_SEL_DRIVE_4MA;
+		break;
+	}
+	dev_dbg(mmc_dev(host->mmc), "Setting syscon drive strength to 0x%x\n",
+		val);
+
+	/* Set the pad drive strength for the eMMC control and data signals */
+	err = regmap_update_bits(priv->rmap, 0,
+				 EMMC_CTL_PAD_SEL_MASK | EMMC_DATA_PAD_SEL_MASK,
+				 (val << EMMC_CTL_PAD_SEL_SHIFT) |
+				 (val << EMMC_DATA_PAD_SEL_SHIFT));
+	if (err)
+		dev_err(mmc_dev(host->mmc),
+			"Error setting syscon drive strength\n");
+}
+
+static int brcmstb_select_drive_strength(struct sdhci_host *host,
+					 struct mmc_card *card,
+					 unsigned int max_dtr, int host_drv,
+					 int card_drv, int *drv_type)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_brcmstb_priv *priv = sdhci_pltfm_priv(pltfm_host);
+	int strength = priv->driver_strength;
+
+	dev_dbg(mmc_dev(host->mmc),
+		"Drive strength: speed: %d, host: 0x%x, card: 0x%x, res: %d\n",
+		max_dtr, host_drv, card_drv, strength);
+
+	set_syscon_strength(host, priv, strength);
+	*drv_type = strength;
+	return strength;
+}
+
 #ifdef CONFIG_PM_SLEEP
 static int sdhci_brcmstb_suspend(struct device *dev)
 {
@@ -165,6 +243,7 @@ static const struct sdhci_ops sdhci_brcmstb_ops_7216 = {
 	.set_bus_width = sdhci_set_bus_width,
 	.reset = sdhci_reset,
 	.set_uhs_signaling = brcmstb_set_uhs_signaling,
+	.select_drive_strength = brcmstb_select_drive_strength,
 };
 
 static const struct brcmstb_match_priv match_priv_7425 = {
@@ -195,11 +274,15 @@ static int sdhci_brcmstb_probe(struct platform_device *pdev)
 {
 	struct sdhci_pltfm_data brcmstb_pdata;
 	const struct brcmstb_match_priv *match_priv;
+	struct device_node *dn = pdev->dev.of_node;
 	struct sdhci_pltfm_host *pltfm_host;
 	const struct of_device_id *match;
 	struct sdhci_brcmstb_priv *priv;
+	struct regmap *rmap = NULL;
 	struct sdhci_host *host;
+	int driver_strength = 0;
 	struct resource *iomem;
+	const char *strength;
 	struct clk *clk;
 	int res;
 
@@ -218,6 +301,32 @@ static int sdhci_brcmstb_probe(struct platform_device *pdev)
 		return res;
 
 	memset(&brcmstb_pdata, 0, sizeof(brcmstb_pdata));
+
+	res = of_property_read_string(dn, "driver-strength", &strength);
+	if (res == 0) {
+		switch (strength[0]) {
+		case 'A':
+			driver_strength = DRIVER_STRENGTH_A;
+			break;
+		case 'B':
+			driver_strength = DRIVER_STRENGTH_B;
+			break;
+		case 'C':
+			driver_strength = DRIVER_STRENGTH_C;
+			break;
+		case 'D':
+			driver_strength = DRIVER_STRENGTH_D;
+			break;
+		default:
+			dev_err(&pdev->dev,
+				"Invalid \"driver_strength\" property\n");
+		}
+	}
+	/* Get the optional chip specific drive strength register */
+	rmap = syscon_regmap_lookup_by_phandle(dn, "syscon-emmc");
+	if (IS_ERR(rmap))
+		rmap = NULL;
+
 	brcmstb_pdata.ops = match_priv->ops;
 	host = sdhci_pltfm_init(pdev, &brcmstb_pdata,
 				sizeof(struct sdhci_brcmstb_priv));
@@ -228,6 +337,8 @@ static int sdhci_brcmstb_probe(struct platform_device *pdev)
 
 	pltfm_host = sdhci_priv(host);
 	priv = sdhci_pltfm_priv(pltfm_host);
+	priv->driver_strength = driver_strength;
+	priv->rmap = rmap;
 
 	/* Map in the non-standard CFG registers */
 	iomem = platform_get_resource(pdev, IORESOURCE_MEM, 1);
@@ -270,7 +381,6 @@ static int sdhci_brcmstb_probe(struct platform_device *pdev)
 
 	if (match_priv->flags & BRCMSTB_PRIV_FLAGS_BROKEN_TIMEOUT)
 		host->quirks |= SDHCI_QUIRK_BROKEN_TIMEOUT_VAL;
-
 	res = sdhci_add_host(host);
 	if (res)
 		goto err;
@@ -287,11 +397,7 @@ err_clk:
 
 static void sdhci_brcmstb_shutdown(struct platform_device *pdev)
 {
-	struct sdhci_host *host = platform_get_drvdata(pdev);
-	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
-
-	sdhci_remove_host(host, 1);
-	clk_disable_unprepare(pltfm_host->clk);
+	sdhci_pltfm_suspend(&pdev->dev);
 }
 
 MODULE_DEVICE_TABLE(of, sdhci_brcm_of_match);

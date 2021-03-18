@@ -197,14 +197,14 @@ static __init void split_bhpa_region(phys_addr_t addr, struct bhpa_region *p)
 			(++tmp)->addr = addr;
 			tmp->size -= addr - p->addr;
 			end = addr + tmp->size;
-			B_LOG_DBG("region split: 0x%pa-0x%pa", &addr, &end);
+			B_LOG_DBG("region split: %pa-%pa", &addr, &end);
 		} else {
 			B_LOG_WRN("bhpa region truncated (MAX_BHPA_REGIONS)");
 		}
 	}
 	p->size = addr - p->addr;
 	end = p->addr + p->size;
-	B_LOG_DBG("region added: 0x%pa-0x%pa", &p->addr, &end);
+	B_LOG_DBG("region added: %pa-%pa", &p->addr, &end);
 }
 
 static __init void intersect_bhpa_ranges(phys_addr_t start, phys_addr_t size,
@@ -213,12 +213,12 @@ static __init void intersect_bhpa_ranges(phys_addr_t start, phys_addr_t size,
 	struct bhpa_region *tmp, *p = *ptr;
 	phys_addr_t end = start + size;
 
-	B_LOG_DBG("range: 0x%pa-0x%pa", &start, &end);
+	B_LOG_DBG("range: %pa-%pa", &start, &end);
 	while (p < &bhpa_regions[n_bhpa_regions] &&
 	       p->addr + p->size <= start) {
 		tmp = p;
 		end = p->addr + p->size;
-		B_LOG_WRN("unmapped bhpa region 0x%pa-0x%pa",
+		B_LOG_WRN("unmapped bhpa region %pa-%pa",
 			   &p->addr, &end);
 
 		n_bhpa_regions--;
@@ -242,7 +242,7 @@ static __init void intersect_bhpa_ranges(phys_addr_t start, phys_addr_t size,
 			return;
 		}
 
-		B_LOG_DBG("intersection: 0x%pa-0x%pa", &start, &last);
+		B_LOG_DBG("intersection: %pa-%pa", &start, &last);
 		p->size -= start - p->addr;
 		p->addr = start;
 
@@ -293,7 +293,7 @@ static void __init bhpa_alloc_ranges(void)
 		 * the search for efficiency.
 		 */
 		if (!memblock_reserve(p->addr, p->size)) {
-			B_LOG_MSG("Alloc: MEMC%d: 0x%pa-0x%pa", p->memc,
+			B_LOG_MSG("Alloc: MEMC%d: %pa-%pa", p->memc,
 				&p->addr, &end);
 			/*
 			 * The min_count is set to 0 so that memblock
@@ -302,7 +302,7 @@ static void __init bhpa_alloc_ranges(void)
 			kmemleak_alloc_phys(p->addr, p->size, 0, 0);
 			p++;
 		} else {
-			B_LOG_WRN("bhpa reservation 0x%pa-0x%pa failed!",
+			B_LOG_WRN("bhpa reservation %pa-%pa failed!",
 				&p->addr, &end);
 			while (++p < &bhpa_regions[n_bhpa_regions])
 				*(p - 1) = *p;
@@ -360,7 +360,7 @@ void __init brcmstb_bhpa_reserve(void)
 	for (i = 0; i < n_bhpa_regions; i++) {
 		p = &bhpa_regions[i];
 		end = p->addr + p->size;
-		B_LOG_DBG("region: 0x%pa-0x%pa", &p->addr, &end);
+		B_LOG_DBG("region: %pa-%pa", &p->addr, &end);
 	}
 
 	p = bhpa_regions;
@@ -368,7 +368,7 @@ void __init brcmstb_bhpa_reserve(void)
 	while (p < &bhpa_regions[n_bhpa_regions]) {
 		tmp = &bhpa_regions[--n_bhpa_regions];
 		end = tmp->addr + tmp->size;
-		B_LOG_WRN("Drop region: 0x%pa-0x%pa", &tmp->addr, &end);
+		B_LOG_WRN("Drop region: %pa-%pa", &tmp->addr, &end);
 	}
 
 	if (!n_bhpa_regions)
@@ -385,7 +385,7 @@ void __init brcmstb_bhpa_reserve(void)
 	while (p < &bhpa_regions[n_bhpa_regions]) {
 		tmp = &bhpa_regions[--n_bhpa_regions];
 		end = tmp->addr + tmp->size;
-		B_LOG_WRN("Drop region: 0x%pa-%pa", &tmp->addr, &end);
+		B_LOG_WRN("Drop region: %pa-%pa", &tmp->addr, &end);
 	}
 
 	bhpa_alloc_ranges();
