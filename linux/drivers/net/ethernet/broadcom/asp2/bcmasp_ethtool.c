@@ -8,6 +8,14 @@
 #include "bcmasp.h"
 #include "bcmasp_intf_defs.h"
 
+/* private flags */
+static const char bcmasp_private_flags[][ETH_GSTRING_LEN] = {
+	"suspend-keep-rx",
+};
+
+#define BCMASP_PRIV_FLAGS_COUNT ARRAY_SIZE(bcmasp_private_flags)
+#define BCMASP_WOL_KEEP_RX_EN	BIT(0)
+
 /* standard ethtool support functions. */
 enum bcmasp_stat_type {
 	BCMASP_STAT_NETDEV = -1,
@@ -190,6 +198,8 @@ static int bcmasp_get_sset_count(struct net_device *dev, int string_set)
 	switch (string_set) {
 	case ETH_SS_STATS:
 		return BCMASP_STATS_LEN;
+	case ETH_SS_PRIV_FLAGS:
+		return BCMASP_PRIV_FLAGS_COUNT;
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -205,6 +215,13 @@ static void bcmasp_get_strings(struct net_device *dev, u32 stringset,
 		for (i = 0; i < BCMASP_STATS_LEN; i++) {
 			memcpy(data + i * ETH_GSTRING_LEN,
 			       bcmasp_gstrings_stats[i].stat_string,
+			       ETH_GSTRING_LEN);
+		}
+		break;
+	case ETH_SS_PRIV_FLAGS:
+		for (i = 0; i < BCMASP_PRIV_FLAGS_COUNT; i++) {
+			memcpy(data + i * ETH_GSTRING_LEN,
+			       bcmasp_private_flags[i],
 			       ETH_GSTRING_LEN);
 		}
 		break;
@@ -290,6 +307,7 @@ static void bcmasp_get_drvinfo(struct net_device *dev,
 	strlcpy(info->version, "v2.0", sizeof(info->version));
 	strlcpy(info->bus_info, dev_name(dev->dev.parent),
 		sizeof(info->bus_info));
+	info->n_priv_flags = BCMASP_PRIV_FLAGS_COUNT;
 }
 
 static int bcmasp_get_link_ksettings(struct net_device *dev,
@@ -508,6 +526,26 @@ static int bcmasp_get_rxnfc(struct net_device *dev, struct ethtool_rxnfc *cmd,
 	return err;
 }
 
+static int bcmasp_set_priv_flags(struct net_device *dev, u32 flags)
+{
+	struct bcmasp_intf *intf = netdev_priv(dev);
+
+	intf->wol_keep_rx_en = flags & BCMASP_WOL_KEEP_RX_EN ? 1 : 0;
+
+	return 0;
+}
+
+static u32 bcmasp_get_priv_flags(struct net_device *dev)
+{
+	struct bcmasp_intf *intf = netdev_priv(dev);
+	u32 ret_flags = 0;
+
+	ret_flags |= intf->wol_keep_rx_en ? BCMASP_WOL_KEEP_RX_EN : 0;
+
+	return ret_flags;
+}
+
+
 const struct ethtool_ops bcmasp_ethtool_ops = {
 	.get_drvinfo		= bcmasp_get_drvinfo,
 	.get_wol		= bcmasp_get_wol,
@@ -523,4 +561,6 @@ const struct ethtool_ops bcmasp_ethtool_ops = {
 	.nway_reset		= bcmasp_nway_reset,
 	.get_rxnfc		= bcmasp_get_rxnfc,
 	.set_rxnfc		= bcmasp_set_rxnfc,
+	.get_priv_flags		= bcmasp_get_priv_flags,
+	.set_priv_flags		= bcmasp_set_priv_flags,
 };

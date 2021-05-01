@@ -519,7 +519,7 @@ static int brcmstb_get_page(struct mm_struct *mm, unsigned long start,
 		return ret;
 
 	pte = pte_offset_map(pmd, pg);
-	if (pte_none(*pte))
+	if (pte_none(*pte) || !pte_present(*pte))
 		goto out;
 
 	pfn = pte_pfn(*pte);

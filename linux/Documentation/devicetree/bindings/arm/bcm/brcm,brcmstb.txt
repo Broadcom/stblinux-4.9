@@ -198,6 +198,7 @@ Required properties:
 	"brcm,brcmstb-memc-ddr-rev-c.1.1"
 	"brcm,brcmstb-memc-ddr-rev-c.1.2"
 	"brcm,brcmstb-memc-ddr-rev-c.1.3"
+	"brcm,brcmstb-memc-ddr-rev-c.1.4"
 - reg            : the MEMC DDR register range
 
 Example:

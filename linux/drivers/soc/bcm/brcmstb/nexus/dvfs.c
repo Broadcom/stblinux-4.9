@@ -92,6 +92,7 @@ static void clk_api_unlock(void)
 	mutex_unlock(&clk_api_mutex);
 }
 
+#if IS_ENABLED(CONFIG_ARM_SCMI_PROTOCOL)
 static int avs_ret_to_linux_ret(int avs_ret)
 {
 	int ret;
@@ -177,6 +178,35 @@ static int brcm_send_cmd_via_scmi(const struct scmi_handle *handle,
 	return ret;
 }
 
+static int scmi_brcm_protocol_init(struct scmi_handle *handle)
+{
+	u32 version;
+
+	scmi_version_get(handle, SCMI_PROTOCOL_BRCM, &version);
+
+	dev_dbg(handle->dev, "Brcm SCMI Version %d.%d\n",
+		PROTOCOL_REV_MAJOR(version), PROTOCOL_REV_MINOR(version));
+
+	return 0;
+}
+
+static int __init scmi_brcm_init(void)
+{
+	return scmi_protocol_register(SCMI_PROTOCOL_BRCM,
+				      &scmi_brcm_protocol_init, NULL);
+}
+subsys_initcall(scmi_brcm_init);
+#else
+static inline int brcm_send_cmd_via_scmi(const struct scmi_handle *handle,
+					 unsigned int cmd, unsigned int sub_cmd,
+					 unsigned int protocol,
+					 unsigned int num_in, unsigned int num_out,
+					 u32 *params)
+{
+	return -ENODEV;
+}
+#endif /* CONFIG_ARM_SCMI_PROTOCOL */
+
 static int brcm_send_avs_cmd_via_scmi(const struct scmi_handle *handle,
 				      unsigned int sub_cmd, unsigned int num_in,
 				      unsigned int num_out, u32 *params)
@@ -218,25 +248,6 @@ static int brcm_send_show_cmd_via_scmi(struct seq_file *s,
 
 	return state ? state : 0;
 }
-
-static int scmi_brcm_protocol_init(struct scmi_handle *handle)
-{
-	u32 version;
-
-	scmi_version_get(handle, SCMI_PROTOCOL_BRCM, &version);
-
-	dev_dbg(handle->dev, "Brcm SCMI Version %d.%d\n",
-		PROTOCOL_REV_MAJOR(version), PROTOCOL_REV_MINOR(version));
-
-	return 0;
-}
-
-static int __init scmi_brcm_init(void)
-{
-	return scmi_protocol_register(SCMI_PROTOCOL_BRCM,
-				      &scmi_brcm_protocol_init, NULL);
-}
-subsys_initcall(scmi_brcm_init);
 
 static int brcmstb_send_avs_cmd(unsigned int cmd, unsigned int in,
 			    unsigned int out, u32 args[AVS_MAX_PARAMS])

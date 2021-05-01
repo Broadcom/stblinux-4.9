@@ -20,12 +20,6 @@
 
 #define raw_smp_processor_id() (current_thread_info()->cpu)
 
-/*
- * Logical CPU mapping.
- */
-extern u32 __cpu_logical_map[];
-#define cpu_logical_map(cpu)	__cpu_logical_map[cpu]
-
 struct seq_file;
 
 /*

@@ -633,43 +633,11 @@ static void bcmasp_adj_link(struct net_device *dev)
 		phy_print_status(phydev);
 }
 
-static int bcmasp_init_rx(struct bcmasp_intf *intf)
+/* Restart and set the RX ring */
+static void bcmasp_rx_reset_ring(struct bcmasp_intf *intf)
 {
-	struct device *kdev = &intf->parent->pdev->dev;
-	struct net_device *ndev = intf->ndev;
-	void *p;
-	dma_addr_t dma;
-	struct page *buffer_pg;
-	int ret;
-
-	intf->rx_buf_order = get_order(RING_BUFFER_SIZE);
-	buffer_pg = alloc_pages(GFP_KERNEL, intf->rx_buf_order);
-
-	dma = dma_map_page(kdev, buffer_pg, 0, RING_BUFFER_SIZE,
-			   DMA_FROM_DEVICE);
-	if (dma_mapping_error(kdev, dma)) {
-		netdev_err(ndev, "Cannot allocate RX buffer\n");
-		__free_pages(buffer_pg, intf->rx_buf_order);
-		return -ENOMEM;
-	}
-	intf->rx_ring_cpu = page_to_virt(buffer_pg);
-	intf->rx_ring_dma = dma;
-	intf->rx_ring_dma_valid = intf->rx_ring_dma + RING_BUFFER_SIZE - 1;
-
-	p = dma_zalloc_coherent(kdev, DESC_RING_SIZE, &intf->rx_edpkt_dma_addr,
-				GFP_KERNEL);
-	if (!p) {
-		netdev_err(ndev, "Cannot allocate edpkt desc ring\n");
-		ret = -ENOMEM;
-		goto free_rx_ring;
-	}
-	intf->rx_edpkt_cpu = p;
 	intf->rx_edpkt_dma_read = intf->rx_edpkt_dma_addr;
-
 	intf->rx_edpkt_index = 0;
-
-	netif_napi_add(intf->ndev, &intf->rx_napi, bcmasp_rx_poll,
-		       NAPI_POLL_WEIGHT);
 
 	/* Make sure channels are disabled */
 	rx_edpkt_cfg_wl(intf, 0x0, RX_EDPKT_CFG_ENABLE);
@@ -702,6 +670,44 @@ static int bcmasp_init_rx(struct bcmasp_intf *intf)
 	umac2fb_wl(intf, UMAC2FB_CFG_DEFAULT_EN |
 		  ((intf->channel + 13) << UMAC2FB_CFG_CHID_SHIFT) |
 		  (0xc << UMAC2FB_CFG_OK_SEND_SHIFT), UMAC2FB_CFG);
+}
+
+static int bcmasp_init_rx(struct bcmasp_intf *intf)
+{
+	struct device *kdev = &intf->parent->pdev->dev;
+	struct net_device *ndev = intf->ndev;
+	void *p;
+	dma_addr_t dma;
+	struct page *buffer_pg;
+	int ret;
+
+	intf->rx_buf_order = get_order(RING_BUFFER_SIZE);
+	buffer_pg = alloc_pages(GFP_KERNEL, intf->rx_buf_order);
+
+	dma = dma_map_page(kdev, buffer_pg, 0, RING_BUFFER_SIZE,
+			   DMA_FROM_DEVICE);
+	if (dma_mapping_error(kdev, dma)) {
+		netdev_err(ndev, "Cannot allocate RX buffer\n");
+		__free_pages(buffer_pg, intf->rx_buf_order);
+		return -ENOMEM;
+	}
+	intf->rx_ring_cpu = page_to_virt(buffer_pg);
+	intf->rx_ring_dma = dma;
+	intf->rx_ring_dma_valid = intf->rx_ring_dma + RING_BUFFER_SIZE - 1;
+
+	p = dma_zalloc_coherent(kdev, DESC_RING_SIZE, &intf->rx_edpkt_dma_addr,
+				GFP_KERNEL);
+	if (!p) {
+		netdev_err(ndev, "Cannot allocate edpkt desc ring\n");
+		ret = -ENOMEM;
+		goto free_rx_ring;
+	}
+	intf->rx_edpkt_cpu = p;
+
+	netif_napi_add(intf->ndev, &intf->rx_napi, bcmasp_rx_poll,
+		       NAPI_POLL_WEIGHT);
+
+	bcmasp_rx_reset_ring(intf);
 
 	return 0;
 
@@ -790,7 +796,36 @@ static void bcmasp_reclaim_free_all_tx(struct bcmasp_intf *intf)
 	kfree(intf->tx_cbs);
 }
 
-static int bcmasp_netif_deinit(struct net_device *dev, bool stop_phy)
+static void bcmasp_ephy_enable_set(struct bcmasp_intf *intf, bool enable)
+{
+	u32 mask = RGMII_EPHY_CFG_IDDQ_BIAS | RGMII_EPHY_CFG_EXT_PWRDOWN |
+		   RGMII_EPHY_CFG_IDDQ_GLOBAL;
+	u32 reg;
+
+	reg = rgmii_rl(intf, RGMII_EPHY_CNTRL);
+	if (enable) {
+		reg &= ~RGMII_EPHY_CK25_DIS;
+		rgmii_wl(intf, reg, RGMII_EPHY_CNTRL);
+		mdelay(1);
+
+		reg &= ~mask;
+		reg |= RGMII_EPHY_RESET;
+		rgmii_wl(intf, reg, RGMII_EPHY_CNTRL);
+		mdelay(1);
+
+		reg &= ~RGMII_EPHY_RESET;
+	} else {
+		reg |= mask | RGMII_EPHY_RESET;
+		rgmii_wl(intf, reg, RGMII_EPHY_CNTRL);
+		mdelay(1);
+		reg |= RGMII_EPHY_CK25_DIS;
+	}
+	rgmii_wl(intf, reg, RGMII_EPHY_CNTRL);
+	mdelay(1);
+}
+
+static void bcmasp_netif_deinit(struct net_device *dev, bool stop_phy,
+				bool stop_rx)
 {
 	struct bcmasp_intf *intf = netdev_priv(dev);
 	u32 reg, timeout = 1000;
@@ -817,10 +852,11 @@ static int bcmasp_netif_deinit(struct net_device *dev, bool stop_phy)
 	/* Shut down RX */
 	umac_enable_set(intf, UMC_CMD_RX_EN, 0);
 
-	/* Flush packets in pipe */
-	bcmasp_flush_rx_port(intf);
-	usleep_range(1000, 2000);
-	bcmasp_enable_rx(intf, 0);
+	if (stop_phy || stop_rx) {
+		bcmasp_flush_rx_port(intf);
+		usleep_range(1000, 2000);
+		bcmasp_enable_rx(intf, 0);
+	}
 
 	napi_disable(&intf->rx_napi);
 
@@ -829,29 +865,30 @@ static int bcmasp_netif_deinit(struct net_device *dev, bool stop_phy)
 	bcmasp_enable_rx_irq(intf, 0);
 
 	netif_napi_del(&intf->tx_napi);
-	netif_napi_del(&intf->rx_napi);
-
-	bcmasp_reclaim_free_all_rx(intf);
 	bcmasp_reclaim_free_all_tx(intf);
 
-	return 0;
+	if (stop_phy || stop_rx) {
+		netif_napi_del(&intf->rx_napi);
+		bcmasp_reclaim_free_all_rx(intf);
+	}
 }
 
 static int bcmasp_stop(struct net_device *dev)
 {
 	struct bcmasp_intf *intf = netdev_priv(dev);
-	int ret;
 
 	netif_dbg(intf, ifdown, dev, "%s\n", __func__);
 
 	/* Stop tx from updating HW */
 	netif_tx_disable(dev);
 
-	ret = bcmasp_netif_deinit(dev, true);
-	if (ret)
-		return ret;
+	bcmasp_netif_deinit(dev, true, true);
 
 	phy_disconnect(dev->phydev);
+
+	/* Disable internal EPHY */
+	if (intf->internal_phy)
+		bcmasp_ephy_enable_set(intf, false);
 
 	/* Disable the interface clocks */
 	bcmasp_core_clock_set_intf(intf, false);
@@ -888,6 +925,9 @@ static void bcmasp_configure_port(struct bcmasp_intf *intf)
 		break;
 	}
 
+	if (intf->internal_phy)
+		reg |= RGMII_PORT_MODE_EPHY;
+
 	rgmii_wl(intf, reg, RGMII_PORT_CNTRL);
 
 	reg = rgmii_rl(intf, RGMII_OOB_CNTRL);
@@ -896,7 +936,8 @@ static void bcmasp_configure_port(struct bcmasp_intf *intf)
 	rgmii_wl(intf, reg, RGMII_OOB_CNTRL);
 }
 
-static int bcmasp_netif_init(struct net_device *dev, bool phy_connect)
+static int bcmasp_netif_init(struct net_device *dev, bool phy_connect,
+			     bool init_rx)
 {
 	struct bcmasp_intf *intf = netdev_priv(dev);
 	struct phy_device *phydev = NULL;
@@ -904,6 +945,10 @@ static int bcmasp_netif_init(struct net_device *dev, bool phy_connect)
 
 	/* Always enable interface clocks */
 	bcmasp_core_clock_set_intf(intf, true);
+
+	/* Enable internal PHY before any MAC activity */
+	if (intf->internal_phy)
+		bcmasp_ephy_enable_set(intf, true);
 
 	bcmasp_configure_port(intf);
 
@@ -921,7 +966,8 @@ static int bcmasp_netif_init(struct net_device *dev, bool phy_connect)
 					intf->phy_interface);
 		if (!phydev) {
 			netdev_err(dev, "could not attach to PHY\n");
-			return -ENODEV;
+			ret = -ENODEV;
+			goto err_phy_disable;
 		}
 	}
 	intf->old_duplex = -1;
@@ -932,13 +978,19 @@ static int bcmasp_netif_init(struct net_device *dev, bool phy_connect)
 	if (ret)
 		goto err_phy_disconnect;
 
-	ret = bcmasp_init_rx(intf);
-	if (ret)
-		goto err_reclaim_tx;
-
 	/* Turn on asp */
 	bcmasp_enable_tx(intf, 1);
-	bcmasp_enable_rx(intf, 1);
+
+	if (init_rx || phy_connect) {
+		ret = bcmasp_init_rx(intf);
+		if (ret)
+			goto err_reclaim_tx;
+		bcmasp_enable_rx(intf, 1);
+	} else if (!rx_edpkt_cfg_rl(intf, RX_EDPKT_CFG_ENABLE)) {
+		/* Do a partial init of RX if register state was reset */
+		bcmasp_rx_reset_ring(intf);
+		bcmasp_enable_rx(intf, 1);
+	}
 
 	/* Turn on UniMAC TX/RX */
 	umac_enable_set(intf, (UMC_CMD_RX_EN | UMC_CMD_TX_EN), 1);
@@ -958,6 +1010,8 @@ err_reclaim_tx:
 err_phy_disconnect:
 	if (phydev)
 		phy_disconnect(phydev);
+err_phy_disable:
+	bcmasp_ephy_enable_set(intf, false);
 	return ret;
 }
 
@@ -972,7 +1026,7 @@ static int bcmasp_open(struct net_device *dev)
 	if (ret)
 		return ret;
 
-	ret = bcmasp_netif_init(dev, true);
+	ret = bcmasp_netif_init(dev, true, true);
 	if (ret)
 		clk_disable_unprepare(intf->parent->clk);
 
@@ -1037,7 +1091,17 @@ static inline void bcmasp_map_res(struct bcmasp_priv *priv,
 	/* Per ch */
 	intf->tx_spb_dma = priv->base + TX_SPB_DMA_OFFSET(intf);
 	intf->res.tx_spb_ctrl = priv->base + TX_SPB_CTRL_OFFSET(intf);
-	intf->res.tx_spb_top = priv->base + TX_SPB_TOP_OFFSET(intf);
+	/*
+	 * Stop gap solution. This should be removed when 72165a0 is
+	 * deprecated
+	 */
+	if (of_machine_is_compatible("brcm,bcm72165a0")) {
+		intf->res.tx_spb_top = priv->base +
+			TX_SPB_TOP_OFFSET_LEGACY(intf);
+	} else {
+		intf->res.tx_spb_top = priv->base +
+			TX_SPB_TOP_OFFSET(intf);
+	}
 	intf->res.tx_epkt_core = priv->base + TX_EPKT_C_OFFSET(intf);
 	intf->res.tx_pause_ctrl = priv->base + TX_PAUSE_CTRL_OFFSET(intf);
 
@@ -1059,6 +1123,7 @@ struct bcmasp_intf *bcmasp_interface_create(struct bcmasp_priv *priv,
 					    int wol_irq)
 {
 	struct device *dev = &priv->pdev->dev;
+	const char *phy_mode_str = NULL;
 	struct bcmasp_intf *intf;
 	struct net_device *ndev;
 	const void *macaddr;
@@ -1100,9 +1165,21 @@ struct bcmasp_intf *bcmasp_interface_create(struct bcmasp_priv *priv,
 	intf->port = port;
 	intf->ndev_dn = ndev_dn;
 
-	intf->phy_interface = of_get_phy_mode(ndev_dn);
-	if (intf->phy_interface < 0)
+	ret = of_get_phy_mode(ndev_dn);
+	intf->phy_interface = ret;
+	if (ret < 0) {
+		ret = of_property_read_string(ndev_dn, "phy-mode", &phy_mode_str);
+		if (ret < 0) {
+			dev_err(dev, "invalid PHY mode property\n");
+			goto err_free_irq;
+		}
+
 		intf->phy_interface = PHY_INTERFACE_MODE_GMII;
+		if (!strcasecmp(phy_mode_str, "internal")) {
+			intf->internal_phy = true;
+			intf->phy_interface = PHY_INTERFACE_MODE_NA;
+		}
+	}
 
 	intf->phy_dn = of_parse_phandle(ndev_dn, "phy-handle", 0);
 	if (!intf->phy_dn && of_phy_is_fixed_link(ndev_dn)) {
@@ -1118,10 +1195,12 @@ struct bcmasp_intf *bcmasp_interface_create(struct bcmasp_priv *priv,
 	/* Map resource */
 	bcmasp_map_res(priv, intf);
 
-	if (!phy_interface_mode_is_rgmii(intf->phy_interface) &&
-	    intf->phy_interface != PHY_INTERFACE_MODE_MII) {
-		netdev_err(intf->ndev, "invalid PHY mode: %s\n",
-			   phy_modes(intf->phy_interface));
+	if ((!phy_interface_mode_is_rgmii(intf->phy_interface) &&
+	    intf->phy_interface != PHY_INTERFACE_MODE_MII &&
+	    intf->phy_interface != PHY_INTERFACE_MODE_NA) ||
+	    (intf->port != 1 && intf->internal_phy)) {
+		netdev_err(intf->ndev, "invalid PHY mode: %s for port %d\n",
+			   phy_modes(intf->phy_interface), intf->port);
 		ret = -EINVAL;
 		goto err_free_irq;
 	}
@@ -1170,7 +1249,7 @@ void bcmasp_interface_destroy(struct bcmasp_intf *intf, bool unregister)
 	free_netdev(intf->ndev);
 }
 
-static int bcmasp_suspend_to_wol(struct bcmasp_intf *intf)
+static void bcmasp_suspend_to_wol(struct bcmasp_intf *intf)
 {
 	struct net_device *ndev = intf->ndev;
 	u32 reg;
@@ -1196,29 +1275,35 @@ static int bcmasp_suspend_to_wol(struct bcmasp_intf *intf)
 	umac_enable_set(intf, UMC_CMD_RX_EN, 1);
 
 	netif_dbg(intf, wol, ndev, "entered WOL mode\n");
-
-	return 0;
 }
 
-int bcmasp_interface_suspend(struct bcmasp_intf *intf)
+static inline bool bcmasp_needs_rx_on(struct bcmasp_intf *intf)
+{
+	return intf->wol_keep_rx_en && intf->wolopts
+	       && device_may_wakeup(&intf->parent->pdev->dev);
+}
+
+int bcmasp_interface_suspend(struct bcmasp_intf *intf, bool *wol_keep_rx_en)
 {
 	struct device *kdev = &intf->parent->pdev->dev;
 	struct net_device *dev = intf->ndev;
-	int ret;
+	bool keep_rx = bcmasp_needs_rx_on(intf);
+	int ret = 0;
 
 	if (!netif_running(dev))
 		return 0;
 
 	netif_device_detach(dev);
 
-	ret = bcmasp_netif_deinit(dev, false);
-	if (ret)
-		return ret;
+	bcmasp_netif_deinit(dev, false, !keep_rx);
 
 	if (!intf->wolopts) {
 		ret = phy_suspend(dev->phydev);
 		if (ret)
 			goto out;
+
+		if (intf->internal_phy)
+			bcmasp_ephy_enable_set(intf, false);
 
 		/* If Wake-on-LAN is disabled, we can safely
 		 * disable the network interface clocks.
@@ -1227,14 +1312,16 @@ int bcmasp_interface_suspend(struct bcmasp_intf *intf)
 	}
 
 	if (device_may_wakeup(kdev) && intf->wolopts)
-		ret = bcmasp_suspend_to_wol(intf);
+		bcmasp_suspend_to_wol(intf);
 
 	clk_disable_unprepare(intf->parent->clk);
+
+	*wol_keep_rx_en |= keep_rx;
 
 	return ret;
 
 out:
-	bcmasp_netif_init(dev, false);
+	bcmasp_netif_init(dev, false, keep_rx);
 	return ret;
 }
 
@@ -1250,6 +1337,7 @@ static void bcmasp_resume_from_wol(struct bcmasp_intf *intf)
 int bcmasp_interface_resume(struct bcmasp_intf *intf)
 {
 	struct net_device *dev = intf->ndev;
+	bool no_init_rx = bcmasp_needs_rx_on(intf);
 	int ret;
 
 	if (!netif_running(dev))
@@ -1259,7 +1347,7 @@ int bcmasp_interface_resume(struct bcmasp_intf *intf)
 	if (ret)
 		return ret;
 
-	ret = bcmasp_netif_init(dev, false);
+	ret = bcmasp_netif_init(dev, false, !no_init_rx);
 	if (ret)
 		goto out;
 
@@ -1276,7 +1364,9 @@ int bcmasp_interface_resume(struct bcmasp_intf *intf)
 	return 0;
 
 out_phy_resume:
-	bcmasp_netif_deinit(dev, false);
+	bcmasp_netif_deinit(dev, true, true);
+	if (intf->internal_phy)
+		bcmasp_ephy_enable_set(intf, false);
 out:
 	clk_disable_unprepare(intf->parent->clk);
 	return ret;

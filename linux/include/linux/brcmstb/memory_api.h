@@ -18,6 +18,8 @@
 #ifndef _BRCMSTB_MEMORY_API_H
 #define _BRCMSTB_MEMORY_API_H
 
+#include <linux/gfp.h>
+
 /*
  * Memory API that must be supplied for Broadcom STB middleware.
  *
@@ -128,7 +130,13 @@ extern bool brcmstb_bmem_is_bhpa;
 int brcmstb_hugepage_alloc(unsigned int memcIndex, uint64_t *pages,
 			   unsigned int count, unsigned int *allocated,
 			   const struct brcmstb_range *range);
+int __brcmstb_hugepage_alloc(unsigned int memcIndex, uint64_t *pages,
+			     unsigned int count, unsigned int *allocated,
+			     const struct brcmstb_range *range, gfp_t flags);
 void brcmstb_hugepage_free(unsigned int memcIndex, const uint64_t *pages,
 			   unsigned int count);
+
+void __iomem *brcmstb_ioremap(phys_addr_t phys_addr, size_t size);
+void brcmstb_iounmap(volatile void __iomem *io_addr);
 
 #endif  /* _BRCMSTB_MEMORY_API_H */

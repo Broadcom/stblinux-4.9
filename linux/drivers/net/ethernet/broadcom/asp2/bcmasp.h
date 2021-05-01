@@ -346,6 +346,7 @@ struct bcmasp_intf {
 	struct device_node	*phy_dn;
 	struct device_node	*ndev_dn;
 	phy_interface_t		phy_interface;
+	bool			internal_phy;
 	int			old_pause;
 	int			old_link;
 	int			old_duplex;
@@ -359,6 +360,7 @@ struct bcmasp_intf {
 	u8			sopass[SOPASS_MAX];
 	int			wol_irq;
 	unsigned int		wol_irq_disabled:1;
+	unsigned int		wol_keep_rx_en:1;
 };
 
 #define __BCMASP_IO_MACRO(name, m)					\
@@ -516,7 +518,7 @@ void bcmasp_flush_rx_port(struct bcmasp_intf *intf);
 
 extern const struct ethtool_ops bcmasp_ethtool_ops;
 
-int bcmasp_interface_suspend(struct bcmasp_intf *intf);
+int bcmasp_interface_suspend(struct bcmasp_intf *intf, bool *wol_keep_rx_en);
 
 int bcmasp_interface_resume(struct bcmasp_intf *intf);
 

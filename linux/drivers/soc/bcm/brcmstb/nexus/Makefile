@@ -8,10 +8,7 @@ endif
 ifdef CONFIG_BRCMSTB_NEXUS_CLK_API
 obj-y 		+= clk.o
 endif
-ifdef CONFIG_ARM_SCMI_PROTOCOL
-obj-y		+= dvfs.o
-endif
-ifdef CONFIG_ARM_BRCMSTB_AVS_CPUFREQ
+ifdef CONFIG_BRCMSTB_NEXUS_DVFS_API
 obj-y		+= dvfs.o
 endif
 ifdef CONFIG_BRCMSTB_SCMI_VPUCOM

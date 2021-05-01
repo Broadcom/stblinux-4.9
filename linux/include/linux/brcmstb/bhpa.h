@@ -31,7 +31,7 @@ void __init brcmstb_bhpa_setup(phys_addr_t addr, phys_addr_t size);
 void brcmstb_hpa_print(struct seq_file *seq);
 int brcmstb_hpa_alloc(unsigned int memcIndex, uint64_t *pages,
 		      unsigned int count, unsigned int *alloced,
-		      const struct brcmstb_range *range);
+		      const struct brcmstb_range *range, gfp_t flags);
 void brcmstb_hpa_free(unsigned int memcIndex, const uint64_t *pages,
 		      unsigned int count);
 #else
@@ -39,7 +39,8 @@ static inline void brcmstb_bhpa_reserve(void) {}
 static inline void brcmstb_hpa_print(struct seq_file *seq) {}
 static inline int brcmstb_hpa_alloc(unsigned int memcIndex, uint64_t *pages,
 				    unsigned int count, unsigned int *alloced,
-				    const struct brcmstb_range *range)
+				    const struct brcmstb_range *range,
+				    gfp_t flags)
 {
 	return -ENOSYS;
 }

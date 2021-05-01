@@ -968,7 +968,7 @@ static void bhpa_memc_print(struct seq_file *seq, const struct bhpa_memc *a,
 
 static int bhpa_memc_alloc(struct bhpa_memc *a, unsigned memcIndex, uint64_t *pages,
 			   unsigned int count, unsigned int *allocated,
-			   const struct brcmstb_range *range)
+			   const struct brcmstb_range *range, gfp_t flags)
 {
 	struct bhpa_block *block;
 	int rc = 0;
@@ -1030,7 +1030,8 @@ static int bhpa_memc_alloc(struct bhpa_memc *a, unsigned memcIndex, uint64_t *pa
 	}
 done:
 	if (rc == 0) {
-		if (count != 0 && range == NULL && !list_empty(&a->blocks)) {
+		if (count != 0 && range == NULL && !list_empty(&a->blocks) &&
+		    !(flags & __GFP_NOWARN)) {
 			pr_err("BHPA MEMC%u Out of memory\n", memcIndex);
 			bhpa_memc_print(NULL, a, memcIndex);
 			dump_stack();
@@ -1193,7 +1194,7 @@ core_initcall(bhpa_init);
  */
 int brcmstb_hpa_alloc(unsigned int memcIndex, uint64_t *pages,
 		      unsigned int count, unsigned int *alloced,
-		      const struct brcmstb_range *range)
+		      const struct brcmstb_range *range, gfp_t flags)
 {
 	int rc;
 
@@ -1207,7 +1208,7 @@ int brcmstb_hpa_alloc(unsigned int memcIndex, uint64_t *pages,
 		return rc;
 
 	rc = bhpa_memc_alloc(&bhpa_allocator.memc[memcIndex], memcIndex, pages, count,
-			     alloced, range);
+			     alloced, range, flags);
 
 	mutex_unlock(&bhpa_lock);
 	return rc;

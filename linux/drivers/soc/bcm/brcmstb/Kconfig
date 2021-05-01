@@ -121,9 +121,14 @@ config BRCMSTB_NEXUS_SPI_API
 	depends on SPI_MASTER
 	default SPI_BRCMSTB_MSPI || SPI_BCM2835
 
+config BRCMSTB_NEXUS_DVFS_API
+	bool
+	depends on ARM_SCMI_PROTOCOL || ARM_BRCMSTB_AVS_CPUFREQ
+	default ARM_SCMI_PROTOCOL || ARM_BRCMSTB_AVS_CPUFREQ
+
 config BRCMSTB_NEXUS_CLK_API
 	bool
-	depends on BRCMSTB_NEXUS_API
+	depends on BRCMSTB_NEXUS_API && BRCMSTB_NEXUS_DVFS_API
 	default BRCMSTB_NEXUS_API
 	help
 	   Provides an API for Nexus to enable and disable select
@@ -131,7 +136,7 @@ config BRCMSTB_NEXUS_CLK_API
 
 config BRCMSTB_NEXUS_RESET_API
 	bool
-	depends on BRCMSTB_NEXUS_API
+	depends on BRCMSTB_NEXUS_API && BRCMSTB_NEXUS_DVFS_API
 	default BRCMSTB_NEXUS_API
 	help
 	   Provides an API for Nexus to reset select

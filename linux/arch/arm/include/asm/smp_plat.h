@@ -10,7 +10,6 @@
 
 #include <asm/cpu.h>
 #include <asm/cputype.h>
-#include <asm/smp.h>
 
 /*
  * Return true if we are running on a SMP platform
@@ -66,6 +65,11 @@ static inline int cache_ops_need_broadcast(void)
 }
 #endif
 
+/*
+ * Logical CPU mapping.
+ */
+extern u32 __cpu_logical_map[];
+#define cpu_logical_map(cpu)	__cpu_logical_map[cpu]
 /*
  * Retrieve logical cpu index corresponding to a given MPIDR[23:0]
  *  - mpidr: MPIDR[23:0] to be used for the look-up

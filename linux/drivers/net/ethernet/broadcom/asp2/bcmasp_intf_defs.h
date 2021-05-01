@@ -63,6 +63,13 @@
 
 #define RGMII_OFFSET(intf)	\
 	((((intf)->port) * 0x100) + 0xd000)
+#define  RGMII_EPHY_CNTRL		0x00
+#define    RGMII_EPHY_CFG_IDDQ_BIAS	BIT(0)
+#define    RGMII_EPHY_CFG_EXT_PWRDOWN	BIT(1)
+#define    RGMII_EPHY_CFG_FORCE_DLL_EN	BIT(2)
+#define    RGMII_EPHY_CFG_IDDQ_GLOBAL	BIT(3)
+#define    RGMII_EPHY_CK25_DIS		BIT(4)
+#define    RGMII_EPHY_RESET		BIT(7)
 #define  RGMII_OOB_CNTRL		0x0c
 #define   RGMII_MODE_EN			BIT(6)
 #define   RGMII_ID_MODE_DIS		BIT(16)
@@ -92,8 +99,10 @@
 #define  TX_SPB_CTRL_XF_CTRL2		0x20
 #define   TX_SPB_CTRL_XF_BID_SHIFT	16
 
+#define TX_SPB_TOP_OFFSET_LEGACY(intf) \
+        ((((intf)->channel) * 0x14) + 0x4a0a0)
 #define TX_SPB_TOP_OFFSET(intf) \
-	((((intf)->channel) * 0x14) + 0x4a0a0)
+	((((intf)->channel) * 0x1c) + 0x4a0e0)
 #define TX_SPB_TOP_BLKOUT		0x0
 #define TX_SPB_TOP_SPRE_BW_CTRL		0x4
 

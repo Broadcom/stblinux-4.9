@@ -367,7 +367,7 @@ static int bcmasp_netfilt_wr_to_hw(struct bcmasp_priv *priv,
 				   struct bcmasp_net_filter *nfilt)
 {
 	struct ethtool_rx_flow_spec *fs = &nfilt->fs;
-	unsigned int offset;
+	unsigned int offset = 0;
 	__be16 val_16, mask_16;
 	u8 val_8, mask_8;
 
@@ -524,7 +524,6 @@ void bcmasp_netfilt_suspend(struct bcmasp_intf *intf)
 	 */
 	if (write)
 		rx_filter_core_wl(priv, (ASP_RX_FILTER_OPUT_EN |
-				  ASP_RX_FILTER_MDA_EN |
 				  ASP_RX_FILTER_LNR_MD |
 				  ASP_RX_FILTER_GEN_WK_EN |
 				  ASP_RX_FILTER_NT_FLT_EN),
@@ -1262,6 +1261,7 @@ static int __maybe_unused bcmasp_suspend(struct device *d)
 	struct bcmasp_priv *priv = dev_get_drvdata(d);
 	struct bcmasp_intf *intf;
 	unsigned int i;
+	bool wol_keep_rx_en = 0;
 	int ret = 0;
 
 	for (i = 0; i < priv->intf_count; i++) {
@@ -1269,7 +1269,7 @@ static int __maybe_unused bcmasp_suspend(struct device *d)
 		if (!intf)
 			continue;
 
-		ret = bcmasp_interface_suspend(intf);
+		ret = bcmasp_interface_suspend(intf, &wol_keep_rx_en);
 		if (ret)
 			break;
 	}
@@ -1283,8 +1283,9 @@ static int __maybe_unused bcmasp_suspend(struct device *d)
 	 */
 	bcmasp_core_clock_set(priv, 0, ASP_CTRL_CLOCK_CTRL_ASP_TX_DISABLE);
 
-	/* Switch to the slow clock */
-	bcmasp_core_clock_select(priv, true);
+	/* Switch to slow clock if we do not need rx */
+	if (!wol_keep_rx_en)
+		bcmasp_core_clock_select(priv, true);
 
 	clk_disable_unprepare(priv->clk);
 

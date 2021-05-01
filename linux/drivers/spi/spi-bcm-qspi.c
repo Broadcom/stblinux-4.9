@@ -1551,7 +1551,8 @@ int bcm_qspi_probe(struct platform_device *pdev,
 	}
 
 	master->bus_num = -1;
-	master->mode_bits = SPI_CPHA | SPI_CPOL | SPI_RX_DUAL | SPI_RX_QUAD;
+	master->mode_bits = SPI_CPHA | SPI_CPOL | SPI_RX_DUAL | SPI_RX_QUAD |
+				SPI_3WIRE;
 	master->setup = bcm_qspi_setup;
 	master->transfer_one = bcm_qspi_transfer_one;
 	master->spi_flash_read = bcm_qspi_flash_read;

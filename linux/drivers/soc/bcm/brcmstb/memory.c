@@ -38,6 +38,7 @@
 #include <asm/tlbflush.h>
 #include <linux/pfn_t.h>
 #include <asm/cputype.h>
+#include <asm/fixmap.h>
 
 extern unsigned long __initramfs_size;
 
@@ -1586,9 +1587,17 @@ int brcmstb_hugepage_alloc(unsigned int memcIndex, uint64_t *pages,
 			   unsigned int count, unsigned int *allocated,
 			   const struct brcmstb_range *range)
 {
-	return brcmstb_hpa_alloc(memcIndex, pages, count, allocated, range);
+	return brcmstb_hpa_alloc(memcIndex, pages, count, allocated, range, 0);
 }
 EXPORT_SYMBOL(brcmstb_hugepage_alloc);
+
+int __brcmstb_hugepage_alloc(unsigned int memcIndex, uint64_t *pages,
+			     unsigned int count, unsigned int *allocated,
+			     const struct brcmstb_range *range, gfp_t flags)
+{
+	return brcmstb_hpa_alloc(memcIndex, pages, count, allocated, range, flags);
+}
+EXPORT_SYMBOL(__brcmstb_hugepage_alloc);
 
 void brcmstb_hugepage_free(unsigned int memcIndex, const uint64_t *pages,
 			   unsigned int count)
@@ -1596,3 +1605,56 @@ void brcmstb_hugepage_free(unsigned int memcIndex, const uint64_t *pages,
 	return brcmstb_hpa_free(memcIndex, pages, count);
 }
 EXPORT_SYMBOL(brcmstb_hugepage_free);
+
+void *brcmstb_ioremap(phys_addr_t phys_addr, size_t size)
+{
+	unsigned long last_addr;
+	unsigned long offset = phys_addr & ~PAGE_MASK;
+	int err;
+	unsigned long addr;
+	struct vm_struct *area;
+
+	/*
+	 * Page align the mapping address and size, taking account of any
+	 * offset.
+	 */
+	phys_addr &= PAGE_MASK;
+	size = PAGE_ALIGN(size + offset);
+
+	/*
+	 * Don't allow wraparound, zero size or outside PHYS_MASK.
+	 */
+	last_addr = phys_addr + size - 1;
+	if (!size || last_addr < phys_addr || (last_addr & ~PHYS_MASK))
+		return NULL;
+
+	area = get_vm_area_caller(size, VM_IOREMAP,
+				  __builtin_return_address(0));
+	if (!area)
+		return NULL;
+	addr = (unsigned long)area->addr;
+	area->phys_addr = phys_addr;
+
+	err = ioremap_page_range(addr, addr + size, phys_addr,
+				 FIXMAP_PAGE_IO);
+	if (err) {
+		vunmap((void *)addr);
+		return NULL;
+	}
+
+	return (void __iomem *)(offset + addr);
+}
+EXPORT_SYMBOL(brcmstb_ioremap);
+
+void brcmstb_iounmap(volatile void __iomem *io_addr)
+{
+	unsigned long addr = (unsigned long)io_addr & PAGE_MASK;
+
+	/*
+	 * We could get an address outside vmalloc range in case
+	 * of ioremap_cache() reusing a RAM mapping.
+	 */
+	if (is_vmalloc_addr((void *)addr))
+		vunmap((void *)addr);
+}
+EXPORT_SYMBOL(brcmstb_iounmap);

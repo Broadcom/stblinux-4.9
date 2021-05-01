@@ -493,7 +493,7 @@ static int brcm_ahci_probe(struct platform_device *pdev)
 
 	ret = ahci_platform_enable_regulators(hpriv);
 	if (ret)
-		goto out;
+		goto out_disable_clks;
 
 	/* Must be first so as to configure endianness including that
 	 * of the standard AHCI register space.
@@ -531,7 +531,7 @@ out_disable_phys:
 	brcm_sata_phys_disable(priv);
 out_disable_regulators:
 	ahci_platform_disable_regulators(hpriv);
-out:
+out_disable_clks:
 	ahci_platform_disable_clks(hpriv);
 	return ret;
 }

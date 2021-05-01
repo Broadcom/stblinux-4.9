@@ -51,8 +51,6 @@ struct erase_info {
 	u_long retries;
 	unsigned dev;
 	unsigned cell;
-	void (*callback) (struct erase_info *self);
-	u_long priv;
 	u_char state;
 	struct erase_info *next;
 };
